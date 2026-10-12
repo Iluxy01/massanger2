@@ -1,5 +1,4 @@
 import '../models/models.dart';
-import '../theme/palette.dart';
 import '../utils.dart';
 
 /// Демо-друзья. На этапе бэкенда их заменят реальные контакты из локальной БД.
@@ -10,7 +9,7 @@ List<Contact> demoContacts() {
       id: 'alice',
       name: 'Алиса',
       emoji: '🦊',
-      colors: avatarGradients[0],
+      colorIndex: 0,
       fingerprint: randomHex(64),
       online: true,
       hasStory: true,
@@ -21,7 +20,7 @@ List<Contact> demoContacts() {
       id: 'max',
       name: 'Макс',
       emoji: '🐺',
-      colors: avatarGradients[1],
+      colorIndex: 1,
       fingerprint: randomHex(64),
       online: true,
       hasStory: true,
@@ -31,7 +30,7 @@ List<Contact> demoContacts() {
       id: 'kate',
       name: 'Катя',
       emoji: '🌸',
-      colors: avatarGradients[6],
+      colorIndex: 6,
       fingerprint: randomHex(64),
       lastSeen: now.subtract(const Duration(minutes: 12)),
       hasStory: true,
@@ -41,7 +40,7 @@ List<Contact> demoContacts() {
       id: 'dima',
       name: 'Дима',
       emoji: '🎧',
-      colors: avatarGradients[5],
+      colorIndex: 5,
       fingerprint: randomHex(64),
       lastSeen: now.subtract(const Duration(hours: 3)),
       bio: 'музыка громче мыслей',
@@ -50,7 +49,7 @@ List<Contact> demoContacts() {
       id: 'sonya',
       name: 'Соня',
       emoji: '🌙',
-      colors: avatarGradients[4],
+      colorIndex: 4,
       fingerprint: randomHex(64),
       online: true,
       bio: 'сова 🦉',
@@ -59,7 +58,7 @@ List<Contact> demoContacts() {
       id: 'lev',
       name: 'Лёва',
       emoji: '🐙',
-      colors: avatarGradients[2],
+      colorIndex: 2,
       fingerprint: randomHex(64),
       lastSeen: now.subtract(const Duration(days: 2)),
       bio: 'пишу на Rust',
@@ -68,7 +67,7 @@ List<Contact> demoContacts() {
       id: 'tim',
       name: 'Тимур',
       emoji: '🚀',
-      colors: avatarGradients[3],
+      colorIndex: 3,
       fingerprint: randomHex(64),
       lastSeen: now.subtract(const Duration(days: 5)),
     ),

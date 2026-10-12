@@ -2,8 +2,11 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../core/protocol.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/avatar.dart';
@@ -23,6 +26,24 @@ class AddFriendScreen extends StatefulWidget {
 class _AddFriendScreenState extends State<AddFriendScreen> {
   int _tab = 0;
   Contact? _added;
+
+  /// Сканирован QR или вставлен код. null — демо-«сканирование».
+  Future<void> _add(Invite? inv) async {
+    final app = context.appRead;
+    if (_added != null) return;
+    if (inv == null) {
+      app.tick(HapticKind.heavy);
+      setState(() => _added = app.addRandomFriend());
+      return;
+    }
+    if (inv.pubkey == app.profile?.fingerprint) {
+      showVeilToast(context, 'Это твой собственный код 🙂', icon: Icons.info_outline_rounded);
+      return;
+    }
+    app.tick(HapticKind.heavy);
+    final c = await app.addContact(inv);
+    if (mounted) setState(() => _added = c);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,14 +94,7 @@ class _AddFriendScreenState extends State<AddFriendScreen> {
                       ? _Success(key: const ValueKey('ok'), contact: _added!)
                       : _tab == 0
                       ? const _MyCode(key: ValueKey('code'))
-                      : _Scanner(
-                          key: const ValueKey('scan'),
-                          onScanned: () {
-                            final app = context.appRead;
-                            app.tick(HapticKind.heavy);
-                            setState(() => _added = app.addRandomFriend());
-                          },
-                        ),
+                      : _Scanner(key: const ValueKey('scan'), onScanned: _add),
                 ),
               ),
             ],
@@ -179,7 +193,7 @@ class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
     final vc = app.colors;
     final acc = app.accent;
     final p = app.profile!;
-    final data = 'veil://add/${p.veilId}?key=${p.fingerprint.substring(0, 32)}';
+    final data = app.inviteLink;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(32, 28, 32, 32),
@@ -258,9 +272,15 @@ class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
           ),
           const SizedBox(height: 20),
           Text(
-            'Покажи этот код другу при встрече. В QR лежит только твой публичный ключ — переписка всё равно останется на телефонах.',
+            'Покажи этот код другу или отправь ссылку. В нём только твой публичный ключ — переписка всё равно останется на телефонах.',
             textAlign: TextAlign.center,
             style: TextStyle(color: vc.textDim, height: 1.45, fontSize: 14),
+          ),
+          const SizedBox(height: 24),
+          AccentButton(
+            label: 'Отправить ссылку',
+            icon: Icons.ios_share_rounded,
+            onTap: () => shareInvite(context),
           ),
         ],
       ),
@@ -268,9 +288,26 @@ class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
   }
 }
 
+/// Поделиться ссылкой-приглашением через любой мессенджер или почту.
+Future<void> shareInvite(BuildContext context) async {
+  final app = context.appRead;
+  final link = app.inviteLink;
+  final text =
+      'Привет! Давай переписываться в Veil — приватном мессенджере без серверов.\n\n'
+      'Мой код (вставь его в Veil → Друзья → Добавить друга → Сканировать → «Вставить код»):\n$link';
+  try {
+    await SharePlus.instance.share(ShareParams(text: text, subject: 'Мой код в Veil'));
+  } catch (_) {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (context.mounted) {
+      showVeilToast(context, 'Приглашение скопировано', icon: Icons.copy_rounded);
+    }
+  }
+}
+
 class _Scanner extends StatefulWidget {
   const _Scanner({super.key, required this.onScanned});
-  final VoidCallback onScanned;
+  final Future<void> Function(Invite?) onScanned;
 
   @override
   State<_Scanner> createState() => _ScannerState();
@@ -279,11 +316,40 @@ class _Scanner extends StatefulWidget {
 class _ScannerState extends State<_Scanner> with SingleTickerProviderStateMixin {
   late final _line = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200))
     ..repeat(reverse: true);
+  bool _done = false;
+  bool _cameraFailed = false;
 
   @override
   void dispose() {
     _line.dispose();
     super.dispose();
+  }
+
+  void _detected(BarcodeCapture capture) {
+    if (_done) return;
+    for (final b in capture.barcodes) {
+      final inv = Invite.parse(b.rawValue ?? '');
+      if (inv != null) {
+        _done = true;
+        widget.onScanned(inv);
+        return;
+      }
+    }
+  }
+
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final inv = Invite.parse(data?.text ?? '');
+    if (!mounted) return;
+    if (inv == null) {
+      showVeilToast(
+        context,
+        'В буфере нет кода Veil. Скопируй сообщение-приглашение друга целиком.',
+        icon: Icons.content_paste_off_rounded,
+      );
+      return;
+    }
+    await widget.onScanned(inv);
   }
 
   @override
@@ -309,13 +375,26 @@ class _ScannerState extends State<_Scanner> with SingleTickerProviderStateMixin 
                       ),
                     ),
                   ),
-                  Center(
-                    child: Icon(
-                      Icons.photo_camera_outlined,
-                      size: 56,
-                      color: Colors.white.withValues(alpha: 0.12),
+                  if (!context.app.demo && !_cameraFailed)
+                    Positioned.fill(
+                      child: MobileScanner(
+                        onDetect: _detected,
+                        errorBuilder: (context, error) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) setState(() => _cameraFailed = true);
+                          });
+                          return const SizedBox();
+                        },
+                      ),
+                    )
+                  else
+                    Center(
+                      child: Icon(
+                        _cameraFailed ? Icons.no_photography_outlined : Icons.photo_camera_outlined,
+                        size: 56,
+                        color: Colors.white.withValues(alpha: 0.2),
+                      ),
                     ),
-                  ),
                   Positioned.fill(child: CustomPaint(painter: _CornersPainter(acc.a, acc.b))),
                   AnimatedBuilder(
                     animation: _line,
@@ -344,15 +423,21 @@ class _ScannerState extends State<_Scanner> with SingleTickerProviderStateMixin 
           ),
           const SizedBox(height: 6),
           Text(
-            'Камера подключится на этапе бэкенда',
+            _cameraFailed
+                ? 'Нет доступа к камере — разреши его в настройках или вставь код'
+                : 'Друг далеко? Пусть пришлёт ссылку — вставь её кнопкой ниже',
+            textAlign: TextAlign.center,
             style: TextStyle(color: vc.textDim, fontSize: 13),
           ),
           const Spacer(),
-          AccentButton(
-            label: 'Симулировать сканирование',
-            icon: Icons.qr_code_2_rounded,
-            onTap: widget.onScanned,
-          ),
+          if (context.app.demo)
+            AccentButton(
+              label: 'Симулировать сканирование',
+              icon: Icons.qr_code_2_rounded,
+              onTap: () => widget.onScanned(null),
+            )
+          else
+            AccentButton(label: 'Вставить код', icon: Icons.content_paste_rounded, onTap: _paste),
         ],
       ),
     );
@@ -424,7 +509,7 @@ class _Success extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Ключи обменяны и проверены лично — это самый надёжный способ.',
+                'Ключи обменяны. При встрече сверьте код безопасности в профиле — так надёжнее всего.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: vc.textDim, height: 1.4),
               ),

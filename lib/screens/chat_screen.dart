@@ -68,7 +68,12 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _app = context.appRead;
     _input.text = _app.drafts[c.id] ?? '';
-    _input.addListener(() => setState(() {}));
+    var last = _input.text;
+    _input.addListener(() {
+      if (_input.text.isNotEmpty && _input.text != last) _app.userTyping(c.id);
+      last = _input.text;
+      setState(() {});
+    });
     _animated = _app.messagesOf(c.id).map((m) => m.id).toSet();
     _seen = _app.messagesOf(c.id).length;
     _app.openChat = c.id;
@@ -121,6 +126,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _startRecording() {
+    if (!_app.demo) {
+      showVeilToast(context, 'Голосовые сообщения — в следующей версии', icon: Icons.mic_rounded);
+      return;
+    }
     _app.tick(HapticKind.medium);
     setState(() {
       _recording = true;
@@ -131,6 +140,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _stopRecording({bool cancel = false}) {
+    if (!_recording) return;
     _recTimer?.cancel();
     final secs = _recSeconds;
     setState(() => _recording = false);
@@ -209,6 +219,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
+              if (c.request && !c.blocked) _RequestBar(contact: c),
               if (c.blocked)
                 _BlockedBar(onUnblock: () => app.toggleBlocked(c.id))
               else
@@ -257,7 +268,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       setState(() => _attachOpen = false);
                       showVeilToast(
                         context,
-                        '$label — появится вместе с бэкендом',
+                        '$label — в следующей версии',
                         icon: Icons.construction_rounded,
                       );
                     },
@@ -741,7 +752,7 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
   void _doubleTap() {
     final app = context.appRead;
     app.tick(HapticKind.medium);
-    if (widget.m.reaction != '❤️') app.react(widget.m, '❤️');
+    if (widget.m.reaction != '❤️') app.react(widget.contact.id, widget.m, '❤️');
     setState(() => _burst++);
   }
 
@@ -1389,7 +1400,7 @@ class _MessageMenu extends StatelessWidget {
                 children: [
                   Padding(
                     padding: hPos,
-                    child: _ReactionBar(m: m),
+                    child: _ReactionBar(m: m, chatId: contact.id),
                   ),
                   const SizedBox(height: 10),
                   Padding(
@@ -1420,8 +1431,9 @@ class _MessageMenu extends StatelessWidget {
 }
 
 class _ReactionBar extends StatelessWidget {
-  const _ReactionBar({required this.m});
+  const _ReactionBar({required this.m, required this.chatId});
   final Message m;
+  final String chatId;
 
   @override
   Widget build(BuildContext context) {
@@ -1447,7 +1459,7 @@ class _ReactionBar extends StatelessWidget {
                   scale: 0.75,
                   onTap: () {
                     app.tick(HapticKind.light);
-                    app.react(m, e);
+                    app.react(chatId, m, e);
                     Navigator.of(context).pop();
                   },
                   child: Container(
@@ -1877,6 +1889,48 @@ class _BlockedBar extends StatelessWidget {
               child: Text('Контакт заблокирован', style: TextStyle(color: context.vc.textDim)),
             ),
             TextButton(onPressed: onUnblock, child: const Text('Разблокировать')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Незнакомец написал первым: принять или заблокировать.
+class _RequestBar extends StatelessWidget {
+  const _RequestBar({required this.contact});
+  final Contact contact;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.appRead;
+    final vc = context.vc;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: Glass(
+        radius: 22,
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${contact.name} добавил(а) тебя по твоему коду. '
+              'Если не знаешь этого человека — заблокируй.',
+              style: TextStyle(color: vc.textDim, fontSize: 13.5, height: 1.35),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => app.toggleBlocked(contact.id),
+                  child: const Text('Заблокировать', style: TextStyle(color: VeilColors.danger)),
+                ),
+                TextButton(
+                  onPressed: () => app.acceptRequest(contact.id),
+                  child: const Text('Принять'),
+                ),
+              ],
+            ),
           ],
         ),
       ),

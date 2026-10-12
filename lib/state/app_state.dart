@@ -4,9 +4,12 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/protocol.dart';
+import '../core/relay_pool.dart';
 import '../models/models.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
+import 'live.dart';
 import 'mock_data.dart';
 
 /// Входящее сообщение — для всплывающего уведомления внутри приложения.
@@ -16,20 +19,36 @@ class Incoming {
   final Message message;
 }
 
-/// Всё состояние приложения.
+/// Всё состояние приложения, которое видят экраны.
 ///
-/// Сейчас это фронтенд-прототип: данные живут в памяти, а ответы друзей
-/// симулируются. На следующем этапе здесь появится локальная зашифрованная
-/// база и P2P-транспорт — интерфейс для экранов останется тем же.
+/// Два режима:
+/// * обычный — данные из базы на телефоне, сообщения идут через [Live];
+/// * демо ([AppState.demo]) — выдуманные друзья, ответы симулируются
+///   (для скриншотов, тестов и `--dart-define=DEMO=true`).
 class AppState extends ChangeNotifier {
-  AppState() {
+  AppState() : demo = false;
+
+  AppState.demo() : demo = true {
     _seed();
+    ready = true;
   }
+
+  final bool demo;
+
+  /// Подключается в обычном режиме (см. [Live.boot]).
+  Live? live;
+
+  /// База загружена — можно показывать интерфейс.
+  bool ready = false;
+
+  /// Приложение на экране (а не свёрнуто).
+  bool foreground = true;
 
   Profile? profile;
   bool get onboarded => profile != null;
 
-  String? pin;
+  bool hasPin = false;
+  String? _demoPin;
   bool locked = false;
 
   int accentIndex = 0;
@@ -38,11 +57,11 @@ class AppState extends ChangeNotifier {
   bool readReceipts = true;
   bool typingIndicators = true;
   bool screenshotProtection = true;
-  bool linkPreviews = false;
+  bool notificationText = true;
 
   final List<Contact> contacts = [];
   final Map<String, List<Message>> _messages = {};
-  final Set<String> pinned = {'alice'};
+  final Set<String> pinned = {};
   final Set<String> muted = {};
   final Set<String> typing = {};
   final Map<String, int> unread = {};
@@ -56,36 +75,20 @@ class AppState extends ChangeNotifier {
 
   final _rnd = Random();
   final List<Timer> _timers = [];
-  int _ids = 0;
   bool _disposed = false;
 
   Accent get accent => accents[accentIndex];
   VeilColors get colors => dark ? VeilColors.darkColors : VeilColors.lightColors;
 
-  void _seed() {
-    contacts
-      ..clear()
-      ..addAll(demoContacts());
-    _messages
-      ..clear()
-      ..addAll(demoMessages());
-    unread
-      ..clear()
-      ..addAll({'alice': 2, 'kate': 1});
-    pinned
-      ..clear()
-      ..add('alice');
-    // Катя «печатает» при первом запуске — чтобы было видно индикатор.
-    _later(2500, () => typing.add('kate'));
-    _later(6000, () {
-      typing.remove('kate');
-      _receive('kate', 'Вот, держи 📸 скоро будет');
-    });
+  void notifyChanged() {
+    if (!_disposed) notifyListeners();
   }
 
   // ───────────────────────── Чтение ─────────────────────────
 
   List<Message> messagesOf(String id) => _messages[id] ??= [];
+
+  void setMessages(String id, List<Message> list) => _messages[id] = list;
 
   Message? lastMessage(String id) {
     final list = _messages[id];
@@ -119,66 +122,147 @@ class AppState extends ChangeNotifier {
     var bytes = 0;
     for (final list in _messages.values) {
       for (final m in list) {
-        bytes += 96 + m.text.length * 2 + m.voiceSeconds * 2000;
+        bytes += 120 + m.text.length * 2 + m.voiceSeconds * 2000;
       }
     }
     return bytes;
   }
 
-  // ───────────────────────── Профиль и настройки ─────────────────────────
+  // ── сеть ──
 
-  void createProfile({required String name, required String emoji, required List<Color> colors}) {
-    final fp = randomHex(64);
-    profile = Profile(
-      name: name,
-      emoji: emoji,
-      colors: colors,
-      fingerprint: fp,
-      veilId: 'VEIL-${fp.substring(0, 4)}-${fp.substring(4, 8)}-${fp.substring(8, 12)}',
-    );
-    notifyListeners();
+  List<String> get relays => live?.relays ?? defaultRelays;
+  RelayState relayState(String url) =>
+      demo ? RelayState.online : live?.pool?.stateOf(url) ?? RelayState.offline;
+  String? relayError(String url) => live?.pool?.errorOf(url);
+  int get onlineRelays => demo ? relays.length : live?.pool?.onlineCount ?? 0;
+
+  Future<void> setRelays(List<String> urls) async => live?.setRelays(urls);
+
+  /// Ссылка-приглашение (её же содержит QR-код).
+  String get inviteLink {
+    final l = live;
+    if (l != null && l.keys != null) return l.inviteLink;
+    final p = profile!;
+    return Invite(
+      p.fingerprint.toLowerCase().padRight(64, '0').substring(0, 64),
+      VeilCard(name: p.name, emoji: p.emoji, color: p.colorIndex),
+    ).encode();
   }
 
-  void updateProfile({String? name, String? emoji, List<Color>? colors}) {
+  // ───────────────────────── Профиль и настройки ─────────────────────────
+
+  Future<void> createProfile({
+    required String name,
+    required String emoji,
+    required int colorIndex,
+  }) async {
+    final l = live;
+    if (l != null) {
+      await l.createIdentity(
+        (pub) => Profile(name: name, emoji: emoji, colorIndex: colorIndex, fingerprint: pub),
+      );
+    } else {
+      profile = Profile(
+        name: name,
+        emoji: emoji,
+        colorIndex: colorIndex,
+        fingerprint: randomHex(64).toLowerCase(),
+      );
+    }
+    notifyChanged();
+  }
+
+  void updateProfile({String? name, String? emoji, int? colorIndex, String? bio}) {
     final p = profile;
     if (p == null) return;
     if (name != null) p.name = name;
     if (emoji != null) p.emoji = emoji;
-    if (colors != null) p.colors = colors;
-    notifyListeners();
+    if (colorIndex != null) p.colorIndex = colorIndex;
+    if (bio != null) p.bio = bio;
+    live?.saveProfile();
+    notifyChanged();
+  }
+
+  Map<String, dynamic> get _settings => {
+    'accent': accentIndex,
+    'dark': dark,
+    'haptics': haptics,
+    'receipts': readReceipts,
+    'typing': typingIndicators,
+    'secure': screenshotProtection,
+    'notifText': notificationText,
+    'pinned': pinned.toList(),
+    'muted': muted.toList(),
+  };
+
+  void applySettings(Map<String, dynamic> s) {
+    accentIndex = ((s['accent'] as num?)?.toInt() ?? 0).clamp(0, accents.length - 1);
+    dark = s['dark'] as bool? ?? true;
+    haptics = s['haptics'] as bool? ?? true;
+    readReceipts = s['receipts'] as bool? ?? true;
+    typingIndicators = s['typing'] as bool? ?? true;
+    screenshotProtection = s['secure'] as bool? ?? true;
+    notificationText = s['notifText'] as bool? ?? true;
+    pinned
+      ..clear()
+      ..addAll((s['pinned'] as List? ?? []).cast<String>());
+    muted
+      ..clear()
+      ..addAll((s['muted'] as List? ?? []).cast<String>());
+    applyScreenshotProtection();
+  }
+
+  void _saveSettings() {
+    live?.saveSettings(_settings);
+    notifyChanged();
   }
 
   void setAccent(int i) {
     accentIndex = i;
-    notifyListeners();
+    _saveSettings();
   }
 
   void setDark(bool v) {
     dark = v;
-    notifyListeners();
+    _saveSettings();
   }
 
   void setFlag(void Function() change) {
     change();
-    notifyListeners();
+    applyScreenshotProtection();
+    _saveSettings();
   }
 
-  void setPin(String? value) {
-    pin = value;
-    notifyListeners();
+  static const _secure = MethodChannel('veil/secure');
+
+  /// Запрет скриншотов и превью в списке приложений (FLAG_SECURE на Android).
+  void applyScreenshotProtection() {
+    if (demo) return;
+    _secure.invokeMethod('setSecure', screenshotProtection).catchError((_) => null);
   }
+
+  Future<void> setPin(String? value) async {
+    if (live != null) {
+      await live!.setPin(value);
+    } else {
+      _demoPin = value;
+      hasPin = value != null;
+    }
+    notifyChanged();
+  }
+
+  Future<bool> checkPin(String attempt) async =>
+      live != null ? live!.checkPin(attempt) : attempt == _demoPin;
 
   void lock() {
-    if (pin == null) return;
+    if (!hasPin) return;
     locked = true;
-    notifyListeners();
+    notifyChanged();
   }
 
-  bool unlock(String attempt) {
-    if (attempt != pin) return false;
+  void unlocked() {
     locked = false;
-    notifyListeners();
-    return true;
+    notifyChanged();
   }
 
   void tick([HapticKind kind = HapticKind.light]) {
@@ -195,68 +279,120 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Жизненный цикл приложения (из app.dart).
+  void setForeground(bool v) {
+    if (foreground == v) return;
+    foreground = v;
+    if (v) live?.resumed();
+  }
+
   // ───────────────────────── Чаты ─────────────────────────
 
   void togglePin(String id) {
     pinned.contains(id) ? pinned.remove(id) : pinned.add(id);
-    notifyListeners();
+    _saveSettings();
   }
 
   void toggleMute(String id) {
     muted.contains(id) ? muted.remove(id) : muted.add(id);
-    notifyListeners();
+    _saveSettings();
   }
 
   void clearChat(String id) {
     _messages.remove(id);
     unread.remove(id);
     pinned.remove(id);
-    notifyListeners();
+    live?.store.deleteChat(id);
+    _saveSettings();
   }
 
   void markRead(String id) {
-    if (unread.remove(id) != null) notifyListeners();
+    final had = unread.remove(id) != null;
+    if (live != null) {
+      live!.markRead(id, sendReceipt: readReceipts);
+    }
+    if (had) notifyChanged();
   }
 
   void setDisappearing(String id, int minutes) {
-    contact(id)?.disappearing = minutes;
-    notifyListeners();
+    final c = contact(id);
+    if (c == null) return;
+    c.disappearing = minutes;
+    live?.setTtl(c);
+    notifyChanged();
   }
 
   void toggleVerified(String id) {
     final c = contact(id);
     if (c == null) return;
     c.verified = !c.verified;
-    notifyListeners();
+    live?.saveContact(c);
+    notifyChanged();
   }
 
   void toggleBlocked(String id) {
     final c = contact(id);
     if (c == null) return;
     c.blocked = !c.blocked;
-    notifyListeners();
+    if (c.blocked) c.request = false;
+    live?.saveContact(c);
+    notifyChanged();
+  }
+
+  /// Принять незнакомца, который нам написал.
+  void acceptRequest(String id) {
+    final c = contact(id);
+    if (c == null) return;
+    c.request = false;
+    live?.saveContact(c);
+    notifyChanged();
   }
 
   void deleteMessage(String chatId, Message m) {
     messagesOf(chatId).remove(m);
-    notifyListeners();
+    live?.store.deleteMessage(m.id);
+    notifyChanged();
   }
 
-  void react(Message m, String? emoji) {
+  void react(String chatId, Message m, String? emoji) {
     m.reaction = m.reaction == emoji ? null : emoji;
-    notifyListeners();
+    live?.react(chatId, m);
+    notifyChanged();
   }
 
   void reveal(Message m, bool value) {
     m.revealed = value;
-    notifyListeners();
+    notifyChanged();
   }
 
   void saveDraft(String chatId, String text) {
     text.trim().isEmpty ? drafts.remove(chatId) : drafts[chatId] = text;
   }
 
-  /// Новый друг (после сканирования QR-кода).
+  /// Пользователь что-то набирает в чате.
+  void userTyping(String chatId) {
+    if (typingIndicators) live?.typing(chatId);
+  }
+
+  /// Добавить друга по QR-коду или ссылке.
+  Future<Contact> addContact(Invite inv) async {
+    final l = live;
+    if (l != null) return l.addContact(inv);
+    final c =
+        contact(inv.pubkey) ??
+        Contact(
+          id: inv.pubkey,
+          name: inv.card.name,
+          emoji: inv.card.emoji,
+          colorIndex: inv.card.color,
+          verified: true,
+        );
+    if (!contacts.contains(c)) contacts.add(c);
+    notifyChanged();
+    return c;
+  }
+
+  /// Демо: «отсканировали» случайного друга.
   Contact addRandomFriend() {
     const names = ['Ника', 'Артём', 'Вера', 'Глеб', 'Ева', 'Марк', 'Злата', 'Рома'];
     final name = names[_rnd.nextInt(names.length)];
@@ -264,19 +400,18 @@ class AppState extends ChangeNotifier {
       id: 'c${DateTime.now().microsecondsSinceEpoch}',
       name: name,
       emoji: avatarEmojis[_rnd.nextInt(avatarEmojis.length)],
-      colors: avatarGradients[_rnd.nextInt(avatarGradients.length)],
+      colorIndex: _rnd.nextInt(avatarGradients.length),
       fingerprint: randomHex(64),
       online: true,
       verified: true,
       bio: 'новый друг в Veil',
     );
     contacts.add(c);
-    notifyListeners();
+    notifyChanged();
     _later(1500, () => _receive(c.id, 'Привет! Это $name, добавил(а) тебя по QR 👋'));
     return c;
   }
 
-  /// Отправка. Статусы и ответ друга пока симулируются.
   void send(
     String chatId,
     String text, {
@@ -286,7 +421,7 @@ class AppState extends ChangeNotifier {
     int voiceSeconds = 0,
   }) {
     final m = Message(
-      id: 'm${_ids++}',
+      id: randomHex(16).toLowerCase(),
       mine: true,
       text: text,
       time: DateTime.now(),
@@ -298,8 +433,91 @@ class AppState extends ChangeNotifier {
     );
     messagesOf(chatId).add(m);
     drafts.remove(chatId);
-    notifyListeners();
+    final c = contact(chatId);
+    if (c != null && c.request) {
+      // Ответили незнакомцу — значит, приняли его.
+      c.request = false;
+      live?.saveContact(c);
+    }
+    notifyChanged();
+    if (live != null) {
+      live!.sendMessage(chatId, m).then((_) => notifyChanged());
+    } else {
+      _simulateReply(chatId, m);
+    }
+  }
 
+  /// Новое входящее сообщение (из сети).
+  Future<void> onIncoming(Contact c, Message m) async {
+    final visible = foreground && openChat == c.id && !locked;
+    if (visible) {
+      await live?.markRead(c.id, sendReceipt: readReceipts);
+      return;
+    }
+    unread[c.id] = (unread[c.id] ?? 0) + 1;
+    if (muted.contains(c.id)) return;
+    if (foreground && !locked) {
+      _incoming.add(Incoming(c, m));
+    } else {
+      await live?.notify?.message(c, m);
+    }
+  }
+
+  /// «Красная кнопка»: стереть всё с устройства.
+  Future<void> wipeEverything() async {
+    for (final t in _timers) {
+      t.cancel();
+    }
+    _timers.clear();
+    typing.clear();
+    drafts.clear();
+    muted.clear();
+    pinned.clear();
+    unread.clear();
+    contacts.clear();
+    _messages.clear();
+    profile = null;
+    hasPin = false;
+    _demoPin = null;
+    locked = false;
+    final l = live;
+    if (l != null) {
+      final n = l.notify;
+      await l.wipe();
+      live = null;
+      // Начинаем с чистого листа: новая пустая база.
+      await Live.boot(this);
+      live?.notify = n;
+    } else if (demo) {
+      _seed();
+    }
+    notifyChanged();
+  }
+
+  // ───────────────────────── Демо-режим ─────────────────────────
+
+  void _seed() {
+    contacts
+      ..clear()
+      ..addAll(demoContacts());
+    _messages
+      ..clear()
+      ..addAll(demoMessages());
+    unread
+      ..clear()
+      ..addAll({'alice': 2, 'kate': 1});
+    pinned
+      ..clear()
+      ..add('alice');
+    // Катя «печатает» при первом запуске — чтобы было видно индикатор.
+    _later(2500, () => typing.add('kate'));
+    _later(6000, () {
+      typing.remove('kate');
+      _receive('kate', 'Вот, держи 📸 скоро будет');
+    });
+  }
+
+  void _simulateReply(String chatId, Message m) {
     final c = contact(chatId);
     _later(350, () => m.status = MsgStatus.sent);
     _later(900, () => m.status = MsgStatus.delivered);
@@ -323,7 +541,12 @@ class AppState extends ChangeNotifier {
   void _receive(String chatId, String text) {
     final c = contact(chatId);
     if (c == null) return;
-    final m = Message(id: 'm${_ids++}', mine: false, text: text, time: DateTime.now());
+    final m = Message(
+      id: randomHex(16).toLowerCase(),
+      mine: false,
+      text: text,
+      time: DateTime.now(),
+    );
     messagesOf(chatId).add(m);
     if (openChat != chatId) {
       unread[chatId] = (unread[chatId] ?? 0) + 1;
@@ -342,22 +565,6 @@ class AppState extends ChangeNotifier {
     _timers.add(t);
   }
 
-  /// «Красная кнопка»: стереть всё с устройства.
-  void wipeEverything() {
-    for (final t in _timers) {
-      t.cancel();
-    }
-    _timers.clear();
-    typing.clear();
-    drafts.clear();
-    muted.clear();
-    profile = null;
-    pin = null;
-    locked = false;
-    _seed();
-    notifyListeners();
-  }
-
   @override
   void dispose() {
     _disposed = true;
@@ -365,6 +572,7 @@ class AppState extends ChangeNotifier {
       t.cancel();
     }
     _incoming.close();
+    live?.close();
     super.dispose();
   }
 }

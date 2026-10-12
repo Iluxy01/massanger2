@@ -2,19 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veil/app.dart';
 import 'package:veil/state/app_state.dart';
-import 'package:veil/theme/palette.dart';
 
 void main() {
   testWidgets('онбординг → профиль → главный экран', (tester) async {
     tester.view.physicalSize = const Size(1080, 2340);
     tester.view.devicePixelRatio = 2.625;
     addTearDown(tester.view.reset);
-    final state = AppState();
+    final state = AppState.demo();
     await tester.pumpWidget(VeilApp(state: state));
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('Пропустить'), findsOneWidget);
 
-    state.createProfile(name: 'Тест', emoji: '🦊', colors: avatarGradients[0]);
+    state.createProfile(name: 'Тест', emoji: '🦊', colorIndex: 0);
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
@@ -42,8 +41,8 @@ void main() {
     tester.view.physicalSize = const Size(1080, 2340);
     tester.view.devicePixelRatio = 2.625;
     addTearDown(tester.view.reset);
-    final state = AppState();
-    state.createProfile(name: 'Тест', emoji: '🦊', colors: avatarGradients[0]);
+    final state = AppState.demo();
+    state.createProfile(name: 'Тест', emoji: '🦊', colorIndex: 0);
     await tester.pumpWidget(VeilApp(state: state));
     Future<void> settle() async {
       for (var i = 0; i < 10; i++) {

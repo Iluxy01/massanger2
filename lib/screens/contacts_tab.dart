@@ -144,8 +144,7 @@ class _InviteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     return Pressable(
-      onTap: () =>
-          showVeilToast(context, 'Ссылка-приглашение скопирована', icon: Icons.link_rounded),
+      onTap: () => shareInvite(context),
       child: Glass(
         radius: 20,
         padding: const EdgeInsets.all(14),

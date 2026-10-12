@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../core/notifier.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
@@ -40,11 +41,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         onDone: () => setState(() => step = _Step.keys),
       ),
       _Step.keys => _KeyGen(
-        onDone: () => context.appRead.createProfile(
-          name: name.trim(),
-          emoji: emoji,
-          colors: avatarGradients[gradient],
-        ),
+        onDone: () async {
+          final app = context.appRead;
+          await app.createProfile(name: name.trim(), emoji: emoji, colorIndex: gradient);
+          // Разрешение на уведомления (Android 13+) — сразу после создания профиля.
+          if (!app.demo) SystemNotify.requestPermission().catchError((_) {});
+        },
       ),
     };
     return Scaffold(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/relay_pool.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../widgets/avatar.dart';
@@ -147,9 +148,9 @@ class SettingsTab extends StatelessWidget {
                 _Tile(
                   icon: Icons.pin_rounded,
                   title: 'PIN-код',
-                  subtitle: app.pin == null ? 'Выключен' : 'Включён · блокировка при сворачивании',
+                  subtitle: !app.hasPin ? 'Выключен' : 'Включён · блокировка при сворачивании',
                   trailing: VeilSwitch(
-                    value: app.pin != null,
+                    value: app.hasPin,
                     onChanged: (v) async {
                       if (v) {
                         final ok = await Navigator.of(context).push(LockScreen.setupRoute());
@@ -162,7 +163,7 @@ class SettingsTab extends StatelessWidget {
                     },
                   ),
                 ),
-                if (app.pin != null)
+                if (app.hasPin)
                   _Tile(
                     icon: Icons.lock_clock_rounded,
                     title: 'Заблокировать сейчас',
@@ -200,8 +201,21 @@ class SettingsTab extends StatelessWidget {
                     onChanged: (v) => app.setFlag(() => app.haptics = v),
                   ),
                 ),
+                _Tile(
+                  icon: Icons.notifications_rounded,
+                  title: 'Текст в уведомлениях',
+                  subtitle: app.notificationText ? 'Показывается' : 'Только «Новое сообщение»',
+                  trailing: VeilSwitch(
+                    value: app.notificationText,
+                    onChanged: (v) => app.setFlag(() => app.notificationText = v),
+                  ),
+                ),
               ],
             ),
+
+            // ── Сеть ──
+            const _Section('Сеть'),
+            const _NetworkCard(),
 
             // ── Хранилище ──
             const _Section('Хранилище'),
@@ -314,7 +328,7 @@ class SettingsTab extends StatelessWidget {
                         itemCount: avatarGradients.length,
                         separatorBuilder: (_, _) => const SizedBox(width: 10),
                         itemBuilder: (_, i) => Pressable(
-                          onTap: () => app.updateProfile(colors: avatarGradients[i]),
+                          onTap: () => app.updateProfile(colorIndex: i),
                           child: Container(
                             width: 40,
                             decoration: BoxDecoration(
@@ -755,5 +769,139 @@ class _HoldToConfirmState extends State<HoldToConfirm> with SingleTickerProvider
         ),
       ),
     );
+  }
+}
+
+/// Ретрансляторы: бесплатные публичные «почтовые ящики» для зашифрованных конвертов.
+class _NetworkCard extends StatelessWidget {
+  const _NetworkCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final relays = app.relays;
+    final online = app.onlineRelays;
+    final color = online > 0 ? VeilColors.success : VeilColors.danger;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 16, 10, 8),
+      decoration: BoxDecoration(
+        color: vc.surface.withValues(alpha: vc.dark ? 0.85 : 0.9),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: vc.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  online > 0
+                      ? 'Подключено: $online из ${relays.length}'
+                      : 'Нет связи с ретрансляторами',
+                  style: TextStyle(color: vc.text, fontWeight: FontWeight.w700, fontSize: 15),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Text(
+              'Сообщения идут через бесплатные ретрансляторы Nostr. Они видят только '
+              'зашифрованный конверт и удаляют его через 7 дней. Достаточно, чтобы работал хотя бы один.',
+              style: TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.4),
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (final url in relays)
+            Row(
+              children: [
+                Icon(
+                  Icons.circle,
+                  size: 8,
+                  color: switch (app.relayState(url)) {
+                    RelayState.online => VeilColors.success,
+                    RelayState.connecting => VeilColors.warning,
+                    RelayState.offline => VeilColors.danger,
+                  },
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    url.replaceFirst('wss://', ''),
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: vc.text, fontSize: 13.5, fontFamily: 'monospace'),
+                  ),
+                ),
+                if (relays.length > 1)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(Icons.close_rounded, size: 18, color: vc.textFaint),
+                    onPressed: () => app.setRelays([...relays]..remove(url)),
+                  ),
+              ],
+            ),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: () => _add(context),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Добавить свой'),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => app.setRelays(List.of(defaultRelays)),
+                child: Text('Сбросить', style: TextStyle(color: vc.textDim)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _add(BuildContext context) {
+    final app = context.appRead;
+    final vc = app.colors;
+    final ctrl = TextEditingController(text: 'wss://');
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: vc.elevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text('Адрес ретранслятора', style: TextStyle(color: vc.text)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          style: TextStyle(color: vc.text, fontFamily: 'monospace'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Отмена', style: TextStyle(color: vc.textDim)),
+          ),
+          TextButton(
+            onPressed: () {
+              final url = ctrl.text.trim();
+              if (url.startsWith('wss://') && url.length > 8 && !app.relays.contains(url)) {
+                app.setRelays([...app.relays, url]);
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text('Добавить'),
+          ),
+        ],
+      ),
+    ).whenComplete(ctrl.dispose);
   }
 }

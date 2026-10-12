@@ -39,7 +39,12 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
   /// Свернул приложение — оно блокируется (если задан PIN).
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
-    if (s == AppLifecycleState.paused) widget.state.lock();
+    if (s == AppLifecycleState.paused) {
+      widget.state.lock();
+      widget.state.setForeground(false);
+    } else if (s == AppLifecycleState.resumed) {
+      widget.state.setForeground(true);
+    }
   }
 
   @override
@@ -135,7 +140,8 @@ class _RootGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final onboarded = context.app.onboarded;
+    final app = context.app;
+    final onboarded = app.onboarded;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 700),
       switchInCurve: Curves.easeOutCubic,
@@ -143,11 +149,24 @@ class _RootGate extends StatelessWidget {
         opacity: a,
         child: ScaleTransition(scale: Tween(begin: 0.94, end: 1.0).animate(a), child: c),
       ),
-      child: onboarded
+      child: !app.ready
+          ? const _Splash(key: ValueKey('splash'))
+          : onboarded
           ? const HomeScreen(key: ValueKey('home'))
           : const OnboardingScreen(key: ValueKey('onboarding')),
     );
   }
+}
+
+/// Пока открывается база — только логотип на фоне.
+class _Splash extends StatelessWidget {
+  const _Splash({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: context.vc.bg,
+    body: const Center(child: VeilLogo(size: 84)),
+  );
 }
 
 /// Стеклянное уведомление о новом сообщении, выезжающее сверху.

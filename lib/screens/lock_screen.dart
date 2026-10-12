@@ -54,7 +54,7 @@ class _LockScreenState extends State<LockScreen> {
     setState(() => _input = _input.substring(0, _input.length - 1));
   }
 
-  void _check() {
+  Future<void> _check() async {
     if (!mounted) return;
     final app = context.appRead;
     if (widget.setup) {
@@ -73,8 +73,8 @@ class _LockScreenState extends State<LockScreen> {
       }
       return;
     }
-    if (_input == app.pin) {
-      _ok(() => app.unlock(_input));
+    if (await app.checkPin(_input)) {
+      _ok(app.unlocked);
     } else {
       _fail();
     }
