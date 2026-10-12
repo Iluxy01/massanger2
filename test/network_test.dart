@@ -12,18 +12,11 @@ import 'package:veil/core/relay_pool.dart';
 ///   VEIL_NETWORK_TEST=1 flutter test test/network_test.dart
 /// Кандидаты на замену — проверяются и печатаются, но на результат теста не влияют.
 const candidateRelays = [
-  'wss://relay.nostr.net',
-  'wss://nostr.oxtr.dev',
-  'wss://offchain.pub',
-  'wss://relay.snort.social',
+  'wss://relay.damus.io',
   'wss://nostr.bitcoiner.social',
-  'wss://nostr-pub.wellorder.net',
-  'wss://relay.nostr.bg',
-  'wss://nostr.einundzwanzig.space',
   'wss://relay.nos.social',
   'wss://nostr.data.haus',
   'wss://relay.mostr.pub',
-  'wss://nostr.fmt.wiz.biz',
 ];
 
 void main() {

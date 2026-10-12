@@ -8,11 +8,14 @@ import 'nostr.dart';
 /// Бесплатные публичные ретрансляторы Nostr. Они пересылают зашифрованные
 /// конверты и хранят их не дольше срока из тега expiration (у нас 7 дней).
 const defaultRelays = [
-  'wss://relay.damus.io',
-  'wss://nos.lol',
+  // Проверены в CI (test/network_test.dart): принимают, хранят и отдают конверты.
   'wss://relay.primal.net',
-  'wss://relay.0xchat.com',
+  'wss://nos.lol',
   'wss://nostr.mom',
+  'wss://offchain.pub',
+  'wss://relay.snort.social',
+  'wss://nostr-pub.wellorder.net',
+  'wss://nostr.oxtr.dev',
 ];
 
 typedef Connector = WebSocketChannel Function(Uri uri);
