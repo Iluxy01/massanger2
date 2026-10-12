@@ -33,23 +33,22 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Stack(
         children: [
           for (var i = 0; i < _tabs.length; i++)
-            TickerMode(
-              enabled: i == _tab,
-              // Аватары с Hero есть на нескольких вкладках — оставляем только активную.
-              child: HeroMode(
-                enabled: i == _tab,
+            // Анимация исчезновения должна быть СНАРУЖИ TickerMode: иначе выключенный
+            // тикер замораживает её, и старая вкладка остаётся видна поверх новой.
+            AnimatedOpacity(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOut,
+              opacity: i == _tab ? 1 : 0,
+              child: AnimatedScale(
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeOutCubic,
+                scale: i == _tab ? 1 : 0.97,
                 child: IgnorePointer(
                   ignoring: i != _tab,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 260),
-                    curve: Curves.easeOut,
-                    opacity: i == _tab ? 1 : 0,
-                    child: AnimatedScale(
-                      duration: const Duration(milliseconds: 320),
-                      curve: Curves.easeOutCubic,
-                      scale: i == _tab ? 1 : 0.97,
-                      child: _tabs[i],
-                    ),
+                  child: TickerMode(
+                    enabled: i == _tab,
+                    // Аватары с Hero есть на нескольких вкладках — оставляем только активную.
+                    child: HeroMode(enabled: i == _tab, child: _tabs[i]),
                   ),
                 ),
               ),
@@ -84,6 +83,7 @@ class _NavBar extends StatelessWidget {
       final active = i == index;
       return Expanded(
         child: Pressable(
+          key: ValueKey('nav-$i'),
           scale: 0.88,
           onTap: () => onTap(i),
           child: SizedBox(
@@ -106,23 +106,27 @@ class _NavBar extends StatelessWidget {
                       ),
                   ],
                 ),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  child: active
-                      ? Padding(
-                          padding: const EdgeInsets.only(left: 8),
-                          child: Text(
-                            label,
-                            maxLines: 1,
-                            style: TextStyle(
-                              color: acc.onAccent,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 14,
+                Flexible(
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    child: active
+                        ? Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Text(
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.fade,
+                              softWrap: false,
+                              style: TextStyle(
+                                color: acc.onAccent,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                              ),
                             ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                 ),
               ],
             ),
