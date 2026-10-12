@@ -10,6 +10,22 @@ import 'package:veil/core/relay_pool.dart';
 
 /// Проверка настоящих публичных ретрансляторов. Запускается только в CI:
 ///   VEIL_NETWORK_TEST=1 flutter test test/network_test.dart
+/// Кандидаты на замену — проверяются и печатаются, но на результат теста не влияют.
+const candidateRelays = [
+  'wss://relay.nostr.net',
+  'wss://nostr.oxtr.dev',
+  'wss://offchain.pub',
+  'wss://relay.snort.social',
+  'wss://nostr.bitcoiner.social',
+  'wss://nostr-pub.wellorder.net',
+  'wss://relay.nostr.bg',
+  'wss://nostr.einundzwanzig.space',
+  'wss://relay.nos.social',
+  'wss://nostr.data.haus',
+  'wss://relay.mostr.pub',
+  'wss://nostr.fmt.wiz.biz',
+];
+
 void main() {
   final enabled = Platform.environment['VEIL_NETWORK_TEST'] == '1';
 
@@ -20,7 +36,7 @@ void main() {
       final bob = Keys.generate();
       var working = 0;
 
-      for (final url in defaultRelays) {
+      for (final url in [...defaultRelays, ...candidateRelays]) {
         final pool = RelayPool([url]);
         final got = <int>{};
         final sub = pool.events.listen((e) {
@@ -67,6 +83,6 @@ void main() {
       expect(working, greaterThan(0));
     },
     skip: enabled ? false : 'нужен интернет (VEIL_NETWORK_TEST=1)',
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 8)),
   );
 }
