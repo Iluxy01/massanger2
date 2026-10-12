@@ -250,8 +250,12 @@ class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
           const SizedBox(height: 6),
           Pressable(
             onTap: () {
-              Clipboard.setData(ClipboardData(text: p.veilId));
-              showVeilToast(context, 'ID скопирован', icon: Icons.copy_rounded);
+              Clipboard.setData(ClipboardData(text: app.inviteLink));
+              showVeilToast(
+                context,
+                'Код-приглашение скопирован — вставь его в Veil друга',
+                icon: Icons.copy_rounded,
+              );
             },
             child: Row(
               mainAxisSize: MainAxisSize.min,

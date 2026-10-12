@@ -14,6 +14,9 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// VEIL_TEST=1 — вторая копия приложения («Veil Тест») для проверки переписки на одном телефоне.
+val veilTest = System.getenv("VEIL_TEST") == "1"
+
 android {
     namespace = "app.veil.veil"
     compileSdk = flutter.compileSdkVersion
@@ -27,7 +30,8 @@ android {
     }
 
     defaultConfig {
-        applicationId = "app.veil.messenger"
+        applicationId = if (veilTest) "app.veil.messenger.test" else "app.veil.messenger"
+        manifestPlaceholders["appLabel"] = if (veilTest) "Veil Тест" else "Veil"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
