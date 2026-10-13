@@ -9,6 +9,7 @@ import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
 import 'lock_screen.dart';
+import '../widgets/visual.dart';
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
@@ -138,6 +139,31 @@ class SettingsTab extends StatelessWidget {
                       ),
                     ],
                   ),
+                ),
+                _LevelPicker(
+                  icon: Icons.auto_awesome_rounded,
+                  title: 'Оформление',
+                  labels: lookLevels,
+                  hints: const [
+                    'Чистый фон, без размытия — бережёт батарею',
+                    'Сияние на фоне, стекло на главных панелях',
+                    'Живое сияние и матовое стекло везде',
+                  ],
+                  value: app.look,
+                  onChanged: app.setLook,
+                ),
+                _LevelPicker(
+                  icon: Icons.animation_rounded,
+                  title: 'Анимации',
+                  labels: motionLevels,
+                  hints: const [
+                    'Всё появляется сразу, без движения',
+                    'Короткие и резкие',
+                    'Как задумано',
+                    'Медленнее и мягче',
+                  ],
+                  value: app.motion,
+                  onChanged: app.setMotion,
                 ),
               ],
             ),
@@ -475,6 +501,105 @@ class _Tile extends StatelessWidget {
   }
 }
 
+/// Выбор уровня: заголовок, подсказка к выбранному уровню и ряд сегментов.
+class _LevelPicker extends StatelessWidget {
+  const _LevelPicker({
+    required this.icon,
+    required this.title,
+    required this.labels,
+    required this.hints,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String title;
+  final List<String> labels;
+  final List<String> hints;
+  final int value;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    final acc = context.accent;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: acc.a.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Center(child: GradientIcon(icon, size: 19)),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(color: vc.text, fontSize: 15.5, fontWeight: FontWeight.w600),
+                    ),
+                    Text(hints[value], style: TextStyle(color: vc.textDim, fontSize: 12.5)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(color: vc.elevated, borderRadius: BorderRadius.circular(14)),
+            child: Row(
+              children: [
+                for (var i = 0; i < labels.length; i++)
+                  Expanded(
+                    child: Pressable(
+                      scale: 0.94,
+                      onTap: () {
+                        if (i == value) return;
+                        context.appRead.tick(HapticKind.light);
+                        onChanged(i);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 250).by(context),
+                        curve: Curves.easeOutCubic,
+                        padding: const EdgeInsets.symmetric(vertical: 9),
+                        decoration: BoxDecoration(
+                          gradient: i == value ? acc.gradient : null,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            labels[i],
+                            style: TextStyle(
+                              color: i == value ? acc.onAccent : vc.textDim,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _AccentDot extends StatelessWidget {
   const _AccentDot({required this.accent, required this.selected, required this.onTap});
 
@@ -489,7 +614,7 @@ class _AccentDot extends StatelessWidget {
       scale: 0.85,
       onTap: onTap,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 300).by(context),
         curve: Curves.easeOutBack,
         width: 44,
         height: 44,
@@ -507,7 +632,7 @@ class _AccentDot extends StatelessWidget {
                 : null,
           ),
           child: AnimatedScale(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 300).by(context),
             curve: Curves.easeOutBack,
             scale: selected ? 1 : 0,
             child: Icon(Icons.check_rounded, size: 18, color: accent.onAccent),
@@ -608,7 +733,7 @@ class _StorageCard extends StatelessWidget {
             children: [
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: app.totalMessages.toDouble()),
-                duration: const Duration(milliseconds: 1200),
+                duration: const Duration(milliseconds: 1200).by(context),
                 curve: Curves.easeOutCubic,
                 builder: (_, v, _) => GradientText(
                   '${v.round()}',

@@ -11,6 +11,7 @@ import 'screens/onboarding_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/avatar.dart';
 import 'widgets/effects.dart';
+import 'widgets/visual.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
 
@@ -71,13 +72,21 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
             debugShowCheckedModeBanner: false,
             navigatorKey: navigatorKey,
             theme: _theme(s),
-            builder: (context, child) => Stack(
-              children: [
-                child!,
-                const _InAppBanner(),
-                // Экран блокировки — поверх всего, включая открытые чаты.
-                const _LockLayer(),
-              ],
+            builder: (context, child) => Visual(
+              look: s.look,
+              motion: s.motion,
+              // Анимации выключены — аватарки между экранами тоже не «летают».
+              child: HeroMode(
+                enabled: s.motion > 0,
+                child: Stack(
+                  children: [
+                    child!,
+                    const _InAppBanner(),
+                    // Экран блокировки — поверх всего, включая открытые чаты.
+                    const _LockLayer(),
+                  ],
+                ),
+              ),
             ),
             home: const _RootGate(),
           );
@@ -109,18 +118,39 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
         selectionHandleColor: acc.a,
       ),
       dividerColor: vc.border,
-      pageTransitionsTheme: const PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-        },
-      ),
+      pageTransitionsTheme: s.motion == 0
+          ? const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: _NoTransitions(),
+                TargetPlatform.iOS: _NoTransitions(),
+              },
+            )
+          : const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+              },
+            ),
     );
     return base.copyWith(
       textTheme: base.textTheme.apply(bodyColor: vc.text, displayColor: vc.text),
       iconTheme: IconThemeData(color: vc.text),
     );
   }
+}
+
+/// Переход между экранами без анимации (уровень анимаций «Выкл»).
+class _NoTransitions extends PageTransitionsBuilder {
+  const _NoTransitions();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) => child;
 }
 
 class _LockLayer extends StatelessWidget {
@@ -130,7 +160,7 @@ class _LockLayer extends StatelessWidget {
   Widget build(BuildContext context) {
     final locked = context.app.locked;
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 400),
+      duration: const Duration(milliseconds: 400).by(context),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (c, a) => FadeTransition(
@@ -151,7 +181,7 @@ class _RootGate extends StatelessWidget {
     final app = context.app;
     final onboarded = app.onboarded;
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 700),
+      duration: const Duration(milliseconds: 700).by(context),
       switchInCurve: Curves.easeOutCubic,
       transitionBuilder: (c, a) => FadeTransition(
         opacity: a,
@@ -223,7 +253,7 @@ class _InAppBannerState extends State<_InAppBanner> {
     final vc = context.vc;
     final top = MediaQuery.paddingOf(context).top + 8;
     return AnimatedPositioned(
-      duration: const Duration(milliseconds: 520),
+      duration: const Duration(milliseconds: 520).by(context),
       curve: _visible ? Curves.easeOutBack : Curves.easeInCubic,
       top: _visible ? top : -140,
       left: 12,

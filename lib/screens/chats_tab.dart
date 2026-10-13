@@ -7,6 +7,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'chat_screen.dart';
+import '../widgets/visual.dart';
 
 class ChatsTab extends StatefulWidget {
   const ChatsTab({super.key});
@@ -95,7 +96,7 @@ class _ChatsTabState extends State<ChatsTab> {
             ),
             SliverToBoxAdapter(
               child: AnimatedSize(
-                duration: const Duration(milliseconds: 300),
+                duration: const Duration(milliseconds: 300).by(context),
                 curve: Curves.easeOutCubic,
                 child: _searching
                     ? Padding(
@@ -146,7 +147,7 @@ class _ChatsTabState extends State<ChatsTab> {
           child: IgnorePointer(
             ignoring: !_compact,
             child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 220),
+              duration: const Duration(milliseconds: 220).by(context),
               opacity: _compact ? 1 : 0,
               child: Glass(
                 blur: 20,
@@ -245,7 +246,7 @@ class _RoundIcon extends StatelessWidget {
           width: 44,
           height: 44,
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
+            duration: const Duration(milliseconds: 250).by(context),
             transitionBuilder: (c, a) => RotationTransition(
               turns: Tween(begin: 0.75, end: 1.0).animate(a),
               child: FadeTransition(opacity: a, child: c),
@@ -514,7 +515,7 @@ class _ChatTile extends StatelessWidget {
                       children: [
                         Expanded(
                           child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 250),
+                            duration: const Duration(milliseconds: 250).by(context),
                             layoutBuilder: (cur, prev) =>
                                 Stack(alignment: Alignment.centerLeft, children: [...prev, ?cur]),
                             child: preview,
@@ -685,7 +686,7 @@ class _UnreadBadge extends StatelessWidget {
     return TweenAnimationBuilder<double>(
       key: ValueKey(count),
       tween: Tween(begin: 0.4, end: 1),
-      duration: const Duration(milliseconds: 450),
+      duration: const Duration(milliseconds: 450).by(context),
       curve: Curves.elasticOut,
       builder: (_, s, c) => Transform.scale(scale: s, child: c),
       child: Container(
@@ -824,7 +825,7 @@ class _EmptyState extends StatelessWidget {
         children: [
           TweenAnimationBuilder<double>(
             tween: Tween(begin: 0, end: 1),
-            duration: const Duration(milliseconds: 900),
+            duration: const Duration(milliseconds: 900).by(context),
             curve: Curves.elasticOut,
             builder: (_, s, c) => Transform.scale(scale: s, child: c),
             child: Text(searching ? '🔍' : '🕊️', style: const TextStyle(fontSize: 64)),

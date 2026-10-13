@@ -6,6 +6,7 @@ import '../widgets/effects.dart';
 import 'chats_tab.dart';
 import 'contacts_tab.dart';
 import 'settings_tab.dart';
+import '../widgets/visual.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -36,11 +37,11 @@ class _HomeScreenState extends State<HomeScreen> {
             // Анимация исчезновения должна быть СНАРУЖИ TickerMode: иначе выключенный
             // тикер замораживает её, и старая вкладка остаётся видна поверх новой.
             AnimatedOpacity(
-              duration: const Duration(milliseconds: 260),
+              duration: const Duration(milliseconds: 260).by(context),
               curve: Curves.easeOut,
               opacity: i == _tab ? 1 : 0,
               child: AnimatedScale(
-                duration: const Duration(milliseconds: 320),
+                duration: const Duration(milliseconds: 320).by(context),
                 curve: Curves.easeOutCubic,
                 scale: i == _tab ? 1 : 0.97,
                 child: IgnorePointer(
@@ -108,7 +109,7 @@ class _NavBar extends StatelessWidget {
                 ),
                 Flexible(
                   child: AnimatedSize(
-                    duration: const Duration(milliseconds: 300),
+                    duration: const Duration(milliseconds: 300).by(context),
                     curve: Curves.easeOutCubic,
                     child: active
                         ? Padding(
@@ -144,7 +145,7 @@ class _NavBar extends StatelessWidget {
           // Скользящая «пилюля» под активной вкладкой.
           Positioned.fill(
             child: AnimatedAlign(
-              duration: const Duration(milliseconds: 420),
+              duration: const Duration(milliseconds: 420).by(context),
               curve: Curves.easeOutBack,
               alignment: Alignment(-1 + index * 1.0, 0),
               child: FractionallySizedBox(
@@ -191,7 +192,7 @@ class _Badge extends StatelessWidget {
     return TweenAnimationBuilder<double>(
       key: ValueKey(count),
       tween: Tween(begin: 1.5, end: 1),
-      duration: const Duration(milliseconds: 400),
+      duration: const Duration(milliseconds: 400).by(context),
       curve: Curves.easeOutBack,
       builder: (_, s, c) => Transform.scale(scale: s, child: c),
       child: Container(

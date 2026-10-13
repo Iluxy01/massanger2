@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
+import 'visual.dart';
 
 /// Аватар-эмодзи на градиенте. Опционально — градиентное кольцо и точка «в сети».
 ///
@@ -126,7 +127,7 @@ class _OnlineDot extends StatelessWidget {
       height: s,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
-        duration: const Duration(milliseconds: 900),
+        duration: const Duration(milliseconds: 900).by(context),
         curve: Curves.easeOut,
         builder: (_, t, child) => Stack(
           clipBehavior: Clip.none,
@@ -176,7 +177,7 @@ class StatusTicks extends StatelessWidget {
       MsgStatus.read => Icon(Icons.done_all_rounded, size: size, color: read),
     };
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 260),
+      duration: const Duration(milliseconds: 260).by(context),
       switchInCurve: Curves.easeOutBack,
       transitionBuilder: (child, a) => ScaleTransition(
         scale: a,

@@ -4,6 +4,7 @@ import 'package:veil/app.dart';
 import 'package:veil/models/models.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/widgets/avatar.dart';
+import 'package:veil/widgets/visual.dart';
 
 /// Проверки визуальных исправлений (демо-режим, без сети).
 void main() {
@@ -93,6 +94,40 @@ void main() {
       expect(find.text('сейчас'), on ? findsOneWidget : findsNothing, reason: 'banner=$on');
       await close(tester, state);
     }
+  });
+
+  testWidgets('уровни оформления и анимаций: все работают и сохраняются', (tester) async {
+    // Без всплывашки: она тоже из стекла и сбила бы подсчёт.
+    final state = await launch(tester, banner: false);
+    int blurs() => find.byType(BackdropFilter).evaluate().length;
+    final normal = blurs();
+
+    for (final look in [0, 2, 1]) {
+      for (final motion in [0, 1, 3, 2]) {
+        state.setLook(look);
+        state.setMotion(motion);
+        await settle(tester);
+        final v = Visual.of(tester.element(find.byType(Scaffold).first));
+        expect((v.look, v.motion), (look, motion));
+        // Заходим в чат и выходим — без ошибок на любом уровне.
+        await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+        await settle(tester);
+        expect(find.byIcon(Icons.visibility_rounded), findsOneWidget);
+        navigatorKey.currentState!.pop();
+        await settle(tester);
+        if (look == 0) expect(blurs(), 0, reason: 'минимум — без размытия');
+        if (look == 2) expect(blurs(), greaterThan(normal), reason: 'максимум — стекло везде');
+      }
+    }
+    expect(blurs(), normal, reason: 'по умолчанию всё как раньше');
+
+    // Сохраняются вместе с остальными настройками.
+    state.setLook(0);
+    state.setMotion(3);
+    final copy = AppState.demo()..applySettings(state.settingsForTest);
+    expect((copy.look, copy.motion), (0, 3));
+    copy.dispose();
+    await close(tester, state);
   });
 }
 

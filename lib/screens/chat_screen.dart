@@ -13,6 +13,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'contact_screen.dart';
+import '../widgets/visual.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.contact});
@@ -238,7 +239,7 @@ class _ChatScreenState extends State<ChatScreen> {
             bottom: MediaQuery.paddingOf(context).bottom + (_replyTo != null ? 150 : 96),
             child: AnimatedScale(
               scale: _showDown ? 1 : 0,
-              duration: const Duration(milliseconds: 260),
+              duration: const Duration(milliseconds: 260).by(context),
               curve: Curves.easeOutBack,
               child: _ScrollDownButton(count: newBelow, onTap: _toBottom),
             ),
@@ -260,7 +261,7 @@ class _ChatScreenState extends State<ChatScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           AnimatedSize(
-            duration: const Duration(milliseconds: 280),
+            duration: const Duration(milliseconds: 280).by(context),
             curve: Curves.easeOutCubic,
             child: _attachOpen
                 ? _AttachMenu(
@@ -276,7 +277,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 : const SizedBox(width: double.infinity),
           ),
           AnimatedSize(
-            duration: const Duration(milliseconds: 250),
+            duration: const Duration(milliseconds: 250).by(context),
             curve: Curves.easeOutCubic,
             child: _replyTo == null
                 ? const SizedBox(width: double.infinity)
@@ -287,7 +288,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
           AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 300).by(context),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(28),
               boxShadow: _secret
@@ -318,7 +319,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       height: 44,
                       child: AnimatedRotation(
                         turns: _attachOpen ? 0.125 : 0,
-                        duration: const Duration(milliseconds: 300),
+                        duration: const Duration(milliseconds: 300).by(context),
                         curve: Curves.easeOutBack,
                         child: Icon(Icons.add_rounded, color: vc.textDim, size: 28),
                       ),
@@ -326,7 +327,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                   Expanded(
                     child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 220).by(context),
                       child: _recording
                           ? _RecordingRow(seconds: _recSeconds)
                           : TextField(
@@ -367,7 +368,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         width: 40,
                         height: 44,
                         child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 250),
+                          duration: const Duration(milliseconds: 250).by(context),
                           transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
                           child: _secret
                               ? const GradientIcon(
@@ -502,7 +503,7 @@ class _TopBar extends StatelessWidget {
                     ),
                     const SizedBox(height: 1),
                     AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250),
+                      duration: const Duration(milliseconds: 250).by(context),
                       transitionBuilder: (ch, a) => FadeTransition(
                         opacity: a,
                         child: SlideTransition(
@@ -667,7 +668,7 @@ class _TypingBubble extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
-        duration: const Duration(milliseconds: 380),
+        duration: const Duration(milliseconds: 380).by(context),
         curve: Curves.easeOutBack,
         builder: (_, t, c) => Transform.scale(
           scale: t,
@@ -868,7 +869,7 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
     if (!widget.animate) return tile;
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 420),
+      duration: const Duration(milliseconds: 420).by(context),
       curve: Curves.easeOutCubic,
       onEnd: widget.onAnimated,
       builder: (_, t, child) => Opacity(
@@ -1017,7 +1018,7 @@ class _Wobble extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 900).by(context),
       builder: (_, t, c) => Transform.rotate(
         angle: sin(t * pi * 4) * 0.18 * (1 - t),
         child: Transform.scale(scale: 0.6 + 0.4 * Curves.elasticOut.transform(t), child: c),
@@ -1085,7 +1086,7 @@ class _SecretText extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween(end: revealed ? 0 : 1),
-      duration: const Duration(milliseconds: 380),
+      duration: const Duration(milliseconds: 380).by(context),
       curve: Curves.easeOutCubic,
       builder: (_, t, child) => Stack(
         alignment: Alignment.center,
@@ -1174,7 +1175,7 @@ class _VoiceContentState extends State<_VoiceContent> with SingleTickerProviderS
                 gradient: mine ? null : acc.gradient,
               ),
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
+                duration: const Duration(milliseconds: 200).by(context),
                 transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
                 child: Icon(
                   playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
@@ -1254,7 +1255,7 @@ class _ReactionChip extends StatelessWidget {
     return TweenAnimationBuilder<double>(
       key: ValueKey(emoji),
       tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 500),
+      duration: const Duration(milliseconds: 500).by(context),
       curve: Curves.elasticOut,
       builder: (_, s, c) => Transform.scale(scale: s, child: c),
       child: Container(
@@ -1279,7 +1280,7 @@ class _HeartBurst extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 900).by(context),
       builder: (_, t, _) {
         final pop = Curves.elasticOut.transform((t * 1.6).clamp(0, 1));
         final fade = t < 0.6 ? 1.0 : 1 - (t - 0.6) / 0.4;
@@ -1366,7 +1367,7 @@ class _MessageMenu extends StatelessWidget {
           ),
           TweenAnimationBuilder<double>(
             tween: Tween(begin: rect.top, end: top),
-            duration: const Duration(milliseconds: 320),
+            duration: const Duration(milliseconds: 320).by(context),
             curve: Curves.easeOutCubic,
             builder: (_, y, _) => Positioned(
               top: y - _barH - 10,
@@ -1429,7 +1430,7 @@ class _ReactionBar extends StatelessWidget {
             for (final (i, e) in reactionEmojis.indexed)
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: 1),
-                duration: Duration(milliseconds: 380 + i * 50),
+                duration: Duration(milliseconds: 380 + i * 50).by(context),
                 curve: Interval(i * 0.08, 1, curve: Curves.easeOutBack),
                 builder: (_, t, c) => Transform.scale(scale: t, child: c),
                 child: Pressable(
@@ -1502,7 +1503,7 @@ class _ActionsMenu extends StatelessWidget {
 
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0.85, end: 1),
-      duration: const Duration(milliseconds: 280),
+      duration: const Duration(milliseconds: 280).by(context),
       curve: Curves.easeOutBack,
       builder: (_, s, c) => Transform.scale(
         scale: s,
@@ -1573,7 +1574,7 @@ class _SendMicButton extends StatelessWidget {
     final vc = context.vc;
     final active = hasText || recording;
     final button = AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
+      duration: const Duration(milliseconds: 250).by(context),
       curve: Curves.easeOutBack,
       width: 44,
       height: 44,
@@ -1588,7 +1589,7 @@ class _SendMicButton extends StatelessWidget {
             : null,
       ),
       child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 260),
+        duration: const Duration(milliseconds: 260).by(context),
         transitionBuilder: (c, a) => RotationTransition(
           turns: Tween(begin: -0.25, end: 0.0).animate(a),
           child: ScaleTransition(scale: a, child: c),
@@ -1767,7 +1768,7 @@ class _AttachMenu extends StatelessWidget {
             for (final (i, (icon, label, colors)) in _items.indexed)
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: 1),
-                duration: Duration(milliseconds: 350 + i * 60),
+                duration: Duration(milliseconds: 350 + i * 60).by(context),
                 curve: Interval(i * 0.1, 1, curve: Curves.easeOutBack),
                 builder: (_, t, c) => Transform.translate(
                   offset: Offset(0, (1 - t) * 20),

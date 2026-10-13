@@ -9,6 +9,7 @@ import '../theme/palette.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
+import '../widgets/visual.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -55,7 +56,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         animate: true,
         child: SafeArea(
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 600),
+            duration: const Duration(milliseconds: 600).by(context),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             transitionBuilder: (c, a) => FadeTransition(
@@ -145,7 +146,7 @@ class _IntroState extends State<_Intro> {
               ),
               const Spacer(),
               AnimatedOpacity(
-                duration: const Duration(milliseconds: 250),
+                duration: const Duration(milliseconds: 250).by(context),
                 opacity: last ? 0 : 1,
                 child: TextButton(
                   onPressed: last ? null : widget.onDone,
@@ -182,7 +183,7 @@ class _IntroState extends State<_Intro> {
                 children: List.generate(_pages.length, (i) {
                   final active = i == _page;
                   return AnimatedContainer(
-                    duration: const Duration(milliseconds: 350),
+                    duration: const Duration(milliseconds: 350).by(context),
                     curve: Curves.easeOutCubic,
                     margin: const EdgeInsets.symmetric(horizontal: 4),
                     width: active ? 28 : 8,
@@ -437,7 +438,7 @@ class _ProfileSetupState extends State<_ProfileSetup> {
         const SizedBox(height: 32),
         Center(
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 450),
+            duration: const Duration(milliseconds: 450).by(context),
             transitionBuilder: (c, a) => RotationTransition(
               turns: Tween(
                 begin: -0.15,
@@ -499,7 +500,7 @@ class _ProfileSetupState extends State<_ProfileSetup> {
               return Pressable(
                 onTap: () => widget.onChanged(widget.name, widget.emoji, i),
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
+                  duration: const Duration(milliseconds: 250).by(context),
                   width: 44,
                   height: 44,
                   padding: EdgeInsets.all(sel ? 3 : 0),
@@ -531,14 +532,14 @@ class _ProfileSetupState extends State<_ProfileSetup> {
               Pressable(
                 onTap: () => widget.onChanged(widget.name, e, widget.gradient),
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
+                  duration: const Duration(milliseconds: 200).by(context),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: e == widget.emoji ? vc.text.withValues(alpha: 0.12) : Colors.transparent,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: AnimatedScale(
-                    duration: const Duration(milliseconds: 250),
+                    duration: const Duration(milliseconds: 250).by(context),
                     curve: Curves.easeOutBack,
                     scale: e == widget.emoji ? 1.2 : 1,
                     child: Text(e, style: const TextStyle(fontSize: 22)),
@@ -651,7 +652,7 @@ class _KeyGenState extends State<_KeyGen> with SingleTickerProviderStateMixin {
                   ),
                 ),
                 AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 500),
+                  duration: const Duration(milliseconds: 500).by(context),
                   transitionBuilder: (c, a) => ScaleTransition(
                     scale: CurvedAnimation(parent: a, curve: Curves.elasticOut),
                     child: c,
@@ -694,7 +695,7 @@ class _KeyGenState extends State<_KeyGen> with SingleTickerProviderStateMixin {
           const SizedBox(height: 32),
           for (var i = 0; i < _steps.length; i++)
             AnimatedOpacity(
-              duration: const Duration(milliseconds: 300),
+              duration: const Duration(milliseconds: 300).by(context),
               opacity: i <= _done ? 1 : 0.25,
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -704,7 +705,7 @@ class _KeyGenState extends State<_KeyGen> with SingleTickerProviderStateMixin {
                       width: 22,
                       height: 22,
                       child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
+                        duration: const Duration(milliseconds: 300).by(context),
                         transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
                         child: i < _done
                             ? GradientIcon(
@@ -730,11 +731,11 @@ class _KeyGenState extends State<_KeyGen> with SingleTickerProviderStateMixin {
             ),
           const Spacer(),
           AnimatedSlide(
-            duration: const Duration(milliseconds: 500),
+            duration: const Duration(milliseconds: 500).by(context),
             curve: Curves.easeOutBack,
             offset: finished ? Offset.zero : const Offset(0, 1.5),
             child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 400),
+              duration: const Duration(milliseconds: 400).by(context),
               opacity: finished ? 1 : 0,
               child: AccentButton(
                 label: 'Войти в Veil',

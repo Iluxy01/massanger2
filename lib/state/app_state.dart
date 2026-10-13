@@ -62,6 +62,12 @@ class AppState extends ChangeNotifier {
   /// Показывать всплывающее окошко о новом сообщении, когда приложение открыто.
   bool inAppBanner = true;
 
+  /// Уровень оформления (0 минимум · 1 баланс · 2 максимум), см. widgets/visual.dart.
+  int look = 1;
+
+  /// Уровень анимаций (0 выкл · 1 быстрые · 2 обычные · 3 плавные).
+  int motion = 2;
+
   /// Меняется только при смене темы/акцента — от него перестраивается всё
   /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
   final themeTick = ValueNotifier<int>(0);
@@ -216,9 +222,14 @@ class AppState extends ChangeNotifier {
     'secure': screenshotProtection,
     'notifText': notificationText,
     'banner': inAppBanner,
+    'look': look,
+    'motion': motion,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
   };
+
+  @visibleForTesting
+  Map<String, dynamic> get settingsForTest => _settings;
 
   void applySettings(Map<String, dynamic> s) {
     accentIndex = ((s['accent'] as num?)?.toInt() ?? 0).clamp(0, accents.length - 1);
@@ -229,6 +240,8 @@ class AppState extends ChangeNotifier {
     screenshotProtection = s['secure'] as bool? ?? true;
     notificationText = s['notifText'] as bool? ?? true;
     inAppBanner = s['banner'] as bool? ?? true;
+    look = ((s['look'] as num?)?.toInt() ?? 1).clamp(0, 2);
+    motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     themeTick.value++;
     pinned
       ..clear()
@@ -252,6 +265,18 @@ class AppState extends ChangeNotifier {
 
   void setDark(bool v) {
     dark = v;
+    themeTick.value++;
+    _saveSettings();
+  }
+
+  void setLook(int v) {
+    look = v;
+    themeTick.value++;
+    _saveSettings();
+  }
+
+  void setMotion(int v) {
+    motion = v;
     themeTick.value++;
     _saveSettings();
   }

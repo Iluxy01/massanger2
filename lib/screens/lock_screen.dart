@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../widgets/effects.dart';
+import '../widgets/visual.dart';
 
 /// PIN-код: разблокировка приложения или установка нового кода.
 class LockScreen extends StatefulWidget {
@@ -120,13 +121,13 @@ class _LockScreenState extends State<LockScreen> {
               const Spacer(flex: 2),
               AnimatedScale(
                 scale: _success ? 1.15 : 1,
-                duration: const Duration(milliseconds: 300),
+                duration: const Duration(milliseconds: 300).by(context),
                 curve: Curves.easeOutBack,
                 child: VeilLogo(size: 64, glow: _success),
               ),
               const SizedBox(height: 24),
               AnimatedSwitcher(
-                duration: const Duration(milliseconds: 250),
+                duration: const Duration(milliseconds: 250).by(context),
                 child: Text(
                   _error ? (widget.setup ? 'Не совпадает, ещё раз' : 'Неверный PIN') : _title,
                   key: ValueKey('$_title$_error'),
@@ -150,7 +151,7 @@ class _LockScreenState extends State<LockScreen> {
                   children: List.generate(_len, (i) {
                     final filled = i < _input.length || _success;
                     return AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 220).by(context),
                       curve: Curves.easeOutBack,
                       margin: const EdgeInsets.symmetric(horizontal: 10),
                       width: filled ? 18 : 14,

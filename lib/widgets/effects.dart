@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
+import 'visual.dart';
 
 /// Северное сияние на фоне.
 ///
@@ -22,16 +23,33 @@ class AuroraBackground extends StatefulWidget {
   State<AuroraBackground> createState() => _AuroraBackgroundState();
 }
 
-class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerProviderStateMixin {
+class _AuroraBackgroundState extends State<AuroraBackground> with TickerProviderStateMixin {
   AnimationController? _c;
 
   static const _still = AlwaysStoppedAnimation<double>(0.18);
 
   @override
-  void initState() {
-    super.initState();
-    if (widget.animate) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(AuroraBackground old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  /// Движется ли сияние: на приветствии — всегда; на «Максимуме» — везде;
+  /// с выключенными анимациями — нигде.
+  void _sync() {
+    final v = context.visual;
+    final live = v.motion > 0 && v.look > 0 && (widget.animate || v.look == 2);
+    if (live && _c == null) {
       _c = AnimationController(vsync: this, duration: const Duration(seconds: 24))..repeat();
+    } else if (!live && _c != null) {
+      _c!.dispose();
+      _c = null;
     }
   }
 
@@ -45,6 +63,7 @@ class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerPr
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
+    final look = context.visual.look;
     final bg = RepaintBoundary(
       child: CustomPaint(
         size: Size.infinite,
@@ -52,7 +71,8 @@ class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerPr
           _c ?? _still,
           bg: vc.bg,
           colors: [acc.a, acc.b, Color.lerp(acc.a, const Color(0xFFFF4F8B), 0.5)!],
-          intensity: widget.intensity * (vc.dark ? 1 : 0.6),
+          // «Минимум» — чистый фон без сияния.
+          intensity: look == 0 ? 0 : widget.intensity * (vc.dark ? 1 : 0.6),
         ),
       ),
     );
@@ -80,6 +100,7 @@ class _AuroraPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = bg);
+    if (intensity <= 0) return;
     final t = anim.value * 2 * pi;
     const speeds = [1.0, 2.0, 1.0];
     const phases = [0.0, 2.1, 4.2];
@@ -134,10 +155,24 @@ class Glass extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     final r = BorderRadius.circular(radius);
+    // «Минимум» — без размытия вовсе, «Максимум» — матовое стекло везде.
+    final blur = switch (context.visual.look) {
+      0 => 0.0,
+      2 => this.blur > 0 ? this.blur : 14.0,
+      _ => this.blur,
+    };
     final box = Container(
       padding: padding,
       decoration: BoxDecoration(
-        color: color ?? (blur > 0 ? vc.glass : vc.panel),
+        // Панель, которая должна была размываться, на «Минимуме» почти
+        // непрозрачная — чтобы текст под ней не просвечивал.
+        color:
+            color ??
+            (blur > 0
+                ? vc.glass
+                : this.blur > 0
+                ? Color.alphaBlend(vc.panel, vc.bg)
+                : vc.panel),
         borderRadius: r,
         border: border ? Border.all(color: vc.border) : null,
       ),
@@ -205,7 +240,7 @@ class _PressableState extends State<Pressable> {
             },
       child: AnimatedScale(
         scale: _down ? widget.scale : 1,
-        duration: const Duration(milliseconds: 140),
+        duration: const Duration(milliseconds: 140).by(context),
         curve: Curves.easeOutCubic,
         child: widget.child,
       ),
@@ -263,7 +298,7 @@ class AccentButton extends StatelessWidget {
     return Pressable(
       onTap: onTap,
       child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 200),
+        duration: const Duration(milliseconds: 200).by(context),
         opacity: enabled ? 1 : 0.4,
         child: Container(
           height: 56,
@@ -422,7 +457,7 @@ class VeilSwitch extends StatelessWidget {
       scale: 0.9,
       onTap: () => onChanged(!value),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 260),
+        duration: const Duration(milliseconds: 260).by(context),
         curve: Curves.easeOutCubic,
         width: 50,
         height: 30,
@@ -434,7 +469,7 @@ class VeilSwitch extends StatelessWidget {
           border: Border.all(color: value ? Colors.transparent : vc.border),
         ),
         child: AnimatedAlign(
-          duration: const Duration(milliseconds: 320),
+          duration: const Duration(milliseconds: 320).by(context),
           curve: Curves.easeOutBack,
           alignment: value ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
@@ -465,7 +500,7 @@ class Reveal extends StatelessWidget {
     final delay = (index * 0.06).clamp(0.0, 0.6);
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 500 + (delay * 1000).round()),
+      duration: Duration(milliseconds: 500 + (delay * 1000).round()).by(context),
       curve: Interval(delay / (0.5 + delay), 1, curve: Curves.easeOutCubic),
       builder: (_, t, child) => Opacity(
         opacity: t,
@@ -488,7 +523,7 @@ class Shake extends StatelessWidget {
     return TweenAnimationBuilder<double>(
       key: ValueKey(trigger),
       tween: Tween(begin: trigger == 0 ? 1 : 0, end: 1),
-      duration: const Duration(milliseconds: 500),
+      duration: const Duration(milliseconds: 500).by(context),
       builder: (_, t, child) =>
           Transform.translate(offset: Offset(sin(t * pi * 6) * 14 * (1 - t), 0), child: child),
       child: child,

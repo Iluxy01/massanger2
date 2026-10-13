@@ -12,6 +12,7 @@ import '../state/app_state.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'chat_screen.dart';
+import '../widgets/visual.dart';
 
 /// Добавление друга без номера телефона: обмен QR-кодами при встрече.
 class AddFriendScreen extends StatefulWidget {
@@ -81,7 +82,7 @@ class _AddFriendScreenState extends State<AddFriendScreen> {
               ),
               Expanded(
                 child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 400),
+                  duration: const Duration(milliseconds: 400).by(context),
                   switchInCurve: Curves.easeOutCubic,
                   transitionBuilder: (c, a) => FadeTransition(
                     opacity: a,
@@ -124,7 +125,7 @@ class _SegmentSwitch extends StatelessWidget {
         child: Stack(
           children: [
             AnimatedAlign(
-              duration: const Duration(milliseconds: 350),
+              duration: const Duration(milliseconds: 350).by(context),
               curve: Curves.easeOutBack,
               alignment: index == 0 ? Alignment.centerLeft : Alignment.centerRight,
               child: FractionallySizedBox(
@@ -150,7 +151,7 @@ class _SegmentSwitch extends StatelessWidget {
                       },
                       child: Center(
                         child: AnimatedDefaultTextStyle(
-                          duration: const Duration(milliseconds: 250),
+                          duration: const Duration(milliseconds: 250).by(context),
                           style: TextStyle(
                             color: i == index ? acc.onAccent : vc.textDim,
                             fontWeight: FontWeight.w700,
@@ -487,7 +488,7 @@ class _Success extends StatelessWidget {
               const Spacer(),
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: 1),
-                duration: const Duration(milliseconds: 900),
+                duration: const Duration(milliseconds: 900).by(context),
                 curve: Curves.elasticOut,
                 builder: (_, s, c) => Transform.scale(scale: s, child: c),
                 child: Avatar.contact(contact, size: 130),

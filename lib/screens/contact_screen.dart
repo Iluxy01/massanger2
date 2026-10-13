@@ -7,6 +7,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'chat_screen.dart';
+import '../widgets/visual.dart';
 
 /// Профиль друга: код безопасности, исчезающие сообщения, блокировка.
 class ContactScreen extends StatelessWidget {
@@ -126,7 +127,7 @@ class ContactScreen extends StatelessWidget {
                       ),
                       const Spacer(),
                       AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
+                        duration: const Duration(milliseconds: 300).by(context),
                         transitionBuilder: (ch, a) => ScaleTransition(scale: a, child: ch),
                         child: c.verified
                             ? Container(
@@ -371,7 +372,7 @@ class _Segmented extends StatelessWidget {
           Pressable(
             onTap: () => onChanged(values[i]),
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
+              duration: const Duration(milliseconds: 250).by(context),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
                 gradient: values[i] == selected ? acc.gradient : null,
