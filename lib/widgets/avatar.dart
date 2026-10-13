@@ -181,17 +181,24 @@ class StatusTicks extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final base = color ?? context.vc.textFaint;
+    // На своём градиентном пузыре: «доставлено» — полупрозрачные галочки,
+    // «прочитано» — яркие белые в кружке. В списке чатов — цвет акцента.
+    final onBubble = color != null;
+    final base = onBubble ? Colors.white.withValues(alpha: 0.5) : context.vc.textFaint;
     final readColor = context.accent.b;
     final Widget icon = switch (status) {
       MsgStatus.sending => _SpinningClock(size: size - 2, color: base),
       MsgStatus.sent => Icon(Icons.done_rounded, size: size, color: base),
       MsgStatus.delivered => Icon(Icons.done_all_rounded, size: size, color: base),
-      MsgStatus.read => Icon(
-        Icons.done_all_rounded,
-        size: size,
-        color: color != null ? Colors.white : readColor,
+      MsgStatus.read when onBubble => Container(
+        padding: const EdgeInsets.all(1.5),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.28),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(Icons.done_all_rounded, size: size - 3, color: Colors.white),
       ),
+      MsgStatus.read => Icon(Icons.done_all_rounded, size: size, color: readColor),
     };
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 280),

@@ -138,6 +138,15 @@ class AppState extends ChangeNotifier {
 
   Future<void> setRelays(List<String> urls) async => live?.setRelays(urls);
 
+  /// url → (принял, вернул). В демо — всё хорошо.
+  Future<Map<String, (bool, bool)>> diagnose() async {
+    if (live == null) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      return {for (final u in relays) u: (true, true)};
+    }
+    return live!.diagnose();
+  }
+
   /// Ссылка-приглашение (её же содержит QR-код).
   String get inviteLink {
     final l = live;
@@ -283,7 +292,11 @@ class AppState extends ChangeNotifier {
   void setForeground(bool v) {
     if (foreground == v) return;
     foreground = v;
-    if (v) live?.resumed();
+    if (v) {
+      live?.resumed();
+    } else {
+      live?.paused();
+    }
   }
 
   // ───────────────────────── Чаты ─────────────────────────
@@ -420,11 +433,19 @@ class AppState extends ChangeNotifier {
     MsgKind kind = MsgKind.text,
     int voiceSeconds = 0,
   }) {
+    // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
+    // (в базе время хранится с точностью до миллисекунды).
+    var ms = DateTime.now().millisecondsSinceEpoch;
+    final last = lastMessage(chatId);
+    if (last != null && ms <= last.time.millisecondsSinceEpoch) {
+      ms = last.time.millisecondsSinceEpoch + 1;
+    }
+    final time = DateTime.fromMillisecondsSinceEpoch(ms);
     final m = Message(
       id: randomHex(16).toLowerCase(),
       mine: true,
       text: text,
-      time: DateTime.now(),
+      time: time,
       status: MsgStatus.sending,
       replyTo: replyTo,
       secret: secret,

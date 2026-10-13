@@ -59,24 +59,13 @@ jobs:
       - name: Переименовать APK
         run: cp build/app/outputs/flutter-apk/app-release.apk veil.apk
 
-      # Вторая копия («Veil Тест») — ставится рядом с основной, чтобы
-      # проверить переписку на одном телефоне.
-      - name: Собрать «Veil Тест»
-        run: |
-          VEIL_TEST=1 flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk veil-test.apk
-
       - uses: actions/upload-artifact@v4
         with:
           name: veil-apk
-          path: |
-            veil.apk
-            veil-test.apk
+          path: veil.apk
 
       - name: Релиз (только для тегов v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            veil.apk
-            veil-test.apk
+          files: veil.apk

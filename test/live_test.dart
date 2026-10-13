@@ -170,6 +170,33 @@ void main() {
     await bobLive.close();
   });
 
+  test('статус «в сети»: появляется сразу и пропадает при сворачивании', () async {
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount > 0 && bobLive.pool!.onlineCount > 0);
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    await until(() => bob.contact(aliceLive.keys!.pub) != null, what: 'hello');
+    bob.acceptRequest(aliceLive.keys!.pub);
+    final bobAtAlice = c;
+    final aliceAtBob = bob.contact(aliceLive.keys!.pub)!;
+
+    // Боб пишет — Алиса видит его «в сети».
+    bob.send(aliceAtBob.id, 'тут?');
+    await until(() => bobAtAlice.online, what: 'в сети');
+
+    // Боб свернул приложение — у Алисы сразу «не в сети» и время последнего визита.
+    bob.setForeground(false);
+    await until(() => !bobAtAlice.online, what: 'не в сети');
+    expect(bobAtAlice.lastSeen, isNotNull);
+
+    // Вернулся — снова в сети (пинг при возвращении).
+    bob.setForeground(true);
+    await until(() => bobAtAlice.online, what: 'снова в сети');
+
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('PIN хранится как хэш', () async {
     final secrets = MemorySecrets();
     final (app, live) = await phone('Пин', secrets: secrets);

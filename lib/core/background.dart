@@ -20,10 +20,12 @@ void backgroundDispatcher() {
     final app = AppState()..foreground = false;
     Live? live;
     try {
-      live = await Live.boot(app, network: false);
+      // Отдельное соединение с базой: закрыв его, мы не закроем базу приложению.
+      live = await Live.bootBackground(app);
+      if (live == null || live.keys == null) return true;
       // Если приложение сейчас открыто — оно само всё получает.
       final fg = int.tryParse(await live.store.get('fg') ?? '') ?? 0;
-      if (nowSec() - fg < 60 || live.keys == null) return true;
+      if (nowSec() - fg < 60) return true;
       live.notify = SystemNotify(() => app.notificationText);
       await live.syncOnce();
       return true;

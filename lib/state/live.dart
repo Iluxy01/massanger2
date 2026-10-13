@@ -48,6 +48,17 @@ class Live {
   int _lastSinceSave = 0;
   bool _closed = false;
 
+  /// Для фоновой проверки: отдельное соединение с базой, ничего не создаём.
+  static Future<Live?> bootBackground(AppState app) async {
+    final s = DeviceSecrets();
+    final store = await Store.open(s, shared: false, createKey: false);
+    if (store == null) return null;
+    final live = Live._(app, store, s, null);
+    app.live = live;
+    await live._load(network: false);
+    return live;
+  }
+
   static Future<Live> boot(
     AppState app, {
     SecretBox? secrets,
@@ -58,7 +69,7 @@ class Live {
   }) async {
     final s = secrets ?? DeviceSecrets();
     final store = await Store.open(s, factory: dbFactory, path: dbPath);
-    final live = Live._(app, store, s, connector);
+    final live = Live._(app, store!, s, connector);
     app.live = live;
     await live._load(network: network);
     return live;
@@ -83,6 +94,13 @@ class Live {
       if (network) startNetwork();
     }
     _expiry = Timer.periodic(const Duration(seconds: 30), (_) => _expire());
+    // Отметка «приложение открыто» — фоновая проверка в это время не работает.
+    if (app.foreground) {
+      await store.set('fg', '${nowSec()}');
+      _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
+        if (app.foreground) store.set('fg', '${nowSec()}');
+      });
+    }
     app.ready = true;
     app.notifyChanged();
   }
@@ -162,10 +180,7 @@ class Live {
     });
     _subscribe();
     p.start();
-    _presence = Timer.periodic(const Duration(seconds: 60), (_) => _ping());
-    _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (app.foreground) store.set('fg', '${nowSec()}');
-    });
+    _presence = Timer.periodic(const Duration(seconds: 45), (_) => _ping());
     Future<void>.delayed(const Duration(seconds: 3), _ping);
   }
 
@@ -195,9 +210,22 @@ class Live {
 
   /// Приложение вернулось на экран.
   Future<void> resumed() async {
+    await store.set('fg', '${nowSec()}');
     await reload();
     pool?.wake();
     _ping();
+    // Чат был открыт, пока приложение было свёрнуто — теперь его видно.
+    final open = app.openChat;
+    if (open != null && !app.locked) {
+      await markRead(open, sendReceipt: app.readReceipts);
+      app.notifyChanged();
+    }
+  }
+
+  /// Приложение свернули — сразу сообщаем друзьям «не в сети».
+  void paused() {
+    store.set('fg', '0');
+    _ping(online: false);
   }
 
   /// Фоновая проверка: подключиться, забрать накопившееся, выйти.
@@ -273,7 +301,14 @@ class Live {
         ..bio = card.bio;
       await saveContact(c);
     }
-    _seenOnline(c);
+    // «В сети» — только по живым сигналам, а не по отчётам из фоновой проверки
+    // или старым сообщениям, пролежавшим на ретрансляторе.
+    final fresh = DateTime.now().difference(sentAt).inSeconds.abs() < 120;
+    if (p.type == Payload.ping) {
+      p.data['on'] == false ? _seenOffline(c) : _seenOnline(c);
+    } else if (fresh && (p.type == Payload.typing || p.type == Payload.msg)) {
+      _seenOnline(c);
+    }
 
     switch (p.type) {
       case Payload.msg:
@@ -355,10 +390,15 @@ class Live {
     c.online = true;
     c.lastSeen = DateTime.now();
     _onlineTimers[c.id]?.cancel();
-    _onlineTimers[c.id] = Timer(const Duration(seconds: 150), () {
-      c.online = false;
-      app.notifyChanged();
-    });
+    // Пинг идёт раз в 45 с; два пропущенных подряд — уже не в сети.
+    _onlineTimers[c.id] = Timer(const Duration(seconds: 100), () => _seenOffline(c));
+  }
+
+  void _seenOffline(Contact c) {
+    _onlineTimers[c.id]?.cancel();
+    if (c.online) c.lastSeen = DateTime.now();
+    c.online = false;
+    app.notifyChanged();
   }
 
   /// Служебное сообщение (отчёт, реакция, «печатает»). Не хранится в outbox.
@@ -375,10 +415,12 @@ class Live {
     pl.publish(wrap, queue: !ephemeral);
   }
 
-  void _ping() {
-    if (!app.foreground) return;
+  void _ping({bool online = true}) {
+    if (online && !app.foreground) return;
     for (final c in app.contacts) {
-      if (!c.blocked && !c.request) _control(c.id, Payload(Payload.ping), ephemeral: true);
+      if (!c.blocked && !c.request) {
+        _control(c.id, Payload(Payload.ping, {'on': online}), ephemeral: true);
+      }
     }
   }
 
@@ -428,6 +470,30 @@ class Live {
     } finally {
       _flushing = false;
     }
+  }
+
+  /// Проверка связи: письмо самому себе через каждый ретранслятор.
+  /// Возвращает url → (принял, вернул).
+  Future<Map<String, (bool, bool)>> diagnose() async {
+    final k = keys, pl = pool;
+    if (k == null || pl == null) return {};
+    pl.wake();
+    final wrap = GiftWrap.wrap(
+      sender: k,
+      recipientPub: k.pub,
+      content: Payload('diag').encode(),
+      ttl: const Duration(hours: 1),
+    );
+    await store.markSeen(wrap.id); // не обрабатывать как сообщение
+    unawaited(pl.publish(wrap));
+    for (var i = 0; i < 40; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      if (pl.deliveredBy(wrap.id).length == relays.length) break;
+    }
+    return {
+      for (final url in relays)
+        url: (pl.acceptedBy(wrap.id).contains(url), pl.deliveredBy(wrap.id).contains(url)),
+    };
   }
 
   void typing(String chat) {

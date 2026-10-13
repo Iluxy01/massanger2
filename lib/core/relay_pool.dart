@@ -52,6 +52,8 @@ class RelayPool {
   final _changes = StreamController<void>.broadcast();
   final Map<String, Completer<bool>> _pendingOk = {};
   final Map<String, int> _okCount = {};
+  final Map<String, Set<String>> _okBy = {};
+  final Map<String, Set<String>> _sources = {};
   bool _closed = false;
   bool _started = false;
 
@@ -194,6 +196,8 @@ class RelayPool {
         case 'EVENT':
           if (m.length < 3 || m[1] != subId) return;
           final e = Event.fromJson(m[2] as Map<String, dynamic>);
+          (_sources[e.id] ??= {}).add(r.url);
+          if (_sources.length > 2000) _sources.remove(_sources.keys.first);
           if (_seen.add(e.id) && !_events.isClosed) {
             if (_seen.length > 5000) _seen.remove(_seen.first);
             _events.add(e);
@@ -204,7 +208,14 @@ class RelayPool {
         case 'OK':
           final id = m[1] as String;
           final ok = m[2] == true;
-          if (ok) _okCount[id] = (_okCount[id] ?? 0) + 1;
+          if (ok) {
+            _okCount[id] = (_okCount[id] ?? 0) + 1;
+            (_okBy[id] ??= {}).add(r.url);
+            if (_okBy.length > 2000) _okBy.remove(_okBy.keys.first);
+          } else {
+            r.error = m.length > 3 ? 'отклонил: ${m[3]}' : 'отклонил событие';
+            _notify();
+          }
           final c = _pendingOk[id];
           if (ok && c != null && !c.isCompleted) {
             c.complete(true);
@@ -221,6 +232,10 @@ class RelayPool {
   void _notify() {
     if (!_changes.isClosed) _changes.add(null);
   }
+
+  /// Какие ретрансляторы приняли событие (OK) и какие прислали его обратно.
+  Set<String> acceptedBy(String id) => _okBy[id] ?? {};
+  Set<String> deliveredBy(String id) => _sources[id] ?? {};
 
   /// Сколько ретрансляторов подтвердили событие.
   int acks(String id) => _okCount[id] ?? 0;

@@ -850,6 +850,12 @@ class _NetworkCard extends StatelessWidget {
                   ),
               ],
             ),
+          const SizedBox(height: 8),
+          AccentButton(
+            label: 'Проверить связь',
+            icon: Icons.network_check_rounded,
+            onTap: () => _diagnose(context),
+          ),
           Row(
             children: [
               TextButton.icon(
@@ -865,6 +871,74 @@ class _NetworkCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  void _diagnose(BuildContext context) {
+    final app = context.appRead;
+    final vc = app.colors;
+    final future = app.diagnose();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: vc.elevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text('Проверка связи', style: TextStyle(color: vc.text)),
+        content: FutureBuilder<Map<String, (bool, bool)>>(
+          future: future,
+          builder: (_, snap) {
+            if (!snap.hasData) {
+              return Row(
+                children: [
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Отправляю зашифрованное письмо самому себе через каждый ретранслятор…',
+                      style: TextStyle(color: vc.textDim),
+                    ),
+                  ),
+                ],
+              );
+            }
+            final r = snap.data!;
+            final good = r.values.where((v) => v.$1 && v.$2).length;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  good > 0
+                      ? 'Работает $good из ${r.length}. Сообщения ходят ✅'
+                      : 'Ни один ретранслятор не доставил письмо ❌',
+                  style: TextStyle(color: vc.text, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                for (final e in r.entries)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Text(
+                      '${e.value.$1 && e.value.$2
+                          ? '✅'
+                          : e.value.$1
+                          ? '⚠️'
+                          : '❌'}  '
+                      '${e.key.replaceFirst('wss://', '')}'
+                      '${e.value.$1 && !e.value.$2 ? ' — принял, но не вернул' : ''}'
+                      '${!e.value.$1 ? ' — нет ответа${app.relayError(e.key) != null ? ' (${app.relayError(e.key)})' : ''}' : ''}',
+                      style: TextStyle(color: vc.textDim, fontSize: 13),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Готово'))],
       ),
     );
   }
