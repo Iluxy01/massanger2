@@ -7,8 +7,10 @@ import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
 
-/// Аватар-эмодзи на градиенте. Опционально — вращающееся «сторис»-кольцо
-/// и пульсирующая точка «в сети».
+/// Аватар-эмодзи на градиенте. Опционально — градиентное кольцо и точка «в сети».
+///
+/// Постоянных анимаций нет: они заставляли перерисовывать экран каждый кадр
+/// (нагрев). Точка «в сети» один раз мягко «пульсирует» при появлении.
 class Avatar extends StatelessWidget {
   const Avatar({
     super.key,
@@ -52,7 +54,12 @@ class Avatar extends StatelessWidget {
           end: Alignment.bottomRight,
         ),
       ),
-      child: Text(emoji, style: TextStyle(fontSize: size * 0.48, height: 1.15)),
+      // Свой DefaultTextStyle: во время перелёта (Hero) над аватаркой нет Material,
+      // и без этого эмодзи рисовалось с отладочным жёлтым двойным подчёркиванием.
+      child: DefaultTextStyle(
+        style: const TextStyle(decoration: TextDecoration.none, color: Colors.white),
+        child: Text(emoji, style: TextStyle(fontSize: size * 0.48, height: 1.15)),
+      ),
     );
 
     final dot = size * 0.26;
@@ -77,163 +84,107 @@ class Avatar extends StatelessWidget {
   }
 }
 
-class _StoryRing extends StatefulWidget {
+class _StoryRing extends StatelessWidget {
   const _StoryRing({required this.colors});
   final List<Color> colors;
 
   @override
-  State<_StoryRing> createState() => _StoryRingState();
-}
-
-class _StoryRingState extends State<_StoryRing> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final acc = context.accent;
-    final vc = context.vc;
-    return AnimatedBuilder(
-      animation: _c,
-      builder: (_, _) => Container(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: SweepGradient(
-            colors: [acc.a, acc.b, widget.colors.last, acc.a],
-            transform: GradientRotation(_c.value * 2 * pi),
-          ),
-        ),
-        padding: const EdgeInsets.all(2),
-        child: Container(
-          decoration: BoxDecoration(shape: BoxShape.circle, color: vc.bg),
-        ),
+    return Container(
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: SweepGradient(colors: [acc.a, acc.b, colors.last, acc.a]),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Container(
+        decoration: BoxDecoration(shape: BoxShape.circle, color: context.vc.bg),
       ),
     );
   }
 }
 
-class _OnlineDot extends StatefulWidget {
+class _OnlineDot extends StatelessWidget {
   const _OnlineDot({required this.size});
   final double size;
 
   @override
-  State<_OnlineDot> createState() => _OnlineDotState();
-}
-
-class _OnlineDotState extends State<_OnlineDot> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))
-    ..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final s = widget.size;
+    final s = size;
+    final dot = Container(
+      width: s,
+      height: s,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: VeilColors.success,
+        border: Border.all(color: context.vc.bg, width: s * 0.18),
+      ),
+    );
+    // Одна мягкая волна при появлении — и всё, дальше точка статична.
     return SizedBox(
       width: s,
       height: s,
-      child: Stack(
-        clipBehavior: Clip.none,
-        alignment: Alignment.center,
-        children: [
-          AnimatedBuilder(
-            animation: _c,
-            builder: (_, _) => Container(
-              width: s * (1 + _c.value * 0.9),
-              height: s * (1 + _c.value * 0.9),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: VeilColors.success.withValues(alpha: 0.45 * (1 - _c.value)),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 900),
+        curve: Curves.easeOut,
+        builder: (_, t, child) => Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            if (t < 1)
+              Container(
+                width: s * (1 + t * 0.9),
+                height: s * (1 + t * 0.9),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: VeilColors.success.withValues(alpha: 0.45 * (1 - t)),
+                ),
               ),
-            ),
-          ),
-          Container(
-            width: s,
-            height: s,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: VeilColors.success,
-              border: Border.all(color: context.vc.bg, width: s * 0.18),
-            ),
-          ),
-        ],
+            child!,
+          ],
+        ),
+        child: dot,
       ),
     );
   }
 }
 
-/// Галочки статуса: часики → ✓ → ✓✓ → ✓✓ в цвете акцента.
+/// Галочки статуса (как в Telegram):
+///   ⏱ отправляется · ✓ бледная — у ретрансляторов · ✓ яркая — доставлено другу
+///   · ✓✓ — прочитано.
 class StatusTicks extends StatelessWidget {
   const StatusTicks({super.key, required this.status, this.color, this.size = 15});
 
   final MsgStatus status;
+
+  /// Цвет на своём градиентном пузыре; null — в списке чатов.
   final Color? color;
   final double size;
 
   @override
   Widget build(BuildContext context) {
-    // На своём градиентном пузыре: «доставлено» — полупрозрачные галочки,
-    // «прочитано» — яркие белые в кружке. В списке чатов — цвет акцента.
     final onBubble = color != null;
-    final base = onBubble ? Colors.white.withValues(alpha: 0.5) : context.vc.textFaint;
-    final readColor = context.accent.b;
+    final vc = context.vc;
+    final dim = onBubble ? Colors.white.withValues(alpha: 0.55) : vc.textFaint;
+    final bright = onBubble ? Colors.white : vc.textDim;
+    final read = onBubble ? Colors.white : context.accent.b;
     final Widget icon = switch (status) {
-      MsgStatus.sending => _SpinningClock(size: size - 2, color: base),
-      MsgStatus.sent => Icon(Icons.done_rounded, size: size, color: base),
-      MsgStatus.delivered => Icon(Icons.done_all_rounded, size: size, color: base),
-      MsgStatus.read when onBubble => Container(
-        padding: const EdgeInsets.all(1.5),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.28),
-          shape: BoxShape.circle,
-        ),
-        child: Icon(Icons.done_all_rounded, size: size - 3, color: Colors.white),
-      ),
-      MsgStatus.read => Icon(Icons.done_all_rounded, size: size, color: readColor),
+      MsgStatus.sending => Icon(Icons.schedule_rounded, size: size - 2, color: dim),
+      MsgStatus.sent => Icon(Icons.done_rounded, size: size, color: dim),
+      MsgStatus.delivered => Icon(Icons.done_rounded, size: size, color: bright),
+      MsgStatus.read => Icon(Icons.done_all_rounded, size: size, color: read),
     };
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 280),
+      duration: const Duration(milliseconds: 260),
+      switchInCurve: Curves.easeOutBack,
       transitionBuilder: (child, a) => ScaleTransition(
-        scale: CurvedAnimation(parent: a, curve: Curves.easeOutBack),
+        scale: a,
         child: FadeTransition(opacity: a, child: child),
       ),
       child: KeyedSubtree(key: ValueKey(status), child: icon),
     );
   }
-}
-
-class _SpinningClock extends StatefulWidget {
-  const _SpinningClock({required this.size, required this.color});
-  final double size;
-  final Color color;
-
-  @override
-  State<_SpinningClock> createState() => _SpinningClockState();
-}
-
-class _SpinningClockState extends State<_SpinningClock> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => RotationTransition(
-    turns: _c,
-    child: Icon(Icons.schedule_rounded, size: widget.size, color: widget.color),
-  );
 }
 
 /// Визуальный отпечаток ключа (симметричный «идентикон»).

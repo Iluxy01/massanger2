@@ -9,6 +9,10 @@ class FakeRelay {
   final Map<WebSocket, Map<String, List<Map<String, dynamic>>>> _subs = {};
   int published = 0;
 
+  /// «Замёрз»: соединение открыто, но ни на что не отвечает (как при тихом
+  /// обрыве в мобильной сети).
+  bool frozen = false;
+
   int get port => _server.port;
 
   Future<void> start() => startOn(0);
@@ -50,6 +54,7 @@ class FakeRelay {
   }
 
   void _on(WebSocket ws, String raw) {
+    if (frozen) return;
     try {
       _handle(ws, raw);
     } catch (_) {

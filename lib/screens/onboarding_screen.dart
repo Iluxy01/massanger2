@@ -52,6 +52,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Scaffold(
       resizeToAvoidBottomInset: true,
       body: AuroraBackground(
+        animate: true,
         child: SafeArea(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 600),

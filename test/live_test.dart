@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:veil/core/nostr.dart';
 import 'package:veil/core/protocol.dart';
+import 'package:veil/core/relay_pool.dart';
 import 'package:veil/core/store.dart';
 import 'package:veil/models/models.dart';
 import 'package:veil/state/app_state.dart';
@@ -118,8 +120,8 @@ void main() {
     // Подтверждённые сообщения уходят из очереди переотправки.
     await until(() => sent.status == MsgStatus.read);
     expect(
-      (await aliceLive.store.outbox()).where((r) => r['msg'] == sent.id),
-      isEmpty,
+      (await aliceLive.store.outboxIds()).contains(sent.id),
+      isFalse,
       reason: 'после «доставлено» не переотправляем',
     );
 
@@ -225,6 +227,78 @@ void main() {
     expect(bob.messagesOf(aliceLive.keys!.pub).map((m) => m.text), ['два']);
     await aliceLive.close();
     await bobLive.close();
+  });
+
+  test('«замёрзшее» соединение обнаруживается и переподключается', () async {
+    final pool = RelayPool(
+      ['ws://127.0.0.1:${relay.port}'],
+      idleProbe: const Duration(seconds: 1),
+      probeTimeout: const Duration(seconds: 1),
+    );
+    pool.start();
+    await until(() => pool.onlineCount == 1, what: 'подключение');
+    relay.frozen = true;
+    await until(() => pool.onlineCount == 0, what: 'обнаружен обрыв');
+    relay.frozen = false;
+    await until(() => pool.onlineCount == 1, what: 'переподключение');
+    await pool.close();
+  });
+
+  test('неподтверждённое сообщение уходит после перезапуска', () async {
+    final aSecrets = MemorySecrets();
+    var (alice, aliceLive) = await phone('Алиса', secrets: aSecrets);
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount > 0 && bobLive.pool!.onlineCount > 0);
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    final port = relay.port;
+    await relay.stop();
+    await until(() => aliceLive.pool!.onlineCount == 0);
+    alice.send(c.id, 'переживу перезапуск');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    // Как будто очередь потерялась (старая версия) — сообщение всё равно уйдёт.
+    await aliceLive.store.dequeueMessages(await aliceLive.store.outboxIds());
+    await aliceLive.close();
+
+    relay = FakeRelay();
+    await relay.startOn(port);
+    (alice, aliceLive) = await phone('Алиса', secrets: aSecrets);
+    await until(
+      () => bob.messagesOf(aliceLive.keys!.pub).any((m) => m.text == 'переживу перезапуск'),
+      what: 'доставка после перезапуска',
+    );
+    final m = alice.messagesOf(c.id).single;
+    await until(() => m.status.index >= MsgStatus.delivered.index, what: 'доставлено');
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('база старой версии (v1) обновляется', () async {
+    final path = '${tmp.path}/old.db';
+    final old = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, _) async {
+          await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
+          await db.execute('CREATE TABLE contacts (id TEXT PRIMARY KEY, data BLOB)');
+          await db.execute(
+            'CREATE TABLE messages (id TEXT PRIMARY KEY, chat TEXT, ts INTEGER, data BLOB)',
+          );
+          await db.execute('CREATE TABLE seen (id TEXT PRIMARY KEY, ts INTEGER)');
+          await db.execute(
+            'CREATE TABLE outbox (id TEXT PRIMARY KEY, chat TEXT, msg TEXT, event TEXT, ts INTEGER)',
+          );
+          await db.insert('kv', {'k': 'since', 'v': '${nowSec()}'});
+        },
+      ),
+    );
+    await old.close();
+    final store = (await Store.open(MemorySecrets(), factory: databaseFactoryFfi, path: path))!;
+    await store.queue('m1', 'chat', {'t': 'msg', 'id': 'm1', 'text': 'x'});
+    final due = await store.outboxDue();
+    expect(due.single.payload['text'], 'x');
+    expect(await store.get('since'), isNotNull);
+    await store.close();
   });
 
   test('PIN хранится как хэш', () async {

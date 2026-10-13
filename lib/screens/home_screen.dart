@@ -136,6 +136,7 @@ class _NavBar extends StatelessWidget {
     }
 
     return Glass(
+      blur: 20,
       radius: 30,
       padding: const EdgeInsets.all(6),
       child: Stack(

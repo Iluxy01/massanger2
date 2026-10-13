@@ -39,6 +39,7 @@ class VeilColors {
     required this.textFaint,
     required this.bubbleIn,
     required this.glass,
+    required this.panel,
   });
 
   final bool dark;
@@ -51,6 +52,9 @@ class VeilColors {
   final Color textFaint;
   final Color bubbleIn;
   final Color glass;
+
+  /// Матовая панель без размытия.
+  final Color panel;
 
   static const danger = Color(0xFFFF4D6A);
   static const success = Color(0xFF2BD99F);
@@ -67,6 +71,7 @@ class VeilColors {
     textFaint: Color(0xFF5D5D70),
     bubbleIn: Color(0xFF1C1C28),
     glass: Color(0xA6121219),
+    panel: Color(0xE6181822),
   );
 
   static const lightColors = VeilColors(
@@ -80,6 +85,7 @@ class VeilColors {
     textFaint: Color(0xFFA3A3B5),
     bubbleIn: Color(0xFFFFFFFF),
     glass: Color(0xB8FFFFFF),
+    panel: Color(0xEBFFFFFF),
   );
 }
 

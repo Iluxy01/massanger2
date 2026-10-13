@@ -260,7 +260,6 @@ class ContactScreen extends StatelessWidget {
             left: 8,
             child: Glass(
               radius: 22,
-              blur: 10,
               child: IconButton(
                 onPressed: () => Navigator.of(context).maybePop(),
                 icon: Icon(Icons.arrow_back_ios_new_rounded, color: vc.text, size: 20),

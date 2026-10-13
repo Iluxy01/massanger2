@@ -262,7 +262,6 @@ class _Key extends StatelessWidget {
         onTap: onTap,
         child: Glass(
           radius: 38,
-          blur: 12,
           child: SizedBox(
             width: 76,
             height: 76,

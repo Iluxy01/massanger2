@@ -59,6 +59,13 @@ class AppState extends ChangeNotifier {
   bool screenshotProtection = true;
   bool notificationText = true;
 
+  /// Показывать всплывающее окошко о новом сообщении, когда приложение открыто.
+  bool inAppBanner = true;
+
+  /// Меняется только при смене темы/акцента — от него перестраивается всё
+  /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
+  final themeTick = ValueNotifier<int>(0);
+
   final List<Contact> contacts = [];
   final Map<String, List<Message>> _messages = {};
   final Set<String> pinned = {};
@@ -80,8 +87,16 @@ class AppState extends ChangeNotifier {
   Accent get accent => accents[accentIndex];
   VeilColors get colors => dark ? VeilColors.darkColors : VeilColors.lightColors;
 
+  Timer? _notifyTimer;
+
+  /// Изменения данных. Пачка событий подряд (сеть, отчёты, пинги) даёт одну
+  /// перерисовку, а не десяток — меньше нагрузки и нагрева.
   void notifyChanged() {
-    if (!_disposed) notifyListeners();
+    if (_disposed || _notifyTimer != null) return;
+    _notifyTimer = Timer(const Duration(milliseconds: 30), () {
+      _notifyTimer = null;
+      if (!_disposed) notifyListeners();
+    });
   }
 
   // ───────────────────────── Чтение ─────────────────────────
@@ -200,6 +215,7 @@ class AppState extends ChangeNotifier {
     'typing': typingIndicators,
     'secure': screenshotProtection,
     'notifText': notificationText,
+    'banner': inAppBanner,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
   };
@@ -212,6 +228,8 @@ class AppState extends ChangeNotifier {
     typingIndicators = s['typing'] as bool? ?? true;
     screenshotProtection = s['secure'] as bool? ?? true;
     notificationText = s['notifText'] as bool? ?? true;
+    inAppBanner = s['banner'] as bool? ?? true;
+    themeTick.value++;
     pinned
       ..clear()
       ..addAll((s['pinned'] as List? ?? []).cast<String>());
@@ -228,11 +246,13 @@ class AppState extends ChangeNotifier {
 
   void setAccent(int i) {
     accentIndex = i;
+    themeTick.value++;
     _saveSettings();
   }
 
   void setDark(bool v) {
     dark = v;
+    themeTick.value++;
     _saveSettings();
   }
 
@@ -608,6 +628,8 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _notifyTimer?.cancel();
+    themeTick.dispose();
     for (final t in _timers) {
       t.cancel();
     }

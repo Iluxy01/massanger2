@@ -61,8 +61,14 @@ class Live {
   String who(String pub) => app.contact(pub)?.name ?? short(pub);
   DateTime _lastTyping = DateTime(2000);
   int _lastOnline = 0;
-  int _lastSinceSave = 0;
   bool _closed = false;
+
+  /// До какого момента (сек) мы точно забрали всё у ретрансляторов.
+  int _syncedAt = 0;
+  int _syncedSaved = 0;
+
+  /// Запас на расхождение часов у телефонов.
+  static const _clockSkew = 12 * 3600;
 
   /// Для фоновой проверки: отдельное соединение с базой, ничего не создаём.
   static Future<Live?> bootBackground(AppState app) async {
@@ -101,12 +107,19 @@ class Live {
     app.hasPin = (await secrets.read('pin') ?? '').isNotEmpty;
     app.locked = app.hasPin;
 
+    final synced = int.tryParse(await store.get('synced') ?? '');
+    final legacy = int.tryParse(await store.get('since') ?? '');
+    // Переход со старой версии (конверты «задним числом» до 2 суток): один раз
+    // забираем с запасом, дальше — только новое.
+    _syncedAt = synced ?? (legacy != null ? legacy - 2 * 24 * 3600 : nowSec());
+
     final priv = await secrets.read('priv');
     final prof = await store.getJson('profile');
     if (priv != null && prof != null) {
       keys = Keys(priv);
       app.profile = Profile.fromJson(prof);
       await reload();
+      await _requeueUnconfirmed();
       if (network) startNetwork();
     }
     _expiry = Timer.periodic(const Duration(seconds: 30), (_) => _expire());
@@ -171,7 +184,8 @@ class Live {
     app.profile = p;
     await store.setJson('profile', p.toJson());
     // Только что созданному ключу нечего забирать из прошлого.
-    await store.set('since', '${nowSec()}');
+    _syncedAt = nowSec();
+    await store.set('synced', '$_syncedAt');
     startNetwork();
   }
 
@@ -195,6 +209,7 @@ class Live {
   void startNetwork() {
     if (pool != null || keys == null || _closed) return;
     final p = pool = RelayPool(relays, connector: _connector);
+    p.onSynced = _synced;
     _events = p.events.listen((e) => _queue = _queue.then((_) => _safely(e)));
     _changes = p.changes.listen((_) {
       for (final url in p.urls) {
@@ -212,33 +227,46 @@ class Live {
       _lastOnline = n;
       app.notifyChanged();
     });
-    _subscribe();
+    p.subscribe(_filters);
     p.start();
-    _presence = Timer.periodic(const Duration(seconds: 45), (_) => _ping());
-    // Переотправка неподтверждённых сообщений и повторный запрос входящих.
-    _resend = Timer.periodic(const Duration(minutes: 2), (_) => _flushOutbox());
-    _resub = Timer.periodic(const Duration(minutes: 3), (_) {
-      if (app.foreground) _subscribe();
+    _presence = Timer.periodic(const Duration(seconds: 60), (_) => _ping());
+    // Переотправка неподтверждённых сообщений (по расписанию с паузами).
+    _resend = Timer.periodic(const Duration(seconds: 30), (_) => _flushOutbox());
+    // Подстраховка: изредка заново спросить новое (дёшево — окно маленькое).
+    _resub = Timer.periodic(const Duration(minutes: 10), (_) {
+      if (app.foreground) p.subscribe(_filters);
     });
     store.pruneOutbox().catchError((_) {});
     Future<void>.delayed(const Duration(seconds: 3), _ping);
   }
 
-  Future<void> _subscribe() async {
-    final since = int.tryParse(await store.get('since') ?? '') ?? nowSec();
-    // Конверты датированы «задним числом» до 2 суток — берём с запасом.
-    pool?.subscribe([
+  /// Фильтры подписки. Вызываются при каждом запросе (и после переподключения),
+  /// поэтому «с какого момента» всегда свежее — без повторной выкачки старого.
+  List<Map<String, dynamic>> _filters() {
+    final me = keys?.pub;
+    if (me == null) return const [];
+    return [
       {
         'kinds': [GiftWrap.kindWrap],
-        '#p': [keys!.pub],
-        'since': since - 2 * 24 * 3600 - 600,
+        '#p': [me],
+        'since': _syncedAt - _clockSkew,
       },
       {
         'kinds': [GiftWrap.kindWrapEphemeral],
-        '#p': [keys!.pub],
+        '#p': [me],
         'since': nowSec() - 60,
       },
-    ]);
+    ];
+  }
+
+  /// Ретранслятор отдал всё, что было на момент запроса [reqAt].
+  void _synced(String url, int reqAt) {
+    if (reqAt <= _syncedAt) return;
+    _syncedAt = reqAt;
+    if (reqAt - _syncedSaved > 60) {
+      _syncedSaved = reqAt;
+      store.set('synced', '$reqAt').catchError((_) {});
+    }
   }
 
   Future<void> setRelays(List<String> urls) async {
@@ -252,9 +280,11 @@ class Live {
   Future<void> resumed() async {
     await store.set('alive', '${nowSec()}');
     await reload();
-    // На всякий случай — заново запросить накопившееся у ретрансляторов.
-    unawaited(_subscribe());
+    // Проверить соединения (мобильная сеть могла их тихо оборвать) и
+    // заново спросить накопившееся.
     pool?.wake();
+    pool?.subscribe(_filters);
+    unawaited(_flushOutbox());
     _ping();
     // Чат был открыт, пока приложение было свёрнуто — теперь его видно.
     final open = app.openChat;
@@ -321,10 +351,6 @@ class Live {
     await _handle(sender, p, sentAt.isAfter(DateTime.now()) ? DateTime.now() : sentAt);
     // Только после успешной обработки: при ошибке конверт придёт снова.
     if (!ephemeral) await store.markSeen(e.id);
-    if (!ephemeral && nowSec() - _lastSinceSave > 30) {
-      _lastSinceSave = nowSec();
-      await store.set('since', '${nowSec()}');
-    }
     app.notifyChanged();
   }
 
@@ -483,11 +509,11 @@ class Live {
         .catchError((Object e) => log('ОШИБКА отправки ${p.type}: $e'));
   }
 
-  /// «Я в сети» — только тем, с кем недавно переписывались (до 15 человек),
+  /// «Я в сети» — только тем, с кем переписывались за неделю (до 8 человек),
   /// чтобы не тратить батарею на шифрование для всех контактов.
   void _ping({bool online = true}) {
     if (online && !app.foreground) return;
-    final cutoff = DateTime.now().subtract(const Duration(days: 14));
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
     final targets =
         app.contacts.where((c) {
           if (c.blocked || c.request) return false;
@@ -498,41 +524,101 @@ class Live {
           final tb = app.lastMessage(b.id)?.time ?? DateTime(2000);
           return tb.compareTo(ta);
         });
-    for (final c in targets.take(15)) {
+    for (final c in targets.take(8)) {
       _control(c.id, Payload(Payload.ping, {'on': online}), ephemeral: true);
     }
   }
 
   // ───────────────────────── действия из интерфейса ─────────────────────────
 
+  Map<String, dynamic> _msgPayload(Message m) => Payload(Payload.msg, {
+    'id': m.id,
+    'ts': m.time.millisecondsSinceEpoch,
+    'text': m.text,
+    if (m.replyTo != null) 'reply': m.replyTo!.id,
+    if (m.secret) 'secret': true,
+    'p': myCard.toJson(),
+  }).toMap();
+
   Future<void> sendMessage(String chat, Message m) async {
     await saveMessage(chat, m);
-    final k = keys, pl = pool;
-    if (k == null || pl == null) return;
-    final payload = Payload(Payload.msg, {
-      'id': m.id,
-      'ts': m.time.millisecondsSinceEpoch,
-      'text': m.text,
-      if (m.replyTo != null) 'reply': m.replyTo!.id,
-      if (m.secret) 'secret': true,
-      'p': myCard.toJson(),
-    });
-    final wrap = await GiftWrap.wrapAsync(sender: k, recipientPub: chat, content: payload.encode());
-    // Конверт лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
-    await store.queue(wrap.id, chat, m.id, jsonEncode(wrap.toJson()));
-    log(
-      '→ сообщение для ${who(chat)} (${short(wrap.id)}), онлайн ретрансляторов: ${pl.onlineCount}',
-    );
-    final ok = await pl.publish(wrap);
-    log(
-      ok
-          ? '  принято: ${pl.acceptedBy(wrap.id).map((u) => u.replaceFirst('wss://', '')).join(', ')}'
-          : '  пока никто не принял — повторю позже',
-    );
-    if (ok) await _sent(wrap.id, chat, m.id);
+    // Сообщение лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
+    await store.queue(m.id, chat, _msgPayload(m));
+    await _flushOutbox();
   }
 
-  Future<void> _sent(String wrapId, String chat, String msgId) async {
+  /// После перезапуска: всё, что друг ещё не подтвердил, — снова в очередь.
+  Future<void> _requeueUnconfirmed() async {
+    final queued = await store.outboxIds();
+    final cutoff = DateTime.now().subtract(const Duration(days: 3));
+    for (final c in app.contacts) {
+      for (final m in app.messagesOf(c.id)) {
+        if (m.mine &&
+            m.status.index < MsgStatus.delivered.index &&
+            m.time.isAfter(cutoff) &&
+            !queued.contains(m.id)) {
+          await store.queue(m.id, c.id, _msgPayload(m));
+        }
+      }
+    }
+  }
+
+  /// Паузы между повторами: 1 мин, 3, 10, 30, 1 ч, дальше раз в 2 ч.
+  static const _backoff = [60, 180, 600, 1800, 3600, 7200];
+
+  bool _flushing = false;
+  bool _flushAgain = false;
+
+  /// Отправить то, что пора. Каждый раз — новый конверт со свежим временем:
+  /// так его увидят и живые подписки, и запросы после переподключения.
+  Future<void> _flushOutbox({bool all = false}) async {
+    final k = keys, pl = pool;
+    if (k == null || pl == null) return;
+    if (_flushing) {
+      _flushAgain = true;
+      return;
+    }
+    _flushing = true;
+    try {
+      do {
+        _flushAgain = false;
+        for (final item in await store.outboxDue(all: all)) {
+          if (_closed) return;
+          await _deliver(k, pl, item);
+        }
+      } while (_flushAgain && !_closed);
+    } catch (e) {
+      log('ОШИБКА очереди отправки: $e');
+    } finally {
+      _flushing = false;
+    }
+  }
+
+  Future<void> _deliver(Keys k, RelayPool pl, OutboxItem item) async {
+    if (pl.onlineCount == 0) return; // уйдёт при подключении
+    final wrap = await GiftWrap.wrapAsync(
+      sender: k,
+      recipientPub: item.chat,
+      content: Payload.fromMap(item.payload).encode(),
+    );
+    final n = item.attempts + 1;
+    log(
+      '→ ${item.attempts == 0 ? 'сообщение' : 'повтор №${item.attempts}'} для ${who(item.chat)} '
+      '(${short(item.msgId)}), на связи: ${pl.onlineCount}',
+    );
+    final ok = await pl.publish(wrap, queue: false);
+    if (_closed) return;
+    final accepted = pl.acceptedBy(wrap.id).map((u) => u.replaceFirst('wss://', ''));
+    log(ok ? '  принято: ${accepted.join(', ')}' : '  никто не принял — повторю через 30 с');
+    await store.scheduleRetry(
+      item.msgId,
+      ok ? n : item.attempts,
+      nowSec() + (ok ? _backoff[(n - 1).clamp(0, _backoff.length - 1)] : 30),
+    );
+    if (ok) await _sent(item.chat, item.msgId);
+  }
+
+  Future<void> _sent(String chat, String msgId) async {
     for (final m in app.messagesOf(chat)) {
       if (m.id == msgId && m.status == MsgStatus.sending) {
         m.status = MsgStatus.sent;
@@ -542,30 +628,13 @@ class Live {
     }
   }
 
-  bool _flushing = false;
-
-  Future<void> _flushOutbox() async {
-    final pl = pool;
-    if (pl == null || _flushing) return;
-    _flushing = true;
-    try {
-      for (final row in await store.outbox()) {
-        final e = Event.fromJson(jsonDecode(row['event'] as String) as Map<String, dynamic>);
-        if (await pl.publish(e)) {
-          await _sent(row['id'] as String, row['chat'] as String, row['msg'] as String);
-        }
-      }
-    } finally {
-      _flushing = false;
-    }
-  }
-
   /// Проверка связи: письмо самому себе через каждый ретранслятор.
   /// Возвращает url → (принял, вернул).
   Future<Map<String, (bool, bool)>> diagnose() async {
     final k = keys, pl = pool;
     if (k == null || pl == null) return {};
-    pl.wake();
+    // Сначала убедиться, что соединения действительно живы.
+    await pl.verify();
     final wrap = await GiftWrap.wrapAsync(
       sender: k,
       recipientPub: k.pub,
@@ -714,6 +783,9 @@ class Live {
     _heartbeat?.cancel();
     _resend?.cancel();
     _resub?.cancel();
+    if (_syncedAt > _syncedSaved && store.db.isOpen) {
+      await store.set('synced', '$_syncedAt').catchError((_) {});
+    }
     for (final t in [..._typingTimers.values, ..._onlineTimers.values]) {
       t.cancel();
     }

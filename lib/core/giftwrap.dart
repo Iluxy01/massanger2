@@ -1,7 +1,6 @@
 import 'dart:convert';
-import 'dart:isolate';
-import 'dart:math';
 
+import 'crypto_worker.dart';
 import 'nip44.dart';
 import 'nostr.dart';
 
@@ -12,7 +11,11 @@ import 'nostr.dart';
 ///       → gift wrap (kind 1059, подписан СЛУЧАЙНЫМ одноразовым ключом)
 ///
 /// Ретранслятор видит только одноразовый ключ, получателя и шифротекст —
-/// ни отправителя, ни содержимого, ни точного времени.
+/// ни отправителя, ни содержимого.
+///
+/// Время конверта — настоящее (без «размытия» на 2 суток назад, как в NIP-59):
+/// ретранслятор и так видит момент получения, а размытие заставляло при каждом
+/// переподключении заново скачивать конверты за двое суток — лишний трафик и нагрев.
 class GiftWrap {
   static const kindRumor = 14;
   static const kindSeal = 13;
@@ -20,11 +23,6 @@ class GiftWrap {
 
   /// Эфемерный вариант (печатает…, «в сети») — ретрансляторы его не хранят.
   static const kindWrapEphemeral = 21059;
-
-  static final _rnd = Random.secure();
-
-  /// Время в прошлом до 2 суток — чтобы по метке нельзя было связать события.
-  static int _fuzzedNow() => nowSec() - _rnd.nextInt(2 * 24 * 3600);
 
   static Event wrap({
     required Keys sender,
@@ -44,17 +42,18 @@ class GiftWrap {
     final seal = Event.signed(
       sender,
       kind: kindSeal,
-      createdAt: ephemeral ? nowSec() : _fuzzedNow(),
+      createdAt: nowSec(),
       content: Nip44.encrypt(
         jsonEncode(rumor.toJson()),
-        Nip44.conversationKey(sender.priv, recipientPub),
+        // Ключ беседы с другом постоянный — кэшируем.
+        Nip44.conversationKey(sender.priv, recipientPub, cache: true),
       ),
     );
     final oneTime = Keys.generate();
     return Event.signed(
       oneTime,
       kind: ephemeral ? kindWrapEphemeral : kindWrap,
-      createdAt: ephemeral ? nowSec() : _fuzzedNow(),
+      createdAt: nowSec(),
       content: Nip44.encrypt(
         jsonEncode(seal.toJson()),
         Nip44.conversationKey(oneTime.priv, recipientPub),
@@ -66,35 +65,40 @@ class GiftWrap {
     );
   }
 
-  /// То же в отдельном потоке — криптография на чистом Dart занимает десятки
-  /// миллисекунд и не должна подтормаживать интерфейс.
+  /// То же в постоянном фоновом потоке (см. [CryptoWorker]) — криптография на
+  /// чистом Dart занимает десятки миллисекунд и не должна тормозить интерфейс.
   static Future<Event> wrapAsync({
     required Keys sender,
     required String recipientPub,
     required String content,
     bool ephemeral = false,
     Duration ttl = const Duration(days: 7),
-  }) => Isolate.run(
-    () => wrap(
-      sender: sender,
-      recipientPub: recipientPub,
-      content: content,
-      ephemeral: ephemeral,
-      ttl: ttl,
-    ),
+  }) => CryptoWorker.shared.wrap(
+    sender: sender,
+    recipientPub: recipientPub,
+    content: content,
+    ephemeral: ephemeral,
+    ttl: ttl,
   );
 
-  static Future<(String, Event)?> unwrapAsync(Keys me, Event e) => Isolate.run(() => unwrap(me, e));
+  static Future<(String, Event)?> unwrapAsync(Keys me, Event e) =>
+      CryptoWorker.shared.unwrap(me, e);
 
   /// Открыть конверт. Возвращает (публичный ключ отправителя, rumor) или null,
   /// если что-то не сходится (подделка, чужое сообщение, мусор).
   static (String, Event)? unwrap(Keys me, Event wrap) {
     try {
-      if (!wrap.verify()) return null;
+      // Подпись внешнего конверта не проверяем: её ставит одноразовый ключ и она
+      // ничего не доказывает, а целостность гарантирует MAC шифра NIP-44.
+      // Проверяем только, что id соответствует содержимому (по нему — дедупликация).
+      if (!wrap.idValid) return null;
       final sealJson = Nip44.decrypt(wrap.content, Nip44.conversationKey(me.priv, wrap.pubkey));
       final seal = Event.fromJson(jsonDecode(sealJson) as Map<String, dynamic>);
       if (seal.kind != kindSeal || !seal.verify()) return null;
-      final rumorJson = Nip44.decrypt(seal.content, Nip44.conversationKey(me.priv, seal.pubkey));
+      final rumorJson = Nip44.decrypt(
+        seal.content,
+        Nip44.conversationKey(me.priv, seal.pubkey, cache: true),
+      );
       final rumor = Event.fromJson(jsonDecode(rumorJson) as Map<String, dynamic>);
       // Отправитель внутри должен совпадать с тем, кто подписал печать.
       if (rumor.pubkey != seal.pubkey || !rumor.idValid) return null;

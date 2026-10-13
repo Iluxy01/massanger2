@@ -149,6 +149,7 @@ class _ChatsTabState extends State<ChatsTab> {
               duration: const Duration(milliseconds: 220),
               opacity: _compact ? 1 : 0,
               child: Glass(
+                blur: 20,
                 radius: 0,
                 border: false,
                 child: Padding(
@@ -240,7 +241,6 @@ class _RoundIcon extends StatelessWidget {
       onTap: onTap,
       child: Glass(
         radius: 22,
-        blur: 10,
         child: SizedBox(
           width: 44,
           height: 44,

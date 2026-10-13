@@ -177,16 +177,7 @@ class _MyCode extends StatefulWidget {
   State<_MyCode> createState() => _MyCodeState();
 }
 
-class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
-  late final _spin = AnimationController(vsync: this, duration: const Duration(seconds: 5))
-    ..repeat();
-
-  @override
-  void dispose() {
-    _spin.dispose();
-    super.dispose();
-  }
-
+class _MyCodeState extends State<_MyCode> {
   @override
   Widget build(BuildContext context) {
     final app = context.app;
@@ -196,53 +187,49 @@ class _MyCodeState extends State<_MyCode> with SingleTickerProviderStateMixin {
     final data = app.inviteLink;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(32, 28, 32, 32),
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
       child: Column(
         children: [
-          AnimatedBuilder(
-            animation: _spin,
-            builder: (_, child) => Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(34),
-                gradient: SweepGradient(
-                  colors: [acc.a, acc.b, acc.a.withValues(alpha: 0.1), acc.a],
-                  transform: GradientRotation(_spin.value * 2 * pi),
+          // Крупный и контрастный: квадратные модули, тёмные «глаза», без логотипа
+          // в центре — так код меньше по плотности и быстрее читается камерой.
+          LayoutBuilder(
+            builder: (context, box) {
+              final side = box.maxWidth.clamp(200.0, 420.0);
+              return Container(
+                width: side,
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(30),
+                  gradient: acc.gradient,
+                  boxShadow: [BoxShadow(color: acc.mid.withValues(alpha: 0.3), blurRadius: 30)],
                 ),
-                boxShadow: [BoxShadow(color: acc.mid.withValues(alpha: 0.35), blurRadius: 40)],
-              ),
-              child: child,
-            ),
-            child: Container(
-              padding: const EdgeInsets.all(22),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(31),
-              ),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  QrImageView(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(27),
+                  ),
+                  child: QrImageView(
                     data: data,
-                    size: 230,
                     padding: EdgeInsets.zero,
-                    errorCorrectionLevel: QrErrorCorrectLevel.H,
-                    eyeStyle: QrEyeStyle(eyeShape: QrEyeShape.circle, color: acc.a),
+                    gapless: true,
+                    errorCorrectionLevel: QrErrorCorrectLevel.M,
+                    backgroundColor: Colors.white,
+                    eyeStyle: const QrEyeStyle(
+                      eyeShape: QrEyeShape.square,
+                      color: Color(0xFF0F0F18),
+                    ),
                     dataModuleStyle: const QrDataModuleStyle(
-                      dataModuleShape: QrDataModuleShape.circle,
-                      color: Color(0xFF14141C),
+                      dataModuleShape: QrDataModuleShape.square,
+                      color: Color(0xFF0F0F18),
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                    child: Avatar(emoji: p.emoji, colors: p.colors, size: 52),
-                  ),
-                ],
-              ),
-            ),
+                ),
+              );
+            },
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 22),
+          Avatar(emoji: p.emoji, colors: p.colors, size: 56),
           Text(
             p.name,
             style: TextStyle(color: vc.text, fontSize: 24, fontWeight: FontWeight.w800),

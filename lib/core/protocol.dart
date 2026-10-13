@@ -25,7 +25,14 @@ class Payload {
   static const typing = 'typ';
   static const ping = 'ping';
 
-  String encode() => jsonEncode({'v': 1, 't': type, ...data});
+  Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
+
+  static Payload fromMap(Map<String, dynamic> m) {
+    final d = Map<String, dynamic>.of(m)..remove('v');
+    return Payload(d.remove('t') as String, d);
+  }
+
+  String encode() => jsonEncode(toMap());
 
   static Payload? decode(String s) {
     try {

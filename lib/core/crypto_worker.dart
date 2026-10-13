@@ -1,0 +1,91 @@
+import 'dart:async';
+import 'dart:isolate';
+
+import 'giftwrap.dart';
+import 'nostr.dart';
+
+/// Один постоянный фоновый поток для шифрования конвертов.
+///
+/// Раньше под каждый конверт запускался новый поток (Isolate.run) — это лишняя
+/// работа процессора, а кэши (ключи бесед, предрасчёт точек кривой) терялись.
+/// Здесь поток живёт всё время работы приложения, и кэши остаются тёплыми.
+class CryptoWorker {
+  CryptoWorker._();
+
+  static final shared = CryptoWorker._();
+
+  SendPort? _port;
+  Future<void>? _starting;
+  final Map<int, Completer<Object?>> _pending = {};
+  int _seq = 0;
+
+  Future<void> _start() async {
+    final inbox = ReceivePort();
+    final ready = Completer<SendPort>();
+    inbox.listen((msg) {
+      if (msg is SendPort) {
+        ready.complete(msg);
+      } else if (msg is List && msg.length == 3) {
+        final c = _pending.remove(msg[0] as int);
+        if (c == null) return;
+        msg[1] == true ? c.complete(msg[2]) : c.completeError(StateError('${msg[2]}'));
+      }
+    });
+    await Isolate.spawn(_main, inbox.sendPort, debugName: 'veil-crypto');
+    _port = await ready.future;
+  }
+
+  Future<Object?> _call(List<Object?> request) async {
+    try {
+      await (_starting ??= _start());
+    } catch (_) {
+      _starting = null;
+      rethrow;
+    }
+    final id = _seq++;
+    final c = Completer<Object?>();
+    _pending[id] = c;
+    _port!.send([id, request]);
+    return c.future;
+  }
+
+  Future<Event> wrap({
+    required Keys sender,
+    required String recipientPub,
+    required String content,
+    bool ephemeral = false,
+    Duration ttl = const Duration(days: 7),
+  }) async =>
+      await _call(['wrap', sender.priv, recipientPub, content, ephemeral, ttl.inSeconds]) as Event;
+
+  Future<(String, Event)?> unwrap(Keys me, Event e) async {
+    final r = await _call(['unwrap', me.priv, e]);
+    return r == null ? null : r as (String, Event);
+  }
+
+  static void _main(SendPort out) {
+    final inbox = ReceivePort();
+    out.send(inbox.sendPort);
+    final keys = <String, Keys>{}; // приватный → пара (публичный считается один раз)
+    Keys k(String priv) => keys[priv] ??= Keys(priv);
+    inbox.listen((msg) {
+      final [id as int, req as List] = msg as List;
+      try {
+        final Object? result = switch (req[0]) {
+          'wrap' => GiftWrap.wrap(
+            sender: k(req[1] as String),
+            recipientPub: req[2] as String,
+            content: req[3] as String,
+            ephemeral: req[4] as bool,
+            ttl: Duration(seconds: req[5] as int),
+          ),
+          'unwrap' => GiftWrap.unwrap(k(req[1] as String), req[2] as Event),
+          _ => throw ArgumentError('unknown ${req[0]}'),
+        };
+        out.send([id, true, result]);
+      } catch (e) {
+        out.send([id, false, '$e']);
+      }
+    });
+  }
+}

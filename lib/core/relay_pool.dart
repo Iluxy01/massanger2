@@ -16,6 +16,8 @@ const defaultRelays = [
   'wss://relay.snort.social',
   'wss://nostr-pub.wellorder.net',
   'wss://nostr.oxtr.dev',
+  'wss://nostr.bitcoiner.social',
+  'wss://nostr.data.haus',
 ];
 
 typedef Connector = WebSocketChannel Function(Uri uri);
@@ -34,30 +36,61 @@ class _Relay {
   Timer? retry;
   bool eose = false;
   final List<String> queue = [];
+
+  /// Номер попытки подключения: ответы «старых» соединений игнорируются.
+  int gen = 0;
+
+  /// Когда от ретранслятора последний раз что-то приходило.
+  DateTime lastRx = DateTime.now();
+
+  /// Отправлен пробный запрос, ответа ещё нет.
+  DateTime? probeAt;
+
+  /// Когда отправлен основной запрос подписки (для отметки «синхронизировано до»).
+  int reqAt = 0;
 }
 
-/// Пул WebSocket-соединений с ретрансляторами: переподключение, очередь,
-/// одна общая подписка, дедупликация входящих событий.
+/// Пул WebSocket-соединений с ретрансляторами: переподключение, проверка
+/// живости, очередь, одна общая подписка, дедупликация входящих событий.
 class RelayPool {
-  RelayPool(List<String> urls, {Connector? connector})
-    : _connector = connector ?? ((u) => WebSocketChannel.connect(u)) {
+  RelayPool(
+    List<String> urls, {
+    Connector? connector,
+    this.idleProbe = const Duration(seconds: 45),
+    this.probeTimeout = const Duration(seconds: 12),
+  }) : _connector = connector ?? ((u) => WebSocketChannel.connect(u)) {
     setUrls(urls);
   }
 
   final Connector _connector;
+
+  /// Сколько можно молчать, прежде чем проверить соединение.
+  final Duration idleProbe;
+
+  /// Сколько ждать ответа на проверку, прежде чем переподключиться.
+  final Duration probeTimeout;
+
   final Map<String, _Relay> _relays = {};
-  List<Map<String, dynamic>> _filters = [];
+  List<Map<String, dynamic>> Function() _filters = () => const [];
   final _seen = <String>{};
   final _events = StreamController<Event>.broadcast();
   final _changes = StreamController<void>.broadcast();
   final Map<String, Completer<bool>> _pendingOk = {};
-  final Map<String, int> _okCount = {};
   final Map<String, Set<String>> _okBy = {};
   final Map<String, Set<String>> _sources = {};
+  Timer? _health;
   bool _closed = false;
   bool _started = false;
 
+  /// Ретранслятор отдал всё накопленное по запросу, отправленному в момент `reqAt`.
+  void Function(String url, int reqAt)? onSynced;
+
   static const subId = 'veil';
+  static const _probeId = 'hb';
+  static final _probeFilter = {
+    'ids': ['0' * 64],
+    'limit': 1,
+  };
 
   Stream<Event> get events => _events.stream;
   Stream<void> get changes => _changes.stream;
@@ -66,8 +99,6 @@ class RelayPool {
   int get onlineCount => _relays.values.where((r) => r.state == RelayState.online).length;
   RelayState stateOf(String url) => _relays[url]?.state ?? RelayState.offline;
   String? errorOf(String url) => _relays[url]?.error;
-  bool get allEose =>
-      _relays.values.every((r) => r.eose || r.state == RelayState.offline && r.attempt > 0);
 
   void setUrls(List<String> urls) {
     final wanted = urls.map((u) => u.trim()).where((u) => u.startsWith('ws')).toSet();
@@ -83,34 +114,80 @@ class RelayPool {
   }
 
   void start() {
+    if (_started) return;
     _started = true;
     for (final r in _relays.values) {
       if (r.state == RelayState.offline) _connect(r);
     }
+    _health = Timer.periodic(const Duration(seconds: 5), (_) => _checkHealth());
   }
 
-  /// Переподключить «уснувшие» соединения (например, после выхода из фона).
+  /// После выхода из фона: переподключить отвалившиеся и сразу проверить
+  /// «вроде бы живые» соединения — мобильная сеть часто рвёт их молча.
   void wake() {
     for (final r in _relays.values) {
-      if (r.state != RelayState.online) {
-        r.retry?.cancel();
-        r.attempt = 0;
-        _connect(r);
+      switch (r.state) {
+        case RelayState.offline:
+          r.retry?.cancel();
+          r.attempt = 0;
+          _connect(r);
+        case RelayState.online:
+          if (DateTime.now().difference(r.lastRx).inSeconds > 5) _probe(r);
+        case RelayState.connecting:
+          break; // уже подключается — не плодим второе соединение
       }
     }
   }
 
-  void subscribe(List<Map<String, dynamic>> filters) {
-    _filters = filters;
+  /// Проверить все соединения и дождаться результата (для «Проверить связь»).
+  Future<void> verify({Duration timeout = const Duration(seconds: 10)}) async {
+    wake();
+    final end = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(end)) {
+      final busy = _relays.values.any((r) => r.state == RelayState.connecting || r.probeAt != null);
+      if (!busy) return;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+  }
+
+  void _checkHealth() {
+    if (_closed) return;
+    final now = DateTime.now();
+    for (final r in _relays.values) {
+      if (r.state != RelayState.online) continue;
+      final probe = r.probeAt;
+      if (probe != null) {
+        if (now.difference(probe) > probeTimeout) _lost(r, 'не отвечает');
+      } else if (now.difference(r.lastRx) > idleProbe) {
+        _probe(r);
+      }
+    }
+  }
+
+  void _probe(_Relay r) {
+    if (r.probeAt != null || r.state != RelayState.online) return;
+    r.probeAt = DateTime.now();
+    _send(r, jsonEncode(['REQ', _probeId, _probeFilter]), queue: false);
+  }
+
+  /// [build] вызывается при каждой отправке запроса (в т.ч. после переподключения),
+  /// поэтому «с какого времени» всегда актуально.
+  void subscribe(List<Map<String, dynamic>> Function() build) {
+    _filters = build;
     // Новый запрос — события снова можно получить (если раньше их не удалось обработать).
     _seen.clear();
     for (final r in _relays.values) {
-      r.eose = false;
       if (r.state == RelayState.online) _sendReq(r);
     }
   }
 
-  void _sendReq(_Relay r) => _send(r, jsonEncode(['REQ', subId, ..._filters]), queue: false);
+  void _sendReq(_Relay r) {
+    final filters = _filters();
+    if (filters.isEmpty) return;
+    r.eose = false;
+    r.reqAt = nowSec();
+    _send(r, jsonEncode(['REQ', subId, ...filters]), queue: false);
+  }
 
   /// Опубликовать событие во все ретрансляторы. true — хотя бы один принял.
   Future<bool> publish(
@@ -139,48 +216,64 @@ class RelayPool {
         return;
       } catch (_) {}
     }
-    if (queue && r.queue.length < 200) r.queue.add(msg);
+    if (queue && r.queue.length < 100) r.queue.add(msg);
   }
 
   Future<void> _connect(_Relay r) async {
     if (_closed) return;
+    final gen = ++r.gen;
     r.state = RelayState.connecting;
+    r.probeAt = null;
     _notify();
+    WebSocketChannel? ch;
     try {
-      final ch = _connector(Uri.parse(r.url));
-      r.ch = ch;
+      ch = _connector(Uri.parse(r.url));
       await ch.ready.timeout(const Duration(seconds: 12));
-      if (_closed || !_relays.containsKey(r.url)) {
+      if (_closed || gen != r.gen || !_relays.containsKey(r.url)) {
         ch.sink.close();
         return;
       }
+      r.ch = ch;
       r.state = RelayState.online;
       r.error = null;
       r.attempt = 0;
+      r.lastRx = DateTime.now();
       _notify();
       r.sub = ch.stream.listen(
-        (m) => _onMessage(r, m),
-        onDone: () => _lost(r, 'соединение закрыто'),
-        onError: (Object e) => _lost(r, '$e'),
+        (m) {
+          if (gen == r.gen) _onMessage(r, m);
+        },
+        onDone: () {
+          if (gen == r.gen) _lost(r, 'соединение закрыто');
+        },
+        onError: (Object e) {
+          if (gen == r.gen) _lost(r, '$e');
+        },
       );
-      if (_filters.isNotEmpty) _sendReq(r);
+      _sendReq(r);
       final q = List.of(r.queue);
       r.queue.clear();
       for (final m in q) {
         _send(r, m, queue: true);
       }
     } catch (e) {
-      _lost(r, '$e');
+      try {
+        ch?.sink.close();
+      } catch (_) {}
+      if (gen == r.gen) _lost(r, '$e');
     }
   }
 
   void _lost(_Relay r, String why) {
+    r.gen++; // всё, что придёт от этого соединения дальше, игнорируем
     r.sub?.cancel();
     r.sub = null;
     try {
       r.ch?.sink.close();
     } catch (_) {}
     r.ch = null;
+    r.probeAt = null;
+    r.eose = false;
     r.state = RelayState.offline;
     r.error = why.length > 120 ? why.substring(0, 120) : why;
     r.attempt++;
@@ -188,10 +281,14 @@ class RelayPool {
     if (_closed || !_relays.containsKey(r.url)) return;
     final delay = Duration(seconds: [2, 4, 8, 15, 30, 60][r.attempt.clamp(1, 6) - 1]);
     r.retry?.cancel();
-    r.retry = Timer(delay, () => _connect(r));
+    r.retry = Timer(delay, () {
+      if (r.state == RelayState.offline) _connect(r);
+    });
   }
 
   void _onMessage(_Relay r, dynamic raw) {
+    r.lastRx = DateTime.now();
+    r.probeAt = null; // любой ответ — соединение живо
     try {
       final m = jsonDecode(raw as String) as List;
       switch (m[0]) {
@@ -205,13 +302,19 @@ class RelayPool {
             _events.add(e);
           }
         case 'EOSE':
-          r.eose = true;
-          _notify();
+          if (m.length > 1 && m[1] == _probeId) {
+            _send(r, jsonEncode(['CLOSE', _probeId]), queue: false);
+            return;
+          }
+          if (!r.eose) {
+            r.eose = true;
+            onSynced?.call(r.url, r.reqAt);
+            _notify();
+          }
         case 'OK':
           final id = m[1] as String;
           final ok = m[2] == true;
           if (ok) {
-            _okCount[id] = (_okCount[id] ?? 0) + 1;
             (_okBy[id] ??= {}).add(r.url);
             if (_okBy.length > 2000) _okBy.remove(_okBy.keys.first);
           } else {
@@ -224,8 +327,11 @@ class RelayPool {
             _pendingOk.remove(id);
           }
         case 'CLOSED':
-        case 'NOTICE':
+          if (m.length > 1 && m[1] == _probeId) return;
           r.error = m.length > 2 ? '${m[2]}' : '${m.last}';
+          _notify();
+        case 'NOTICE':
+          r.error = m.length > 1 ? '${m[1]}' : 'notice';
           _notify();
       }
     } catch (_) {}
@@ -239,16 +345,12 @@ class RelayPool {
   Set<String> acceptedBy(String id) => _okBy[id] ?? {};
   Set<String> deliveredBy(String id) => _sources[id] ?? {};
 
-  /// Сколько ретрансляторов подтвердили событие.
-  int acks(String id) => _okCount[id] ?? 0;
-
-  /// Дождаться, пока все доступные ретрансляторы отдадут накопленное (EOSE).
+  /// Дождаться, пока все ретрансляторы отдадут накопленное (EOSE) или окажутся
+  /// недоступны. Иначе можно уйти раньше, чем медленный, но единственный
+  /// хранящий сообщение ретранслятор успеет его отдать.
   Future<void> waitEose(Duration timeout) async {
     final end = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(end)) {
-      // Ждём, пока все ретрансляторы либо ответят полностью (EOSE), либо
-      // окажутся недоступны. Иначе можно уйти раньше, чем медленный, но
-      // единственный хранящий сообщение ретранслятор успеет его отдать.
       final rs = _relays.values;
       final settled = rs.every((r) => r.eose || (r.state == RelayState.offline && r.attempt > 0));
       if (rs.any((r) => r.eose) && settled) return;
@@ -257,6 +359,7 @@ class RelayPool {
   }
 
   void _drop(_Relay r) {
+    r.gen++;
     r.retry?.cancel();
     r.sub?.cancel();
     try {
@@ -266,6 +369,7 @@ class RelayPool {
 
   Future<void> close() async {
     _closed = true;
+    _health?.cancel();
     for (final r in _relays.values) {
       _drop(r);
     }

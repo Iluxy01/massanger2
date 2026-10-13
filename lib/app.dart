@@ -51,8 +51,10 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return AppScope(
       state: widget.state,
+      // Всё приложение (тема, MaterialApp) перестраивается только при смене
+      // темы или акцента; данные перерисовывают лишь зависящие от них экраны.
       child: ListenableBuilder(
-        listenable: widget.state,
+        listenable: widget.state.themeTick,
         builder: (context, _) {
           final s = widget.state;
           final vc = s.colors;
@@ -74,20 +76,7 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
                 child!,
                 const _InAppBanner(),
                 // Экран блокировки — поверх всего, включая открытые чаты.
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 450),
-                  switchInCurve: Curves.easeOutCubic,
-                  transitionBuilder: (c, a) => FadeTransition(
-                    opacity: a,
-                    child: ScaleTransition(
-                      scale: Tween(begin: 1.08, end: 1.0).animate(a),
-                      child: c,
-                    ),
-                  ),
-                  child: s.locked
-                      ? const LockScreen(key: ValueKey('lock'))
-                      : const SizedBox.shrink(),
-                ),
+                const _LockLayer(),
               ],
             ),
             home: const _RootGate(),
@@ -130,6 +119,25 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
     return base.copyWith(
       textTheme: base.textTheme.apply(bodyColor: vc.text, displayColor: vc.text),
       iconTheme: IconThemeData(color: vc.text),
+    );
+  }
+}
+
+class _LockLayer extends StatelessWidget {
+  const _LockLayer();
+
+  @override
+  Widget build(BuildContext context) {
+    final locked = context.app.locked;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 400),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (c, a) => FadeTransition(
+        opacity: a,
+        child: ScaleTransition(scale: Tween(begin: 1.06, end: 1.0).animate(a), child: c),
+      ),
+      child: locked ? const LockScreen(key: ValueKey('lock')) : const SizedBox.shrink(),
     );
   }
 }
@@ -187,8 +195,10 @@ class _InAppBannerState extends State<_InAppBanner> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _sub ??= context.appRead.incoming.listen((e) {
-      if (!mounted || context.appRead.locked) return;
-      context.appRead.tick(HapticKind.light);
+      if (!mounted) return;
+      final app = context.appRead;
+      if (app.locked || !app.inAppBanner) return;
+      app.tick(HapticKind.light);
       setState(() {
         _current = e;
         _visible = true;
@@ -235,6 +245,7 @@ class _InAppBannerState extends State<_InAppBanner> {
                     navigatorKey.currentState?.push(ChatScreen.route(e.contact));
                   },
                   child: Glass(
+                    blur: 20,
                     radius: 22,
                     padding: const EdgeInsets.all(12),
                     child: Row(

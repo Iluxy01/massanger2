@@ -1,27 +1,43 @@
 import 'dart:math';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 
-/// Медленно «дышащее» северное сияние на фоне.
+/// Северное сияние на фоне.
+///
+/// По умолчанию статичное: рисуется один раз и кэшируется (RepaintBoundary), так
+/// что прокрутка поверх него не перерисовывает фон. Живое движение ([animate])
+/// — только там, где экран виден недолго (приветствие).
 class AuroraBackground extends StatefulWidget {
-  const AuroraBackground({super.key, this.child, this.intensity = 1});
+  const AuroraBackground({super.key, this.child, this.intensity = 1, this.animate = false});
 
   final Widget? child;
   final double intensity;
+  final bool animate;
 
   @override
   State<AuroraBackground> createState() => _AuroraBackgroundState();
 }
 
 class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(seconds: 24))..repeat();
+  AnimationController? _c;
+
+  static const _still = AlwaysStoppedAnimation<double>(0.18);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.animate) {
+      _c = AnimationController(vsync: this, duration: const Duration(seconds: 24))..repeat();
+    }
+  }
 
   @override
   void dispose() {
-    _c.dispose();
+    _c?.dispose();
     super.dispose();
   }
 
@@ -29,16 +45,25 @@ class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerPr
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
-    return RepaintBoundary(
+    final bg = RepaintBoundary(
       child: CustomPaint(
+        size: Size.infinite,
         painter: _AuroraPainter(
-          _c,
+          _c ?? _still,
           bg: vc.bg,
           colors: [acc.a, acc.b, Color.lerp(acc.a, const Color(0xFFFF4F8B), 0.5)!],
           intensity: widget.intensity * (vc.dark ? 1 : 0.6),
         ),
-        child: widget.child,
       ),
+    );
+    final child = widget.child;
+    if (child == null) return bg;
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        Positioned.fill(child: bg),
+        child,
+      ],
     );
   }
 }
@@ -76,16 +101,23 @@ class _AuroraPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_AuroraPainter old) =>
-      old.bg != bg || old.colors != colors || old.intensity != intensity;
+      old.bg != bg ||
+      old.intensity != intensity ||
+      old.anim != anim ||
+      !listEquals(old.colors, colors);
 }
 
-/// Матовое стекло.
+/// Матовая панель.
+///
+/// По умолчанию — без размытия (просто полупрозрачная заливка): размытие
+/// пересчитывается каждый кадр и сильно грузит видеочип. [blur] включаем только
+/// там, где под панелью действительно прокручивается содержимое.
 class Glass extends StatelessWidget {
   const Glass({
     super.key,
     required this.child,
     this.radius = 24,
-    this.blur = 24,
+    this.blur = 0,
     this.padding,
     this.color,
     this.border = true,
@@ -101,19 +133,22 @@ class Glass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final r = BorderRadius.circular(radius);
+    final box = Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: color ?? (blur > 0 ? vc.glass : vc.panel),
+        borderRadius: r,
+        border: border ? Border.all(color: vc.border) : null,
+      ),
+      child: child,
+    );
+    if (blur <= 0) return box;
     return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
+      borderRadius: r,
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            color: color ?? vc.glass,
-            borderRadius: BorderRadius.circular(radius),
-            border: border ? Border.all(color: vc.border) : null,
-          ),
-          child: child,
-        ),
+        child: box,
       ),
     );
   }

@@ -88,7 +88,7 @@ class Store {
   static Future<Database> _openDb(DatabaseFactory f, String path, bool shared) => f.openDatabase(
     path,
     options: OpenDatabaseOptions(
-      version: 1,
+      version: 2,
       singleInstance: shared,
       // Приложение и фоновая проверка могут писать одновременно:
       // WAL + ожидание вместо мгновенной ошибки «database is locked».
@@ -104,11 +104,22 @@ class Store {
         );
         await db.execute('CREATE INDEX msg_chat ON messages(chat, ts)');
         await db.execute('CREATE TABLE seen (id TEXT PRIMARY KEY, ts INTEGER)');
-        await db.execute(
-          'CREATE TABLE outbox (id TEXT PRIMARY KEY, chat TEXT, msg TEXT, event TEXT, ts INTEGER)',
-        );
+        await _createOutbox(db);
+      },
+      // v2: очередь хранит само сообщение (зашифрованно), а не готовый конверт —
+      // при переотправке конверт создаётся заново со свежим временем.
+      onUpgrade: (db, from, to) async {
+        if (from < 2) {
+          await db.execute('DROP TABLE IF EXISTS outbox');
+          await _createOutbox(db);
+        }
       },
     ),
+  );
+
+  static Future<void> _createOutbox(Database db) => db.execute(
+    'CREATE TABLE outbox (msg TEXT PRIMARY KEY, chat TEXT, payload BLOB, '
+    'ts INTEGER, attempts INTEGER, next INTEGER)',
   );
 
   /// Соединение; если его закрыл кто-то посторонний — открываем заново.
@@ -228,10 +239,23 @@ class Store {
 
   // ── уже обработанные конверты ──
 
-  Future<bool> isSeen(String id) async =>
-      (await (await _c()).query('seen', where: 'id = ?', whereArgs: [id])).isNotEmpty;
+  /// Кэш в памяти — повторные копии конвертов не трогают базу.
+  final _seenMem = <String>{};
+
+  Future<bool> isSeen(String id) async {
+    if (_seenMem.contains(id)) return true;
+    final hit = (await (await _c()).query('seen', where: 'id = ?', whereArgs: [id])).isNotEmpty;
+    if (hit) _remember(id);
+    return hit;
+  }
+
+  void _remember(String id) {
+    _seenMem.add(id);
+    if (_seenMem.length > 20000) _seenMem.remove(_seenMem.first);
+  }
 
   Future<bool> markSeen(String id) async {
+    _remember(id);
     final n = await (await _c()).insert('seen', {
       'id': id,
       'ts': nowSec(),
@@ -242,16 +266,43 @@ class Store {
   Future<void> pruneSeen() async =>
       (await _c()).delete('seen', where: 'ts < ?', whereArgs: [nowSec() - 14 * 24 * 3600]);
 
-  // ── исходящие, ещё не принятые ни одним ретранслятором ──
+  // ── очередь отправки: сообщения, которые друг ещё не подтвердил ──
 
-  Future<void> queue(String id, String chat, String msgId, String eventJson) async =>
+  Future<void> queue(String msgId, String chat, Map<String, dynamic> payload) async =>
       (await _c()).insert('outbox', {
-        'id': id,
-        'chat': chat,
         'msg': msgId,
-        'event': eventJson,
+        'chat': chat,
+        'payload': _seal(payload),
         'ts': nowSec(),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+        'attempts': 0,
+        'next': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+
+  /// Сообщения, которые пора (пере)отправить.
+  Future<List<OutboxItem>> outboxDue({bool all = false}) async {
+    final rows = await (await _c()).query(
+      'outbox',
+      where: all ? null : 'next <= ?',
+      whereArgs: all ? null : [nowSec()],
+      orderBy: 'ts',
+    );
+    return [
+      for (final r in rows)
+        if (_open(r['payload']) case final p?)
+          OutboxItem(r['msg'] as String, r['chat'] as String, p, (r['attempts'] as num).toInt()),
+    ];
+  }
+
+  Future<Set<String>> outboxIds() async => {
+    for (final r in await (await _c()).query('outbox', columns: ['msg'])) r['msg'] as String,
+  };
+
+  Future<void> scheduleRetry(String msgId, int attempts, int next) async => (await _c()).update(
+    'outbox',
+    {'attempts': attempts, 'next': next},
+    where: 'msg = ?',
+    whereArgs: [msgId],
+  );
 
   /// Друг подтвердил получение — больше не переотправляем.
   Future<void> dequeueMessages(Iterable<String> msgIds) async {
@@ -264,9 +315,13 @@ class Store {
   /// Старше 3 дней не переотправляем (ретрансляторы всё равно удалят через 7).
   Future<void> pruneOutbox() async =>
       (await _c()).delete('outbox', where: 'ts < ?', whereArgs: [nowSec() - 3 * 24 * 3600]);
+}
 
-  Future<void> dequeue(String id) async =>
-      (await _c()).delete('outbox', where: 'id = ?', whereArgs: [id]);
+class OutboxItem {
+  OutboxItem(this.msgId, this.chat, this.payload, this.attempts);
 
-  Future<List<Map<String, Object?>>> outbox() async => (await _c()).query('outbox', orderBy: 'ts');
+  final String msgId;
+  final String chat;
+  final Map<String, dynamic> payload;
+  final int attempts;
 }

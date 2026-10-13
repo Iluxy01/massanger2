@@ -69,10 +69,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _app = context.appRead;
     _input.text = _app.drafts[c.id] ?? '';
     var last = _input.text;
+    // Без setState: иначе каждая буква перестраивала весь экран со списком
+    // сообщений. Кнопка «отправить/микрофон» слушает поле сама.
     _input.addListener(() {
       if (_input.text.isNotEmpty && _input.text != last) _app.userTyping(c.id);
       last = _input.text;
-      setState(() {});
     });
     _animated = _app.messagesOf(c.id).map((m) => m.id).toSet();
     _seen = _app.messagesOf(c.id).length;
@@ -251,7 +252,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final app = context.app;
     final vc = app.colors;
     final acc = app.accent;
-    final hasText = _input.text.trim().isNotEmpty;
     final bottom = MediaQuery.paddingOf(context).bottom;
 
     return Padding(
@@ -301,6 +301,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   : null,
             ),
             child: Glass(
+              blur: 20,
               radius: 28,
               padding: const EdgeInsets.all(5),
               child: Row(
@@ -384,12 +385,15 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                   const SizedBox(width: 2),
-                  _SendMicButton(
-                    hasText: hasText,
-                    recording: _recording,
-                    onSend: _send,
-                    onRecordStart: _startRecording,
-                    onRecordEnd: () => _stopRecording(),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _input,
+                    builder: (_, v, _) => _SendMicButton(
+                      hasText: v.text.trim().isNotEmpty,
+                      recording: _recording,
+                      onSend: _send,
+                      onRecordStart: _startRecording,
+                      onRecordEnd: () => _stopRecording(),
+                    ),
                   ),
                 ],
               ),
@@ -446,6 +450,7 @@ class _TopBar extends StatelessWidget {
     void openProfile() => Navigator.of(context).push(ContactScreen.route(c));
 
     return Glass(
+      blur: 20,
       radius: 0,
       border: false,
       child: Container(
@@ -610,7 +615,6 @@ class _DateChip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 14),
         child: Glass(
           radius: 12,
-          blur: 10,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           child: Text(
             fmtDay(time),
@@ -635,7 +639,6 @@ class _EncryptionBanner extends StatelessWidget {
         onTap: () => Navigator.of(context).push(ContactScreen.route(contact)),
         child: Glass(
           radius: 18,
-          blur: 10,
           padding: const EdgeInsets.all(14),
           child: Column(
             children: [
@@ -749,6 +752,12 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
     _drag.animateTo(0, duration: const Duration(milliseconds: 380), curve: Curves.easeOutBack);
   }
 
+  void _toggleSecret() {
+    final app = context.appRead;
+    app.tick(HapticKind.light);
+    app.reveal(widget.m, !widget.m.revealed);
+  }
+
   void _doubleTap() {
     final app = context.appRead;
     app.tick(HapticKind.medium);
@@ -785,7 +794,11 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
           child: GestureDetector(
-            onDoubleTap: _doubleTap,
+            // Секретное: касание открывает/скрывает. Двойной тап для «❤️» тут
+            // отключён — иначе одиночное касание ждёт, не будет ли второго, и
+            // срабатывает через раз.
+            onTap: m.secret ? _toggleSecret : null,
+            onDoubleTap: m.secret ? null : _doubleTap,
             onLongPress: () {
               context.appRead.tick(HapticKind.medium);
               _openMenu();
@@ -915,7 +928,6 @@ class BubbleBody extends StatelessWidget {
           _Wobble(child: Text(m.text, style: const TextStyle(fontSize: 52, height: 1.1))),
           Glass(
             radius: 10,
-            blur: 8,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             child: DefaultTextStyle.merge(
               style: TextStyle(color: vc.textDim),
@@ -945,16 +957,19 @@ class BubbleBody extends StatelessWidget {
     if (m.kind == MsgKind.voice) {
       content = _VoiceContent(m: m, fg: fg, meta: meta);
     } else {
+      Widget text = Text(m.text, style: TextStyle(color: fg, fontSize: 16, height: 1.32));
+      // Размывается только текст — пузырь сохраняет свой естественный размер,
+      // а время и галочки всегда видны.
+      if (m.secret) text = _SecretText(revealed: m.revealed, fg: fg, child: text);
       content = Wrap(
         alignment: WrapAlignment.end,
         crossAxisAlignment: WrapCrossAlignment.end,
         spacing: 8,
         children: [
-          Text(m.text, style: TextStyle(color: fg, fontSize: 16, height: 1.32)),
+          text,
           Padding(padding: const EdgeInsets.only(top: 4), child: meta),
         ],
       );
-      if (m.secret) content = _SecretContent(m: m, fg: fg, child: content);
     }
 
     return Container(
@@ -970,13 +985,16 @@ class BubbleBody extends StatelessWidget {
         color: mine ? null : vc.bubbleIn,
         borderRadius: radius,
         border: mine ? null : Border.all(color: vc.border),
-        boxShadow: [
-          BoxShadow(
-            color: mine ? acc.mid.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        // Лёгкая тень только у своих пузырей (тени дороги при прокрутке).
+        boxShadow: mine
+            ? [
+                BoxShadow(
+                  color: acc.mid.withValues(alpha: 0.18),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1054,87 +1072,46 @@ class _QuotedReply extends StatelessWidget {
   }
 }
 
-/// Секретное сообщение: размыто, пока не коснёшься; входящее снова прячется через 8 секунд.
-class _SecretContent extends StatefulWidget {
-  const _SecretContent({required this.m, required this.fg, required this.child});
+/// Текст секретного сообщения: размыт, пока его не открыли. Открыть/скрыть —
+/// касанием по пузырю (см. [_MessageTile]).
+class _SecretText extends StatelessWidget {
+  const _SecretText({required this.revealed, required this.fg, required this.child});
 
-  final Message m;
+  final bool revealed;
   final Color fg;
   final Widget child;
 
   @override
-  State<_SecretContent> createState() => _SecretContentState();
-}
-
-class _SecretContentState extends State<_SecretContent> {
-  Timer? _hide;
-
-  @override
-  void dispose() {
-    _hide?.cancel();
-    super.dispose();
-  }
-
-  void _toggle() {
-    final app = context.appRead;
-    final show = !widget.m.revealed;
-    app.tick(HapticKind.light);
-    app.reveal(widget.m, show);
-    _hide?.cancel();
-    if (show && !widget.m.mine) {
-      _hide = Timer(const Duration(seconds: 8), () {
-        if (mounted) app.reveal(widget.m, false);
-      });
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final revealed = widget.m.revealed;
-    return GestureDetector(
-      onTap: _toggle,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(end: revealed ? 0 : 7),
-        duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutCubic,
-        builder: (_, sigma, child) => Stack(
-          alignment: Alignment.center,
-          children: [
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: revealed ? 0 : 1),
+      duration: const Duration(milliseconds: 380),
+      curve: Curves.easeOutCubic,
+      builder: (_, t, child) => Stack(
+        alignment: Alignment.center,
+        children: [
+          if (t > 0.01)
             ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.decal),
+              imageFilter: ImageFilter.blur(sigmaX: 7 * t, sigmaY: 7 * t, tileMode: TileMode.decal),
               child: child,
-            ),
-            if (sigma > 0.5)
-              Positioned.fill(
-                child: Opacity(
-                  opacity: (sigma / 7).clamp(0, 1),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.touch_app_rounded, size: 16, color: widget.fg),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Коснись, чтобы прочитать',
-                          style: TextStyle(
-                            color: widget.fg,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+            )
+          else
+            child!,
+          if (t > 0.05)
+            Opacity(
+              opacity: t,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: fg.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
                 ),
+                child: Icon(Icons.visibility_rounded, size: 16, color: fg),
               ),
-          ],
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minWidth: 210),
-          child: widget.child,
-        ),
+            ),
+        ],
       ),
+      child: child,
     );
   }
 }

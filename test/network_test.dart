@@ -36,13 +36,15 @@ void main() {
           final opened = GiftWrap.unwrap(bob, e);
           if (opened != null && opened.$1 == alice.pub) got.add(e.kind);
         });
-        pool.subscribe([
-          {
-            'kinds': [GiftWrap.kindWrap, GiftWrap.kindWrapEphemeral],
-            '#p': [bob.pub],
-            'since': nowSec() - 3 * 24 * 3600,
-          },
-        ]);
+        pool.subscribe(
+          () => [
+            {
+              'kinds': [GiftWrap.kindWrap, GiftWrap.kindWrapEphemeral],
+              '#p': [bob.pub],
+              'since': nowSec() - 3600,
+            },
+          ],
+        );
         pool.start();
         await pool.waitEose(const Duration(seconds: 15));
 

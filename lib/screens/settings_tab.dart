@@ -203,6 +203,15 @@ class SettingsTab extends StatelessWidget {
                   ),
                 ),
                 _Tile(
+                  icon: Icons.web_asset_rounded,
+                  title: 'Всплывающие сообщения',
+                  subtitle: 'Окошко сверху, когда приложение открыто',
+                  trailing: VeilSwitch(
+                    value: app.inAppBanner,
+                    onChanged: (v) => app.setFlag(() => app.inAppBanner = v),
+                  ),
+                ),
+                _Tile(
                   icon: Icons.notifications_rounded,
                   title: 'Текст в уведомлениях',
                   subtitle: app.notificationText ? 'Показывается' : 'Только «Новое сообщение»',

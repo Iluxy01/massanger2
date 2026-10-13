@@ -17,8 +17,21 @@ class Nip44 {
   );
   static final _salt = utf8.encode('nip44-v2');
 
+  static final _cache = <String, Uint8List>{};
+
   /// Общий ключ беседы. Одинаков для (мой приватный, его публичный) и наоборот.
-  static Uint8List conversationKey(String privHex, String pubHex) {
+  /// [cache] — для постоянных пар (я ↔ друг); одноразовые ключи не кэшируем.
+  static Uint8List conversationKey(String privHex, String pubHex, {bool cache = false}) {
+    if (!cache) return _compute(privHex, pubHex);
+    final k = '$privHex|$pubHex';
+    final hit = _cache.remove(k);
+    final v = hit ?? _compute(privHex, pubHex);
+    _cache[k] = v; // в конец — «недавно использован»
+    if (_cache.length > 256) _cache.remove(_cache.keys.first);
+    return v;
+  }
+
+  static Uint8List _compute(String privHex, String pubHex) {
     final d = BigInt.parse(privHex, radix: 16);
     final x = BigInt.parse(pubHex, radix: 16);
     if (x >= _p) throw ArgumentError('bad pubkey');
