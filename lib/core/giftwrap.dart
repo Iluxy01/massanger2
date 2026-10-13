@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 
 import 'nip44.dart';
@@ -64,6 +65,26 @@ class GiftWrap {
       ],
     );
   }
+
+  /// То же в отдельном потоке — криптография на чистом Dart занимает десятки
+  /// миллисекунд и не должна подтормаживать интерфейс.
+  static Future<Event> wrapAsync({
+    required Keys sender,
+    required String recipientPub,
+    required String content,
+    bool ephemeral = false,
+    Duration ttl = const Duration(days: 7),
+  }) => Isolate.run(
+    () => wrap(
+      sender: sender,
+      recipientPub: recipientPub,
+      content: content,
+      ephemeral: ephemeral,
+      ttl: ttl,
+    ),
+  );
+
+  static Future<(String, Event)?> unwrapAsync(Keys me, Event e) => Isolate.run(() => unwrap(me, e));
 
   /// Открыть конверт. Возвращает (публичный ключ отправителя, rumor) или null,
   /// если что-то не сходится (подделка, чужое сообщение, мусор).

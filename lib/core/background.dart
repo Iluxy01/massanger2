@@ -23,11 +23,17 @@ void backgroundDispatcher() {
       // Отдельное соединение с базой: закрыв его, мы не закроем базу приложению.
       live = await Live.bootBackground(app);
       if (live == null || live.keys == null) return true;
-      // Если приложение сейчас открыто — оно само всё получает.
-      final fg = int.tryParse(await live.store.get('fg') ?? '') ?? 0;
-      if (nowSec() - fg < 60) return true;
+      // Если приложение живо (открыто или свёрнуто, но не выгружено) —
+      // оно само всё получает; не мешаем ему писать в базу.
+      final alive = int.tryParse(await live.store.get('alive') ?? '') ?? 0;
+      if (nowSec() - alive < 75) return true;
       live.notify = SystemNotify(() => app.notificationText);
-      await live.syncOnce();
+      final got = await live.syncOnce();
+      final t = DateTime.now();
+      await live.store.set(
+        'bg_last',
+        '${t.hour}:${t.minute.toString().padLeft(2, '0')} — новых сообщений: $got',
+      );
       return true;
     } catch (_) {
       return false;

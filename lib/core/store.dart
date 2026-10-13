@@ -90,6 +90,12 @@ class Store {
     options: OpenDatabaseOptions(
       version: 1,
       singleInstance: shared,
+      // Приложение и фоновая проверка могут писать одновременно:
+      // WAL + ожидание вместо мгновенной ошибки «database is locked».
+      onConfigure: (db) async {
+        await db.rawQuery('PRAGMA journal_mode=WAL');
+        await db.rawQuery('PRAGMA busy_timeout=8000');
+      },
       onCreate: (db, _) async {
         await db.execute('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
         await db.execute('CREATE TABLE contacts (id TEXT PRIMARY KEY, data BLOB)');
@@ -222,6 +228,9 @@ class Store {
 
   // ── уже обработанные конверты ──
 
+  Future<bool> isSeen(String id) async =>
+      (await (await _c()).query('seen', where: 'id = ?', whereArgs: [id])).isNotEmpty;
+
   Future<bool> markSeen(String id) async {
     final n = await (await _c()).insert('seen', {
       'id': id,
@@ -243,6 +252,18 @@ class Store {
         'event': eventJson,
         'ts': nowSec(),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+  /// Друг подтвердил получение — больше не переотправляем.
+  Future<void> dequeueMessages(Iterable<String> msgIds) async {
+    final db = await _c();
+    for (final id in msgIds) {
+      await db.delete('outbox', where: 'msg = ?', whereArgs: [id]);
+    }
+  }
+
+  /// Старше 3 дней не переотправляем (ретрансляторы всё равно удалят через 7).
+  Future<void> pruneOutbox() async =>
+      (await _c()).delete('outbox', where: 'ts < ?', whereArgs: [nowSec() - 3 * 24 * 3600]);
 
   Future<void> dequeue(String id) async =>
       (await _c()).delete('outbox', where: 'id = ?', whereArgs: [id]);

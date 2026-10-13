@@ -352,6 +352,25 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// Удалить друга полностью — вместе с перепиской.
+  Future<void> deleteContact(String id) async {
+    pinned.remove(id);
+    muted.remove(id);
+    unread.remove(id);
+    typing.remove(id);
+    drafts.remove(id);
+    if (live != null) {
+      await live!.deleteContact(id);
+    } else {
+      contacts.removeWhere((c) => c.id == id);
+      _messages.remove(id);
+    }
+    _saveSettings();
+  }
+
+  /// Журнал сети для диагностики.
+  List<String> get journal => live?.journal ?? const ['демо-режим: сети нет'];
+
   /// Принять незнакомца, который нам написал.
   void acceptRequest(String id) {
     final c = contact(id);

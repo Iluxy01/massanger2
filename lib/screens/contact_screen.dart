@@ -246,6 +246,11 @@ class ContactScreen extends StatelessWidget {
                     label: c.blocked ? 'Разблокировать' : 'Заблокировать',
                     onTap: () => app.toggleBlocked(c.id),
                   ),
+                  _DangerRow(
+                    icon: Icons.person_remove_rounded,
+                    label: 'Удалить из друзей',
+                    onTap: () => _confirmDelete(context, c),
+                  ),
                 ],
               ),
             ],
@@ -439,5 +444,39 @@ class _DangerRow extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+Future<void> _confirmDelete(BuildContext context, Contact c) async {
+  final app = context.appRead;
+  final vc = app.colors;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: vc.elevated,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      title: Text('Удалить ${c.name}?', style: TextStyle(color: vc.text)),
+      content: Text(
+        'Контакт и вся переписка будут стёрты с этого телефона. Чтобы снова '
+        'переписываться, нужно будет заново обменяться кодами.',
+        style: TextStyle(color: vc.textDim, height: 1.4),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: Text('Отмена', style: TextStyle(color: vc.textDim)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Удалить', style: TextStyle(color: VeilColors.danger)),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  Navigator.of(context).popUntil((r) => r.isFirst);
+  await app.deleteContact(c.id);
+  if (context.mounted) {
+    showVeilToast(context, '${c.name} удалён(а)', icon: Icons.person_remove_rounded);
   }
 }

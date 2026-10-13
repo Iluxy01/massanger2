@@ -102,6 +102,8 @@ class RelayPool {
 
   void subscribe(List<Map<String, dynamic>> filters) {
     _filters = filters;
+    // Новый запрос — события снова можно получить (если раньше их не удалось обработать).
+    _seen.clear();
     for (final r in _relays.values) {
       r.eose = false;
       if (r.state == RelayState.online) _sendReq(r);
@@ -244,8 +246,12 @@ class RelayPool {
   Future<void> waitEose(Duration timeout) async {
     final end = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(end)) {
-      final online = _relays.values.where((r) => r.state == RelayState.online);
-      if (online.isNotEmpty && online.every((r) => r.eose)) return;
+      // Ждём, пока все ретрансляторы либо ответят полностью (EOSE), либо
+      // окажутся недоступны. Иначе можно уйти раньше, чем медленный, но
+      // единственный хранящий сообщение ретранслятор успеет его отдать.
+      final rs = _relays.values;
+      final settled = rs.every((r) => r.eose || (r.state == RelayState.offline && r.attempt > 0));
+      if (rs.any((r) => r.eose) && settled) return;
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
   }

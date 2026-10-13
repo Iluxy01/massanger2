@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/relay_pool.dart';
@@ -856,14 +857,20 @@ class _NetworkCard extends StatelessWidget {
             icon: Icons.network_check_rounded,
             onTap: () => _diagnose(context),
           ),
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
             children: [
               TextButton.icon(
                 onPressed: () => _add(context),
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text('Добавить свой'),
               ),
-              const Spacer(),
+              TextButton.icon(
+                onPressed: () => _journal(context),
+                icon: const Icon(Icons.receipt_long_rounded, size: 18),
+                label: const Text('Журнал'),
+              ),
+
               TextButton(
                 onPressed: () => app.setRelays(List.of(defaultRelays)),
                 child: Text('Сбросить', style: TextStyle(color: vc.textDim)),
@@ -939,6 +946,46 @@ class _NetworkCard extends StatelessWidget {
           },
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Готово'))],
+      ),
+    );
+  }
+
+  void _journal(BuildContext context) {
+    final app = context.appRead;
+    final vc = app.colors;
+    final lines = List.of(app.journal.reversed);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: vc.elevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text('Журнал сети', style: TextStyle(color: vc.text)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          child: lines.isEmpty
+              ? Text('Пока пусто', style: TextStyle(color: vc.textDim))
+              : ListView.builder(
+                  itemCount: lines.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      lines[i],
+                      style: TextStyle(color: vc.textDim, fontSize: 11.5, fontFamily: 'monospace'),
+                    ),
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: app.journal.join('\n')));
+              showVeilToast(context, 'Журнал скопирован — пришли его разработчику');
+            },
+            child: const Text('Копировать'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+        ],
       ),
     );
   }

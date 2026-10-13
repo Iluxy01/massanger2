@@ -115,6 +115,14 @@ void main() {
       expect(e['content'], isNot(contains('Привет')));
     }
 
+    // Подтверждённые сообщения уходят из очереди переотправки.
+    await until(() => sent.status == MsgStatus.read);
+    expect(
+      (await aliceLive.store.outbox()).where((r) => r['msg'] == sent.id),
+      isEmpty,
+      reason: 'после «доставлено» не переотправляем',
+    );
+
     // Боб «перезапускает телефон» — всё на месте, из зашифрованной базы.
     await bobLive.close();
     final (bob2, bob2Live) = await phone('Боб', secrets: bobSecrets);
@@ -193,6 +201,28 @@ void main() {
     bob.setForeground(true);
     await until(() => bobAtAlice.online, what: 'снова в сети');
 
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('удаление друга и повторный запрос', () async {
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount > 0 && bobLive.pool!.onlineCount > 0);
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    alice.send(c.id, 'раз');
+    await until(() => bob.messagesOf(aliceLive.keys!.pub).isNotEmpty);
+
+    await bob.deleteContact(aliceLive.keys!.pub);
+    expect(bob.contact(aliceLive.keys!.pub), isNull);
+    expect(bob.messagesOf(aliceLive.keys!.pub), isEmpty);
+    expect(await bobLive.store.contacts(), isEmpty);
+
+    // Алиса пишет снова — у Боба она появляется заявкой, старой переписки нет.
+    alice.send(c.id, 'два');
+    await until(() => bob.messagesOf(aliceLive.keys!.pub).isNotEmpty, what: 'заявка');
+    expect(bob.contact(aliceLive.keys!.pub)!.request, isTrue);
+    expect(bob.messagesOf(aliceLive.keys!.pub).map((m) => m.text), ['два']);
     await aliceLive.close();
     await bobLive.close();
   });
