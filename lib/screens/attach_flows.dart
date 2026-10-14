@@ -54,16 +54,16 @@ class AttachFlows {
       if (camera) {
         final f = await picker.pickImage(
           source: ImageSource.camera,
-          maxWidth: 2048,
-          maxHeight: 2048,
-          imageQuality: 82,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 78,
         );
         files = f == null ? [] : [f];
       } else {
         files = await picker.pickMultiImage(
-          maxWidth: 2048,
-          maxHeight: 2048,
-          imageQuality: 82,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 78,
           limit: 10,
         );
       }

@@ -77,8 +77,8 @@ class CryptoWorker {
   }) async => await _call(['seal', signer.priv, key, path, index, chunkSize]) as Event;
 
   /// Расшифровать кусок (null — повреждён или чужой).
-  Future<Uint8List?> openChunk(String key, int index, String content) async =>
-      await _call(['open', key, index, content]) as Uint8List?;
+  Future<Uint8List?> openChunk(String key, int index, String content, {int scheme = 1}) async =>
+      await _call(['open', key, index, content, scheme]) as Uint8List?;
 
   /// SHA-256 файла.
   Future<String> hashFile(String path) async => await _call(['hash', path]) as String;
@@ -114,6 +114,7 @@ class CryptoWorker {
             base64.decode(req[1] as String),
             req[2] as int,
             req[3] as String,
+            scheme: req[4] as int,
           ),
           'hash' => MediaCodec.hashFile(req[1] as String),
           _ => throw ArgumentError('unknown ${req[0]}'),

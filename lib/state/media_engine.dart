@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/crypto_worker.dart';
 import '../core/media.dart';
 import '../core/nostr.dart';
+import '../core/relay_pool.dart';
 import '../models/models.dart';
 import 'live.dart';
 
@@ -31,7 +32,7 @@ class MediaEngine {
   static const replicas = 2;
 
   /// Сколько кусков отправляется одновременно.
-  static const window = 3;
+  static const window = 4;
 
   /// Предел размера файла.
   static const maxBytes = 20 * 1024 * 1024;
@@ -45,8 +46,8 @@ class MediaEngine {
   /// Попросили «помедленнее» — не трогаем до этого времени.
   final Map<String, DateTime> _cooldown = {};
 
-  /// Успехи/отказы за сеанс — для выбора, куда класть куски.
-  final Map<String, int> _score = {};
+  /// Неудачи подряд за сеанс (молчание, отказ) — такие ретрансляторы реже выбираем.
+  final Map<String, int> _misses = {};
 
   bool busy(String msgId) => _jobs.containsKey(msgId);
 
@@ -84,6 +85,23 @@ class MediaEngine {
     live.app.notifyChanged();
   }
 
+  /// Сохранить итог передачи. Пока файл шёл, список сообщений могли
+  /// перечитать из базы (например, при возврате из галереи) — тогда на экране
+  /// уже другой экземпляр этого же сообщения: переносим итог и в него, иначе
+  /// у отправителя навсегда осталось бы «загружается».
+  Future<bool> _publishResult(String chat, Message m) async {
+    var saved = false;
+    for (final cur in live.app.messagesOf(chat)) {
+      if (cur.id != m.id) continue;
+      if (!identical(cur, m)) cur.att?.copyFrom(m.att!);
+      await live.saveMessage(chat, cur);
+      saved = true;
+    }
+    // Не нашли — сообщение удалили, пока шёл файл; не воскрешаем его.
+    live.app.notifyChanged();
+    return saved;
+  }
+
   // ───────────────────────── отправка ─────────────────────────
 
   /// Залить куски и отправить сообщение. Повторный вызов во время работы —
@@ -116,25 +134,42 @@ class MediaEngine {
       for (final u in pl.onlineUrls)
         if (!_noBig.contains(u) && !exclude.contains(u) && !(_cooldown[u]?.isAfter(now) ?? false))
           u,
-    ]..sort((a, b) => (_score[b] ?? 0).compareTo(_score[a] ?? 0));
+    ]..sort((a, b) => _rank(pl, a).compareTo(_rank(pl, b)));
     return list;
   }
 
+  /// Чем меньше — тем лучше: быстрые и надёжные ретрансляторы — первыми.
+  double _rank(RelayPool pl, String url) =>
+      (pl.latencyOf(url) ?? 700) * (1 + 2 * (_misses[url] ?? 0));
+
+  /// Кто промолчал, пока никто не принял, — получает «минус» к выбору.
   void _learn(String id, Set<String> asked, Set<String> ok) {
     final pl = live.pool!;
     for (final u in asked) {
       if (ok.contains(u)) {
-        _score[u] = (_score[u] ?? 0) + 1;
-        continue;
+        _misses[u] = 0;
+      } else if (ok.isEmpty && !pl.rejected(id).containsKey(u)) {
+        _misses[u] = (_misses[u] ?? 0) + 1;
       }
-      _score[u] = (_score[u] ?? 0) - 2;
-      final why = (pl.rejected(id)[u] ?? '').toLowerCase();
-      if (why.contains('rate') || why.contains('slow') || why.contains('spam')) {
-        // Просят помедленнее — даём передохнуть.
-        _cooldown[u] = DateTime.now().add(Duration(seconds: why.contains('spam') ? 60 : 20));
-      } else if (why.isNotEmpty) {
-        // Не берёт такие события вовсе (размер, «только для своих» и т. п.).
-        if (_noBig.add(u)) live.log('${u.replaceFirst('wss://', '')} не берёт куски файлов: $why');
+    }
+  }
+
+  /// Наши куски, ответы на которые ещё интересны.
+  final Set<String> _ours = {};
+
+  /// Отказ приходит иногда уже после того, как кусок принял другой, — учитываем
+  /// его сразу, чтобы не слать этому ретранслятору следующие куски впустую.
+  void _onReject(String id, String url, String why) {
+    if (!_ours.contains(id)) return;
+    _misses[url] = (_misses[url] ?? 0) + 1;
+    final w = why.toLowerCase();
+    if (w.contains('rate') || w.contains('slow') || w.contains('spam')) {
+      // Просят помедленнее — даём передохнуть.
+      _cooldown[url] = DateTime.now().add(Duration(seconds: w.contains('spam') ? 60 : 20));
+    } else if (w.isNotEmpty) {
+      // Не берёт такие события вовсе (размер, «только для своих» и т. п.).
+      if (_noBig.add(url)) {
+        live.log('${url.replaceFirst('wss://', '')} не берёт куски файлов: $why');
       }
     }
   }
@@ -160,38 +195,45 @@ class MediaEngine {
     );
     final sw = Stopwatch()..start();
 
+    final sent = <String>[];
+
     Future<void> lane() async {
       while (!failed && next < n) {
         final i = next++;
         final ev = await w.sealChunk(signer: signer, key: key, path: path, index: i);
-        final ok = <String>{};
+        _ours.add(ev.id);
+        if (_ours.length > 5000) _ours.remove(_ours.first);
+        live.pool?.onReject ??= _onReject;
         final asked = <String>{};
-        for (var round = 0; round < 6 && ok.length < replicas; round++) {
+        var ok = <String>{};
+        for (var round = 0; round < 8 && ok.isEmpty; round++) {
           if (live.closed) {
             failed = true;
             return;
           }
-          final need = replicas - ok.length;
-          final targets = _targets(asked).take(need + (round == 0 ? 0 : 1)).toList();
+          // Кусок — сразу в два самых быстрых ретранслятора; дальше идём, как
+          // только принял первый (второй догонит сам, его ответ тоже учтём).
+          final targets = _targets(asked).take(replicas).toList();
           if (targets.isEmpty) {
-            if (ok.isNotEmpty) break; // больше некому — хватит и одного
-            asked.clear(); // все отказали — пробуем всех заново после паузы
-            await Future<void>.delayed(Duration(seconds: 2 + round * 2));
+            asked.clear(); // все отказали или молчат — пробуем снова после паузы
+            await Future<void>.delayed(Duration(milliseconds: 800 + round * 700));
             continue;
           }
           asked.addAll(targets);
-          final got = await live.pool!.publishTo(ev, targets);
-          _learn(ev.id, targets.toSet(), got);
-          ok.addAll(got);
+          ok = await live.pool!.publishTo(
+            ev,
+            targets,
+            want: 1,
+            timeout: const Duration(seconds: 8),
+          );
+          _learn(ev.id, targets.toSet(), ok);
         }
         if (ok.isEmpty) {
           failed = true;
           live.log('  кусок $i не приняли ретрансляторы');
           return;
         }
-        for (final u in ok) {
-          holders[u] = (holders[u] ?? 0) + 1;
-        }
+        sent.add(ev.id);
         done++;
         progress.value = done / n;
       }
@@ -199,15 +241,23 @@ class MediaEngine {
 
     await Future.wait([for (var i = 0; i < window; i++) lane()]);
     if (failed) return false;
+    // Где лежат куски: ответы вторых ретрансляторов успевают прийти следом.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    for (final id in sent) {
+      for (final u in live.pool!.acceptedBy(id)) {
+        holders[u] = (holders[u] ?? 0) + 1;
+      }
+    }
     att
       ..key = key
       ..signer = signer.pub
       ..chunks = n
       ..chunkSize = MediaCodec.chunkSize
+      ..scheme = MediaCodec.scheme
       ..relays = (holders.keys.toList()..sort((a, b) => holders[b]!.compareTo(holders[a]!)))
           .take(6)
           .toList();
-    await live.saveMessage(chat, m);
+    if (!await _publishResult(chat, m)) return false;
     live.log(
       '  файл залит за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с: '
       '${att.relays.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
@@ -263,7 +313,12 @@ class MediaEngine {
       if (e.pubkey != att.signer || i == null || i < 0 || i >= n) return;
       if (have.contains(i) || !pending.add(i)) return;
       writes = writes.then((_) async {
-        final bytes = await CryptoWorker.shared.openChunk(att.key, i, e.content);
+        final bytes = await CryptoWorker.shared.openChunk(
+          att.key,
+          i,
+          e.content,
+          scheme: att.scheme,
+        );
         if (bytes != null && !have.contains(i)) {
           await raf.setPosition(i * cs);
           await raf.writeFrom(bytes);
@@ -323,7 +378,7 @@ class MediaEngine {
       }
       await part.rename(dst);
       att.path = dst;
-      await live.saveMessage(chat, m);
+      await _publishResult(chat, m);
       live.log('  файл получен за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с');
       return true;
     } finally {

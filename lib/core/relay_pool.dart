@@ -88,6 +88,9 @@ class RelayPool {
   /// Ретранслятор отдал всё накопленное по запросу, отправленному в момент `reqAt`.
   void Function(String url, int reqAt)? onSynced;
 
+  /// Ретранслятор отказался принять событие (id, url, причина).
+  void Function(String id, String url, String why)? onReject;
+
   static const subId = 'veil';
   static const _probeId = 'hb';
   static final _probeFilter = {
@@ -218,17 +221,23 @@ class RelayPool {
 
   /// Опубликовать в выбранные ретрансляторы и дождаться ответа каждого.
   /// Возвращает, кто принял; причины отказов — в [rejected].
+  ///
+  /// [want] — сколько подтверждений достаточно, чтобы не ждать остальных
+  /// (их ответы всё равно учитываются в [acceptedBy]).
   Future<Set<String>> publishTo(
     Event e,
     Iterable<String> urls, {
     Duration timeout = const Duration(seconds: 20),
+    int? want,
   }) {
     final targets = {
       for (final u in urls)
         if (_relays[u]?.state == RelayState.online) u,
     };
     if (targets.isEmpty || _closed) return Future.value({});
-    final w = _waiters[e.id] = _Waiter(targets);
+    final w = _waiters[e.id] = _Waiter(targets, want ?? targets.length);
+    _sentAt[e.id] = DateTime.now();
+    if (_sentAt.length > 2000) _sentAt.remove(_sentAt.keys.first);
     final msg = jsonEncode(['EVENT', e.toJson()]);
     for (final u in targets) {
       _send(_relays[u]!, msg, queue: false);
@@ -236,6 +245,12 @@ class RelayPool {
     w.timer = Timer(timeout, () => _finishWaiter(e.id));
     return w.done.future;
   }
+
+  final Map<String, DateTime> _sentAt = {};
+  final Map<String, double> _latency = {};
+
+  /// Сколько (мс, сглаженно) ретранслятор отвечает на крупные события.
+  double? latencyOf(String url) => _latency[url];
 
   /// Почему ретрансляторы отказались принять событие [id] (url → причина).
   Map<String, String> rejected(String id) => _rejected[id] ?? const {};
@@ -413,18 +428,27 @@ class RelayPool {
           } else {
             final why = m.length > 3 ? '${m[3]}' : '';
             (_rejected[id] ??= {})[r.url] = why;
+            onReject?.call(id, r.url, why);
             if (_rejected.length > 2000) _rejected.remove(_rejected.keys.first);
             // Отказ по одному куску вложения (размер, частота) — не «поломка» связи.
-            if (!_waiters.containsKey(id)) {
+            if (!_waiters.containsKey(id) && !_sentAt.containsKey(id)) {
               r.error = why.isNotEmpty ? 'отклонил: $why' : 'отклонил событие';
               _notify();
             }
+          }
+          final sent = _sentAt[id];
+          if (ok && sent != null) {
+            final ms = DateTime.now().difference(sent).inMilliseconds.toDouble();
+            final old = _latency[r.url];
+            _latency[r.url] = old == null ? ms : old * 0.7 + ms * 0.3;
           }
           final w = _waiters[id];
           if (w != null && w.targets.contains(r.url)) {
             w.answered.add(r.url);
             if (ok) w.accepted.add(r.url);
-            if (w.answered.length >= w.targets.length) _finishWaiter(id);
+            if (w.answered.length >= w.targets.length || w.accepted.length >= w.want) {
+              _finishWaiter(id);
+            }
           }
           final c = _pendingOk[id];
           if (ok && c != null && !c.isCompleted) {
@@ -498,9 +522,10 @@ class RelayPool {
 }
 
 class _Waiter {
-  _Waiter(this.targets);
+  _Waiter(this.targets, this.want);
 
   final Set<String> targets;
+  final int want;
   final Set<String> answered = {};
   final Set<String> accepted = {};
   final done = Completer<Set<String>>();

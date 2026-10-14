@@ -141,7 +141,25 @@ class Attachment {
     this.thumb,
     this.wave,
     this.path,
+    this.scheme = 0,
   }) : relays = relays ?? [];
+
+  /// Как зашифрованы куски (см. MediaCodec.scheme). 0 — первая версия.
+  int scheme;
+
+  /// Перенести результат передачи (ключи, путь) — в другой экземпляр того же
+  /// сообщения (например, после перечитывания базы во время отправки).
+  void copyFrom(Attachment o) {
+    size = o.size;
+    sha = o.sha;
+    key = o.key;
+    signer = o.signer;
+    chunks = o.chunks;
+    chunkSize = o.chunkSize;
+    relays = List.of(o.relays);
+    scheme = o.scheme;
+    path = o.path;
+  }
 
   String name;
   String mime;
@@ -191,6 +209,7 @@ class Attachment {
     if (signer.isNotEmpty) 'a': signer,
     if (chunks > 0) 'c': chunks,
     if (chunkSize > 0) 'cs': chunkSize,
+    if (scheme > 0) 'v': scheme,
     if (relays.isNotEmpty) 'r': relays,
     if (width > 0) 'w': width,
     if (height > 0) 'hh': height,
@@ -225,6 +244,7 @@ class Attachment {
           ? (o['wv'] as List).whereType<num>().take(64).map((e) => e.toInt().clamp(0, 31)).toList()
           : null,
       path: o['p'] is String ? o['p'] as String : null,
+      scheme: i('v'),
     );
   }
 }

@@ -119,6 +119,61 @@ void main() {
     expect(big.content.length + 600, lessThan(65536));
   });
 
+  test('файлы первой версии (AES-GCM) по-прежнему открываются', () {
+    final key = randomBytes(32);
+    final data = randomBytes(5000);
+    final old = MediaCodec.seal(Keys.generate(), key, 2, data, scheme: 0);
+    expect(MediaCodec.open(key, 2, old.content, scheme: 0), data);
+    expect(MediaCodec.open(key, 2, old.content), isNull, reason: 'схемы не путаются');
+  });
+
+  test('перечитали чат во время отправки — у отправителя не висит «загрузка»', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    final src = await randomFile('big.jpg', 600 * 1024);
+    final first = await alice.sendFile(
+      bobId,
+      kind: MsgKind.photo,
+      path: src,
+      name: 'big.jpg',
+      mime: 'image/jpeg',
+      size: 600 * 1024,
+    );
+    // Как при возврате из галереи: список сообщений заменяется копией из базы.
+    await aliceLive.reload();
+    final shown = alice.messagesOf(bobId).single;
+    expect(identical(shown, first), isFalse);
+    await until(() => shown.att!.uploaded, what: 'экземпляр на экране узнал об отправке');
+    await until(() => alice.transfers.isEmpty, what: 'кольцо загрузки убрано');
+    await until(
+      () => bob.messagesOf(aliceId).isNotEmpty && bob.messagesOf(aliceId).single.att!.local,
+      what: 'дошло',
+    );
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('молчащий ретранслятор не тормозит отправку', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    relays[0].frozen = true; // соединение есть, но ответов нет
+    final src = await randomFile('p2.jpg', 400 * 1024);
+    final sw = Stopwatch()..start();
+    final m = await alice.sendFile(
+      bobId,
+      kind: MsgKind.photo,
+      path: src,
+      name: 'p2.jpg',
+      mime: 'image/jpeg',
+      size: 400 * 1024,
+    );
+    await until(() => m.att!.uploaded, what: 'залито без молчуна', seconds: 10);
+    expect(sw.elapsed.inSeconds, lessThan(6), reason: 'не ждём ответа от всех');
+    expect(m.att!.relays, isNot(contains('ws://open.test')));
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
+    relays[0].frozen = false;
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('фото: заливка кусками, автоскачивание у друга, байты совпадают', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
     // Здесь второй тоже не берёт крупное — куски должны уйти в единственный подходящий.

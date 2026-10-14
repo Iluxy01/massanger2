@@ -121,7 +121,24 @@ class TransferBadge extends StatelessWidget {
                 ),
               ),
             if (!busy) Icon(icon, color: fg, size: size * 0.5),
-            if (busy) Icon(Icons.lock_rounded, color: fg.withValues(alpha: 0.9), size: size * 0.32),
+            // Сколько уже ушло/пришло — цифрой в центре кольца.
+            if (busy && progress != null)
+              ValueListenableBuilder<double>(
+                valueListenable: progress,
+                builder: (_, v, _) => v <= 0
+                    ? Icon(Icons.lock_rounded, color: fg.withValues(alpha: 0.9), size: size * 0.32)
+                    : Text(
+                        '${(v * 100).floor()}%',
+                        style: TextStyle(
+                          color: fg,
+                          fontSize: size * 0.25,
+                          fontWeight: FontWeight.w700,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+              )
+            else if (busy)
+              Icon(Icons.lock_rounded, color: fg.withValues(alpha: 0.9), size: size * 0.32),
           ],
         ),
       ),
