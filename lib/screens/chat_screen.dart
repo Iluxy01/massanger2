@@ -1,19 +1,24 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/media_tools.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/mock_data.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
+import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
-import 'contact_screen.dart';
 import '../widgets/visual.dart';
+import 'attach_flows.dart';
+import 'contact_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.contact});
@@ -61,6 +66,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _recording = false;
   int _recSeconds = 0;
   Timer? _recTimer;
+  VoiceRecorder? _voice;
+
+  /// Палец увели влево во время записи — отпустит, и запись отменится.
+  bool _cancelArmed = false;
 
   Contact get c => widget.contact;
 
@@ -97,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_app.openChat == c.id) _app.openChat = null;
     _app.saveDraft(c.id, _input.text);
     _recTimer?.cancel();
+    _voice?.stop(cancel: true).whenComplete(() => _voice?.dispose());
     _input.dispose();
     _scroll.dispose();
     _focus.dispose();
@@ -127,32 +137,123 @@ class _ChatScreenState extends State<ChatScreen> {
     _focus.requestFocus();
   }
 
-  void _startRecording() {
-    if (!_app.demo) {
-      showVeilToast(context, 'Голосовые сообщения — в следующей версии', icon: Icons.mic_rounded);
-      return;
-    }
+  Future<void> _startRecording() async {
     _app.tick(HapticKind.medium);
+    if (!_app.demo) {
+      final v = _voice ??= VoiceRecorder();
+      bool ok;
+      try {
+        ok = await v.start();
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) {
+        if (mounted) {
+          showVeilToast(
+            context,
+            'Разреши доступ к микрофону и удерживай снова',
+            icon: Icons.mic_off_rounded,
+          );
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _recording = true;
       _recSeconds = 0;
+      _cancelArmed = false;
       _attachOpen = false;
     });
-    _recTimer = Timer.periodic(const Duration(seconds: 1), (_) => setState(() => _recSeconds++));
+    _recTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() => _recSeconds++);
+      if (_recSeconds >= 300) _stopRecording(); // не длиннее 5 минут
+    });
   }
 
-  void _stopRecording({bool cancel = false}) {
+  void _dragRecording(double dx) {
+    final armed = dx < -90;
+    if (armed != _cancelArmed && _recording) {
+      if (armed) _app.tick(HapticKind.selection);
+      setState(() => _cancelArmed = armed);
+    }
+  }
+
+  Future<void> _stopRecording({bool cancel = false}) async {
     if (!_recording) return;
     _recTimer?.cancel();
     final secs = _recSeconds;
-    setState(() => _recording = false);
-    if (cancel || secs < 1) {
-      showVeilToast(context, 'Удерживай кнопку, чтобы записать голосовое', icon: Icons.mic_rounded);
-      return;
+    final cancelled = cancel || _cancelArmed;
+    setState(() {
+      _recording = false;
+      _cancelArmed = false;
+    });
+    final replyTo = _replyTo;
+    if (_app.demo) {
+      if (cancelled || secs < 1) {
+        if (!cancelled) {
+          showVeilToast(
+            context,
+            'Удерживай кнопку, чтобы записать голосовое',
+            icon: Icons.mic_rounded,
+          );
+        }
+        return;
+      }
+      _app.tick(HapticKind.light);
+      _app.send(c.id, '', kind: MsgKind.voice, voiceSeconds: secs, replyTo: replyTo);
+    } else {
+      final rec = await _voice?.stop(cancel: cancelled);
+      if (!mounted) return;
+      if (rec == null) {
+        if (!cancelled) {
+          showVeilToast(
+            context,
+            'Удерживай кнопку, чтобы записать голосовое',
+            icon: Icons.mic_rounded,
+          );
+        }
+        return;
+      }
+      _app.tick(HapticKind.light);
+      await _app.sendFile(
+        c.id,
+        kind: MsgKind.voice,
+        path: rec.path,
+        name: 'voice.m4a',
+        mime: 'audio/mp4',
+        size: File(rec.path).lengthSync(),
+        duration: rec.seconds,
+        wave: rec.wave,
+        replyTo: replyTo,
+      );
     }
-    _app.tick(HapticKind.light);
-    _app.send(c.id, '', kind: MsgKind.voice, voiceSeconds: secs, replyTo: _replyTo);
+    if (!mounted) return;
     setState(() => _replyTo = null);
+    _toBottom();
+  }
+
+  Future<void> _attach(String what) async {
+    setState(() => _attachOpen = false);
+    final flows = AttachFlows(context, c.id, replyTo: _replyTo);
+    switch (what) {
+      case 'photo':
+        await flows.photos();
+      case 'camera':
+        await flows.photos(camera: true);
+      case 'video':
+        await flows.video();
+      case 'file':
+        await flows.file();
+      case 'geo':
+        await flows.location();
+      case 'poll':
+        await flows.poll();
+    }
+    if (!mounted) return;
+    if (_replyTo != null && _app.lastMessage(c.id)?.replyTo == _replyTo) {
+      setState(() => _replyTo = null);
+    }
     _toBottom();
   }
 
@@ -264,16 +365,7 @@ class _ChatScreenState extends State<ChatScreen> {
             duration: const Duration(milliseconds: 280).by(context),
             curve: Curves.easeOutCubic,
             child: _attachOpen
-                ? _AttachMenu(
-                    onPick: (label) {
-                      setState(() => _attachOpen = false);
-                      showVeilToast(
-                        context,
-                        '$label — в следующей версии',
-                        icon: Icons.construction_rounded,
-                      );
-                    },
-                  )
+                ? _AttachMenu(onPick: _attach)
                 : const SizedBox(width: double.infinity),
           ),
           AnimatedSize(
@@ -329,7 +421,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 220).by(context),
                       child: _recording
-                          ? _RecordingRow(seconds: _recSeconds)
+                          ? _RecordingRow(
+                              seconds: _recSeconds,
+                              cancel: _cancelArmed,
+                              level: _voice?.level,
+                            )
                           : TextField(
                               key: const ValueKey('field'),
                               controller: _input,
@@ -394,6 +490,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       onSend: _send,
                       onRecordStart: _startRecording,
                       onRecordEnd: () => _stopRecording(),
+                      onRecordDrag: _dragRecording,
                     ),
                   ),
                 ],
@@ -799,7 +896,8 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
             // отключён — иначе одиночное касание ждёт, не будет ли второго, и
             // срабатывает через раз.
             onTap: m.secret ? _toggleSecret : null,
-            onDoubleTap: m.secret ? null : _doubleTap,
+            // У вложений, опросов и голосовых свои касания — без задержки.
+            onDoubleTap: m.secret || m.kind != MsgKind.text ? null : _doubleTap,
             onLongPress: () {
               context.appRead.tick(HapticKind.medium);
               _openMenu();
@@ -954,15 +1052,34 @@ class BubbleBody extends StatelessWidget {
       bottomRight: mine && tail ? small : r,
     );
 
-    Widget content;
-    if (m.kind == MsgKind.voice) {
-      content = _VoiceContent(m: m, fg: fg, meta: meta);
-    } else {
-      Widget text = Text(m.text, style: TextStyle(color: fg, fontSize: 16, height: 1.32));
+    // Фото, видео и карта — от края до края пузыря.
+    final edge = m.kind == MsgKind.photo || m.kind == MsgKind.video || m.kind == MsgKind.geo;
+    final maxW = MediaQuery.sizeOf(context).width * 0.78;
+    final mediaW = min(270.0, maxW) - 6;
+    final inner = BorderRadius.only(
+      topLeft: const Radius.circular(17),
+      topRight: const Radius.circular(17),
+      bottomLeft: Radius.circular(!mine && tail ? 4 : 17),
+      bottomRight: Radius.circular(mine && tail ? 4 : 17),
+    );
+
+    Widget metaOn(Color color) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(fmtTime(m.time), style: TextStyle(color: color, fontSize: 11)),
+        if (mine) ...[
+          const SizedBox(width: 3),
+          StatusTicks(status: m.status, color: color, size: 15),
+        ],
+      ],
+    );
+
+    Widget textBlock(String t) {
+      Widget text = Text(t, style: TextStyle(color: fg, fontSize: 16, height: 1.32));
       // Размывается только текст — пузырь сохраняет свой естественный размер,
       // а время и галочки всегда видны.
       if (m.secret) text = _SecretText(revealed: m.revealed, fg: fg, child: text);
-      content = Wrap(
+      return Wrap(
         alignment: WrapAlignment.end,
         crossAxisAlignment: WrapCrossAlignment.end,
         spacing: 8,
@@ -973,8 +1090,67 @@ class BubbleBody extends StatelessWidget {
       );
     }
 
+    final hasCaption = m.text.trim().isNotEmpty;
+    Widget content;
+    switch (m.kind) {
+      case MsgKind.voice:
+        content = m.att == null
+            ? _VoiceContent(m: m, fg: fg, meta: meta)
+            : VoiceMessage(m: m, chatId: contact.id, fg: fg, meta: meta);
+      case MsgKind.photo || MsgKind.video when m.att != null:
+        final media = VisualMedia(
+          m: m,
+          chatId: contact.id,
+          width: mediaW,
+          radius: hasCaption || m.replyTo != null
+              ? (hasCaption
+                    ? const BorderRadius.vertical(
+                        top: Radius.circular(17),
+                        bottom: Radius.circular(6),
+                      )
+                    : BorderRadius.vertical(
+                        top: const Radius.circular(6),
+                        bottom: inner.bottomLeft,
+                      ))
+              : inner,
+          overlayMeta: hasCaption ? null : metaOn(Colors.white),
+        );
+        content = hasCaption
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  media,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 6, 8, 4),
+                    child: SizedBox(width: mediaW - 18, child: textBlock(m.text)),
+                  ),
+                ],
+              )
+            : media;
+      case MsgKind.file when m.att != null:
+        content = FileContent(m: m, chatId: contact.id, fg: fg, meta: meta);
+        if (hasCaption) {
+          content = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              content,
+              const SizedBox(height: 6),
+              SizedBox(width: 250, child: textBlock(m.text)),
+            ],
+          );
+        }
+      case MsgKind.geo when m.geo != null:
+        content = GeoContent(m: m, width: mediaW, radius: inner, fg: fg, meta: meta);
+      case MsgKind.poll when m.poll != null:
+        content = PollContent(m: m, chatId: contact.id, fg: fg, meta: meta);
+      default:
+        content = textBlock(m.text);
+    }
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 9, 12, 8),
+      padding: edge ? const EdgeInsets.all(3) : const EdgeInsets.fromLTRB(14, 9, 12, 8),
       decoration: BoxDecoration(
         gradient: mine
             ? LinearGradient(
@@ -1001,7 +1177,14 @@ class BubbleBody extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (m.replyTo != null) _QuotedReply(m: m.replyTo!, contact: contact, mine: mine),
+          if (m.replyTo != null)
+            Padding(
+              padding: edge ? const EdgeInsets.fromLTRB(8, 6, 8, 0) : EdgeInsets.zero,
+              child: SizedBox(
+                width: edge ? mediaW - 16 : null,
+                child: _QuotedReply(m: m.replyTo!, contact: contact, mine: mine),
+              ),
+            ),
           content,
         ],
       ),
@@ -1521,11 +1704,23 @@ class _ActionsMenu extends StatelessWidget {
                   close();
                   onReply();
                 }),
-                action(Icons.copy_rounded, 'Копировать', () {
-                  Clipboard.setData(ClipboardData(text: m.text));
-                  close();
-                  showVeilToast(context, 'Скопировано', icon: Icons.copy_rounded);
-                }),
+                if (m.att?.local ?? false)
+                  action(Icons.ios_share_rounded, 'Поделиться', () {
+                    close();
+                    shareFile(m.att!.path!, text: m.text.isEmpty ? null : m.text);
+                  })
+                else
+                  action(Icons.copy_rounded, 'Копировать', () {
+                    final g = m.geo, p = m.poll;
+                    final text = g != null
+                        ? '${g.lat}, ${g.lng}'
+                        : p != null
+                        ? [p.question, for (final o in p.options) '• $o'].join('\n')
+                        : m.text;
+                    Clipboard.setData(ClipboardData(text: text));
+                    close();
+                    showVeilToast(context, 'Скопировано', icon: Icons.copy_rounded);
+                  }),
                 action(Icons.push_pin_outlined, 'Закрепить', () {
                   close();
                   showVeilToast(
@@ -1556,6 +1751,7 @@ class _SendMicButton extends StatelessWidget {
     required this.onSend,
     required this.onRecordStart,
     required this.onRecordEnd,
+    required this.onRecordDrag,
   });
 
   final bool hasText;
@@ -1563,6 +1759,7 @@ class _SendMicButton extends StatelessWidget {
   final VoidCallback onSend;
   final VoidCallback onRecordStart;
   final VoidCallback onRecordEnd;
+  final ValueChanged<double> onRecordDrag;
 
   @override
   Widget build(BuildContext context) {
@@ -1603,6 +1800,7 @@ class _SendMicButton extends StatelessWidget {
     if (hasText) return Pressable(scale: 0.85, onTap: onSend, haptic: false, child: button);
     return GestureDetector(
       onLongPressStart: (_) => onRecordStart(),
+      onLongPressMoveUpdate: (d) => onRecordDrag(d.offsetFromOrigin.dx),
       onLongPressEnd: (_) => onRecordEnd(),
       onTap: () =>
           showVeilToast(context, 'Удерживай, чтобы записать голосовое', icon: Icons.mic_rounded),
@@ -1612,19 +1810,35 @@ class _SendMicButton extends StatelessWidget {
 }
 
 class _RecordingRow extends StatelessWidget {
-  const _RecordingRow({required this.seconds});
+  const _RecordingRow({required this.seconds, this.cancel = false, this.level});
   final int seconds;
+  final bool cancel;
+
+  /// Громкость 0..1 — точка «дышит» в такт голосу.
+  final ValueListenable<double>? level;
 
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final lvl = level;
     return SizedBox(
       key: const ValueKey('rec'),
       height: 44,
       child: Row(
         children: [
           const SizedBox(width: 4),
-          const _PulsingDot(),
+          if (lvl == null)
+            const _PulsingDot()
+          else
+            ValueListenableBuilder<double>(
+              valueListenable: lvl,
+              builder: (_, v, child) => AnimatedScale(
+                scale: 1 + v * 0.9,
+                duration: const Duration(milliseconds: 100),
+                child: child,
+              ),
+              child: const _PulsingDot(),
+            ),
           const SizedBox(width: 10),
           Text(
             fmtDuration(seconds),
@@ -1636,10 +1850,14 @@ class _RecordingRow extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              'отпусти — отправится',
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: vc.textFaint, fontSize: 13),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180).by(context),
+              child: Text(
+                cancel ? 'отпусти — запись отменится' : 'отпусти — отправится · ← отмена',
+                key: ValueKey(cancel),
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: cancel ? VeilColors.danger : vc.textFaint, fontSize: 13),
+              ),
             ),
           ),
         ],
@@ -1739,56 +1957,71 @@ class _AttachMenu extends StatelessWidget {
   final ValueChanged<String> onPick;
 
   static const _items = [
-    (Icons.photo_rounded, 'Фото', [Color(0xFF7C5CFF), Color(0xFF00C2FF)]),
-    (Icons.photo_camera_rounded, 'Камера', [Color(0xFFFF4F8B), Color(0xFFFFA45C)]),
-    (Icons.insert_drive_file_rounded, 'Файл', [Color(0xFF00C896), Color(0xFF0098E6)]),
-    (Icons.location_on_rounded, 'Место', [Color(0xFFFFC145), Color(0xFFFF7A45)]),
-    (Icons.poll_rounded, 'Опрос', [Color(0xFFB06AB3), Color(0xFF4568DC)]),
+    (Icons.photo_rounded, 'Фото', 'photo', [Color(0xFF7C5CFF), Color(0xFF00C2FF)]),
+    (Icons.photo_camera_rounded, 'Камера', 'camera', [Color(0xFFFF4F8B), Color(0xFFFFA45C)]),
+    (Icons.videocam_rounded, 'Видео', 'video', [Color(0xFFFF5F6D), Color(0xFFB06AB3)]),
+    (Icons.insert_drive_file_rounded, 'Файл', 'file', [Color(0xFF00C896), Color(0xFF0098E6)]),
+    (Icons.location_on_rounded, 'Место', 'geo', [Color(0xFFFFC145), Color(0xFFFF7A45)]),
+    (Icons.poll_rounded, 'Опрос', 'poll', [Color(0xFFB06AB3), Color(0xFF4568DC)]),
   ];
 
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    Widget item(int i) {
+      final (icon, label, key, colors) = _items[i];
+      return TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: Duration(milliseconds: 350 + i * 50).by(context),
+        curve: Interval(i * 0.08, 1, curve: Curves.easeOutBack),
+        builder: (_, t, c) => Transform.translate(
+          offset: Offset(0, (1 - t) * 20),
+          child: Opacity(opacity: t.clamp(0, 1), child: c),
+        ),
+        child: Pressable(
+          onTap: () => onPick(key),
+          child: SizedBox(
+            width: 72,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(colors: colors),
+                    boxShadow: [
+                      BoxShadow(color: colors.first.withValues(alpha: 0.4), blurRadius: 12),
+                    ],
+                  ),
+                  child: Icon(icon, color: Colors.white),
+                ),
+                const SizedBox(height: 6),
+                Text(label, style: TextStyle(color: vc.textDim, fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Glass(
         radius: 24,
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
+        child: Column(
           children: [
-            for (final (i, (icon, label, colors)) in _items.indexed)
-              TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0, end: 1),
-                duration: Duration(milliseconds: 350 + i * 60).by(context),
-                curve: Interval(i * 0.1, 1, curve: Curves.easeOutBack),
-                builder: (_, t, c) => Transform.translate(
-                  offset: Offset(0, (1 - t) * 20),
-                  child: Opacity(opacity: t.clamp(0, 1), child: c),
-                ),
-                child: Pressable(
-                  onTap: () => onPick(label),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 50,
-                        height: 50,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(colors: colors),
-                          boxShadow: [
-                            BoxShadow(color: colors.first.withValues(alpha: 0.4), blurRadius: 12),
-                          ],
-                        ),
-                        child: Icon(icon, color: Colors.white),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(label, style: TextStyle(color: vc.textDim, fontSize: 12)),
-                    ],
-                  ),
-                ),
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [for (var i = 0; i < 3; i++) item(i)],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [for (var i = 3; i < 6; i++) item(i)],
+            ),
           ],
         ),
       ),

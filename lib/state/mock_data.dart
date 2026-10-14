@@ -87,8 +87,14 @@ Map<String, List<Message>> demoMessages() {
     int voice = 0,
     String? reaction,
     MsgStatus status = MsgStatus.read,
+    Attachment? att,
+    GeoPoint? geo,
+    Poll? poll,
   }) {
     return Message(
+      att: att,
+      geo: geo,
+      poll: poll,
       id: 'seed${n++}',
       mine: mine,
       text: text,
@@ -102,6 +108,7 @@ Map<String, List<Message>> demoMessages() {
     );
   }
 
+  const sec = Duration(seconds: 1);
   const min = Duration(minutes: 1);
   const hour = Duration(hours: 1);
   const day = Duration(days: 1);
@@ -115,7 +122,27 @@ Map<String, List<Message>> demoMessages() {
     m(true, 'Удобно, что всё хранится только у нас на телефонах 😌', min * 40),
     m(false, '', min * 38, kind: MsgKind.voice, voice: 14),
     m(true, 'Так в субботу во сколько?', min * 6, reply: alicePlan),
-    m(false, 'В 21:00, после заката 🌅', min * 2),
+    m(false, 'В 21:00, после заката 🌅', min * 2 + sec * 30),
+    m(
+      false,
+      '',
+      min * 2 + sec * 20,
+      kind: MsgKind.geo,
+      geo: const GeoPoint(55.7539, 37.6208, accuracy: 15),
+    ),
+    m(
+      true,
+      '',
+      min * 2 + sec * 10,
+      kind: MsgKind.poll,
+      poll: Poll(
+        question: 'Что берём на крышу?',
+        options: ['Чай в термосе', 'Какао', 'Лимонад'],
+        votes: {
+          'alice': [1],
+        },
+      ),
+    ),
     m(false, '🔥🔥', min * 1),
   ];
 
@@ -133,6 +160,27 @@ Map<String, List<Message>> demoMessages() {
     m(false, '🌅', day * 2 - hour),
     m(true, 'Покажешь?', day - hour * 3, status: MsgStatus.read),
     m(false, 'Завтра скину, обработаю только', hour * 2),
+    m(
+      false,
+      'Тот самый закат',
+      hour,
+      kind: MsgKind.photo,
+      att: Attachment(
+        name: 'sunset.jpg',
+        mime: 'image/jpeg',
+        size: 842000,
+        width: 1600,
+        height: 1200,
+        thumb: demoSunsetThumb,
+      ),
+    ),
+    m(
+      false,
+      '',
+      hour - min,
+      kind: MsgKind.file,
+      att: Attachment(name: 'Маршрут_поездки.pdf', mime: 'application/pdf', size: 1340000),
+    ),
   ];
 
   final dima = [
@@ -169,3 +217,7 @@ const replyPhrases = [
 ];
 
 const reactionEmojis = ['❤️', '🔥', '😂', '😮', '😢', '👍'];
+
+/// Крошечное превью «заката» для демо-фото (PNG 32×24).
+const demoSunsetThumb =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAm0lEQVR42mP8X5HHQEvA8oeVdahbwEJjC/7S2oI/zLS2gGmoW/CXkdY+oLkFDORYoOb5DZl7azsX7iD6T7IFml4fMe27vo0fhw/+UyeIcJnD8ucflSz4h8uCv1SyAIc5LH+pZAEuc1j+/CHZgiMrNWzCb6CJ4E6mv8nxwYElukSqZHRUCaBtRvv/n4m2Fvz7R2ML/g99C/7S1gIApjA6k6X3A68AAAAASUVORK5CYII=';

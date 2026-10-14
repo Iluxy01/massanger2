@@ -11,13 +11,7 @@ import 'package:veil/core/relay_pool.dart';
 /// Проверка настоящих публичных ретрансляторов. Запускается только в CI:
 ///   VEIL_NETWORK_TEST=1 flutter test test/network_test.dart
 /// Кандидаты на замену — проверяются и печатаются, но на результат теста не влияют.
-const candidateRelays = [
-  'wss://relay.damus.io',
-  'wss://nostr.bitcoiner.social',
-  'wss://relay.nos.social',
-  'wss://nostr.data.haus',
-  'wss://relay.mostr.pub',
-];
+const candidateRelays = ['wss://relay.damus.io', 'wss://relay.nos.social', 'wss://relay.mostr.pub'];
 
 void main() {
   final enabled = Platform.environment['VEIL_NETWORK_TEST'] == '1';

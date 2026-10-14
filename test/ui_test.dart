@@ -71,6 +71,8 @@ void main() {
     final secret = state.messagesOf('alice').firstWhere((m) => m.secret);
     expect(secret.revealed, isFalse);
     final eye = find.byIcon(Icons.visibility_rounded);
+    await tester.dragUntilVisible(eye, find.byType(ListView), const Offset(0, 250));
+    await settle(tester);
     expect(eye, findsOneWidget);
 
     await tester.tap(eye);
@@ -112,7 +114,7 @@ void main() {
         // Заходим в чат и выходим — без ошибок на любом уровне.
         await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
         await settle(tester);
-        expect(find.byIcon(Icons.visibility_rounded), findsOneWidget);
+        expect(find.text('Что берём на крышу?'), findsOneWidget);
         navigatorKey.currentState!.pop();
         await settle(tester);
         if (look == 0) expect(blurs(), 0, reason: 'минимум — без размытия');
@@ -127,6 +129,95 @@ void main() {
     final copy = AppState.demo()..applySettings(state.settingsForTest);
     expect((copy.look, copy.motion), (0, 3));
     copy.dispose();
+    await close(tester, state);
+  });
+
+  testWidgets('опрос: голос, проценты, отмена голоса', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+    await settle(tester);
+    final poll = state.messagesOf('alice').firstWhere((m) => m.kind == MsgKind.poll);
+    expect(find.text('Что берём на крышу?'), findsOneWidget);
+    expect(find.text('Проголосовали: 1'), findsOneWidget);
+    expect(find.text('100%'), findsNothing, reason: 'до своего голоса результаты скрыты');
+
+    await tester.tap(find.text('Какао'));
+    await settle(tester);
+    expect(poll.poll!.of('me'), [1]);
+    expect(find.text('Проголосовали: 2'), findsOneWidget);
+    expect(find.text('100%'), findsOneWidget);
+
+    await tester.tap(find.text('Чай в термосе'));
+    await settle(tester);
+    expect(poll.poll!.of('me'), [0], reason: 'один вариант — голос переносится');
+    expect(find.text('50%'), findsNWidgets(2));
+
+    await tester.tap(find.text('Чай в термосе'));
+    await settle(tester);
+    expect(poll.poll!.of('me'), isEmpty, reason: 'повторное касание — отозвать');
+    await close(tester, state);
+  });
+
+  testWidgets('геопозиция, фото и документ в пузырях', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+    await settle(tester);
+    expect(find.text('Геопозиция · ±15 м'), findsOneWidget);
+    Navigator.of(tester.element(find.text('Геопозиция · ±15 м'))).pop();
+    await settle(tester);
+
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-kate').first);
+    await settle(tester);
+    // Фото ещё не скачано: размытое превью, размер и кнопка «скачать».
+    expect(find.text('Тот самый закат'), findsOneWidget);
+    expect(find.text('822 КБ'), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_downward_rounded), findsNWidgets(2));
+    expect(find.text('Маршрут_поездки.pdf'), findsOneWidget);
+    expect(find.text('1,3 МБ · скачать'), findsOneWidget);
+    // В списке чатов — понятная подпись.
+    expect(
+      state.messagesOf('kate').firstWhere((m) => m.kind == MsgKind.file).preview,
+      '📎 Маршрут_поездки.pdf',
+    );
+    await close(tester, state);
+  });
+
+  testWidgets('меню вложений: опрос и геопозиция отправляются', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-dima').first);
+    await settle(tester);
+    await tester.tap(find.byIcon(Icons.add_rounded));
+    await settle(tester);
+    for (final label in ['Фото', 'Камера', 'Видео', 'Файл', 'Место', 'Опрос']) {
+      expect(find.text(label), findsOneWidget, reason: label);
+    }
+
+    await tester.tap(find.text('Опрос'));
+    await settle(tester);
+    expect(find.text('Новый опрос'), findsOneWidget);
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), 'Во сколько созвон?');
+    await tester.enterText(fields.at(1), '19:00');
+    await tester.enterText(fields.at(2), '20:00');
+    await tester.pump();
+    await tester.tap(find.text('Отправить опрос'));
+    await settle(tester);
+    final sent = state.lastMessage('dima')!;
+    expect(sent.kind, MsgKind.poll);
+    expect(sent.poll!.question, 'Во сколько созвон?');
+    expect(sent.poll!.options, ['19:00', '20:00']);
+    expect(find.text('Во сколько созвон?'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.add_rounded));
+    await settle(tester);
+    await tester.tap(find.text('Место'));
+    await settle(tester);
+    expect(find.text('Отправить геопозицию'), findsOneWidget);
+    await tester.tap(find.text('Отправить геопозицию'));
+    await settle(tester);
+    final geo = state.lastMessage('dima')!;
+    expect(geo.kind, MsgKind.geo);
+    expect(geo.geo!.lat, closeTo(55.75, 0.01));
     await close(tester, state);
   });
 }

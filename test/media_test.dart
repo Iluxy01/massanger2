@@ -28,7 +28,11 @@ void main() {
   const urls = ['ws://open.test', 'ws://small.test', 'ws://picky.test'];
 
   setUp(() async {
-    relays = [FakeRelay(), FakeRelay()..maxEventBytes = 65536, FakeRelay()];
+    relays = [
+      FakeRelay()..noAuthorQueries = true,
+      FakeRelay()..maxEventBytes = 65536,
+      FakeRelay()..noAuthorQueries = true,
+    ];
     relays[2]
       ..rejectBig = 'blocked: Policy violated and pubkey is not in our web of trust.'
       ..rejectBigOver = 4000;

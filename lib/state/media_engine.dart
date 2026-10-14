@@ -277,9 +277,11 @@ class MediaEngine {
               if (!have.contains(i)) i,
           ];
           // Если не хватает немногих — спрашиваем точечно по номерам.
+          // По тегу p — так ретрансляторы отдают и обычные конверты (запросы
+          // kind 1059 по автору некоторые не обслуживают).
           final filter = <String, dynamic>{
             'kinds': [MediaCodec.kind],
-            'authors': [att.signer],
+            '#p': [att.signer],
             'limit': missing.length,
             if (missing.length < n && missing.length <= 200) '#c': [for (final i in missing) '$i'],
           };

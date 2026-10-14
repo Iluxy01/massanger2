@@ -16,6 +16,10 @@ class FakeRelay {
   /// Предел размера события (как у настоящих: многие не берут больше 64 КБ).
   int maxEventBytes = 1 << 30;
 
+  /// Не обслуживать запросы конвертов (kind 1059) по автору — как некоторые
+  /// настоящие ретрансляторы, оберегающие личные сообщения.
+  bool noAuthorQueries = false;
+
   /// Отказывать в приёме событий крупнее этого размера с такой причиной.
   String? rejectBig;
   int rejectBigOver = 1 << 30;
@@ -87,6 +91,10 @@ class FakeRelay {
       case 'REQ':
         final id = m[1] as String;
         final filters = [for (final f in m.skip(2)) f as Map<String, dynamic>];
+        if (noAuthorQueries && filters.any((f) => f['authors'] != null)) {
+          ws.add(jsonEncode(['CLOSED', id, 'restricted: gift wraps only by #p']));
+          return;
+        }
         _subs[ws]![id] = filters;
         final limit = filters.length == 1 && filters.first['limit'] is int
             ? filters.first['limit'] as int
