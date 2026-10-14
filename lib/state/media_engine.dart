@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../core/crypto_worker.dart';
 import '../core/media.dart';
@@ -18,10 +19,12 @@ import 'live.dart';
 /// с ключом отправляется обычным конвертом только после того, как все куски
 /// приняты ретрансляторами.
 class MediaEngine {
-  MediaEngine(this.live, this._root);
+  MediaEngine(this.live, this._root, {Future<Directory> Function()? temp})
+    : _temp = temp ?? getTemporaryDirectory;
 
   final Live live;
   final Future<String> Function() _root;
+  final Future<Directory> Function() _temp;
   String? _rootPath;
 
   /// Сколько ретрансляторов должно принять каждый кусок (при возможности).
@@ -61,6 +64,15 @@ class MediaEngine {
     if (p.equals(src, dst)) return dst;
     await File(src).copy(dst);
     return dst;
+  }
+
+  /// Удалить исходник, если это наша временная копия в кэше приложения
+  /// (оригиналы пользователя вне кэша не трогаем никогда).
+  Future<void> dropTemp(String path) async {
+    try {
+      final tmp = (await _temp()).path;
+      if (p.isWithin(tmp, path) && File(path).existsSync()) await File(path).delete();
+    } catch (_) {}
   }
 
   ValueNotifier<double> _progress(String msgId) =>

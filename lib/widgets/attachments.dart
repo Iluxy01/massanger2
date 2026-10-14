@@ -952,10 +952,11 @@ class PollContent extends StatelessWidget {
               multi: poll.multi,
               fg: fg,
               accent: m.mine ? fg : acc.a,
+              // Кто как голосовал — только после своего голоса, как и проценты.
               voters: [
-                if (mine.contains(i)) app.profile?.emoji ?? '🙂',
+                if (voted && mine.contains(i)) app.profile?.emoji ?? '🙂',
                 for (final e in poll.votes.entries)
-                  if (e.key != me && e.value.contains(i)) friend?.emoji ?? '🙂',
+                  if (voted && e.key != me && e.value.contains(i)) friend?.emoji ?? '🙂',
               ],
               onTap: () => tap(i),
             ),

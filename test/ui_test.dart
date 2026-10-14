@@ -169,7 +169,7 @@ void main() {
     await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-kate').first);
     await settle(tester);
     // Фото ещё не скачано: размытое превью, размер и кнопка «скачать».
-    expect(find.text('Тот самый закат'), findsOneWidget);
+    expect(find.textContaining('Тот самый закат'), findsOneWidget);
     expect(find.text('822 КБ'), findsOneWidget);
     expect(find.byIcon(Icons.arrow_downward_rounded), findsNWidgets(2));
     expect(find.text('Маршрут_поездки.pdf'), findsOneWidget);

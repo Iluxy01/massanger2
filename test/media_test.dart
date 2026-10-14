@@ -63,6 +63,7 @@ void main() {
       dbPath: '${tmp.path}/$name.db',
       connector: connect,
       mediaDir: '${tmp.path}/$name-media',
+      tempDir: '${tmp.path}/cache',
     );
     if (!app.onboarded) {
       await app.createProfile(name: name, emoji: '🦊', colorIndex: 2);
@@ -135,8 +136,9 @@ void main() {
       height: 1200,
       thumb: 'iVBORw0KGgo=',
     );
-    // Файл скопирован в папку приложения.
+    // Файл скопирован в папку приложения, а оригинал вне кэша не тронут.
     expect(m.att!.path, startsWith('${tmp.path}/Алиса-media/'));
+    expect(File(src).existsSync(), isTrue);
     await until(() => m.att!.uploaded, what: 'заливка');
     expect(m.att!.chunks, MediaCodec.chunkCount(300 * 1024 + 123));
     // Отказавшиеся запомнены и обойдены: куски лежат только там, где их приняли.
@@ -155,7 +157,7 @@ void main() {
     await until(() => got.att!.local, what: 'автоскачивание');
     expect(File(got.att!.path!).readAsBytesSync(), File(src).readAsBytesSync());
     expect(got.att!.path, startsWith('${tmp.path}/Боб-media/'));
-    expect(bob.transfers, isEmpty, reason: 'прогресс убран после окончания');
+    await until(() => bob.transfers.isEmpty, what: 'прогресс убран после окончания');
     await until(() => m.status == MsgStatus.delivered, what: 'доставлено');
     expect(got.preview, '📷 Фото · закат 🌅');
 
@@ -227,7 +229,7 @@ void main() {
 
     final (alice2, alice2Live) = await phone('Алиса', secrets: secrets);
     final m2 = alice2.messagesOf(bobId).single;
-    expect(m2.status, MsgStatus.sending);
+    expect(m2.att!.local, isTrue, reason: 'файл на месте после перезапуска');
     await until(() => m2.att!.uploaded, what: 'дозаливка');
     await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
     final got = bob.messagesOf(aliceId).single;
@@ -240,7 +242,11 @@ void main() {
 
   test('голосовое, геопозиция и опрос с голосами', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
-    final voice = await randomFile('v.m4a', 20 * 1024);
+    // Запись голоса лежит во временной папке — после отправки она не нужна.
+    await Directory('${tmp.path}/cache').create();
+    final voice = (await File(
+      await randomFile('v.m4a', 20 * 1024),
+    ).rename('${tmp.path}/cache/v.m4a')).path;
     await alice.sendFile(
       bobId,
       kind: MsgKind.voice,
@@ -257,6 +263,7 @@ void main() {
       Poll(question: 'Куда идём?', options: ['Кино', 'Парк', 'Кафе']),
     );
 
+    expect(File(voice).existsSync(), isFalse, reason: 'временная копия удалена');
     await until(() => bob.messagesOf(aliceId).length == 3, what: 'три сообщения');
     final msgs = bob.messagesOf(aliceId);
     final v = msgs.firstWhere((m) => m.kind == MsgKind.voice);

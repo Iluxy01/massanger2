@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -25,10 +26,11 @@ abstract class Notify {
 /// Экраны работают только с [AppState]; этот класс подгружает в него данные,
 /// сохраняет изменения и обменивается зашифрованными конвертами с друзьями.
 class Live {
-  Live._(this.app, this.store, this.secrets, this._connector, [String? mediaDir]) {
+  Live._(this.app, this.store, this.secrets, this._connector, [String? mediaDir, String? tempDir]) {
     media = MediaEngine(
       this,
       () async => mediaDir ?? p.join((await getApplicationSupportDirectory()).path, 'media'),
+      temp: tempDir == null ? null : () async => Directory(tempDir),
     );
   }
 
@@ -104,10 +106,11 @@ class Live {
     Connector? connector,
     bool network = true,
     String? mediaDir,
+    String? tempDir,
   }) async {
     final s = secrets ?? DeviceSecrets();
     final store = await Store.open(s, factory: dbFactory, path: dbPath);
-    final live = Live._(app, store!, s, connector, mediaDir);
+    final live = Live._(app, store!, s, connector, mediaDir, tempDir);
     app.live = live;
     await live._load(network: network);
     return live;
@@ -307,6 +310,7 @@ class Live {
     pool?.wake();
     pool?.subscribe(_filters);
     unawaited(_flushOutbox());
+    _resumeMedia();
     _ping();
     // Чат был открыт, пока приложение было свёрнуто — теперь его видно.
     final open = app.openChat;

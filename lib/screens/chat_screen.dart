@@ -71,6 +71,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Палец увели влево во время записи — отпустит, и запись отменится.
   bool _cancelArmed = false;
 
+  /// Палец всё ещё на кнопке микрофона (запуск записи асинхронный: пока
+  /// спрашиваем разрешение, кнопку могли уже отпустить).
+  bool _holding = false;
+
   Contact get c => widget.contact;
 
   @override
@@ -153,6 +157,18 @@ class _ChatScreenState extends State<ChatScreen> {
             context,
             'Разреши доступ к микрофону и удерживай снова',
             icon: Icons.mic_off_rounded,
+          );
+        }
+        return;
+      }
+      if (!_holding || !mounted) {
+        // Отпустили, пока система спрашивала разрешение, — не пишем «в пустоту».
+        await v.stop(cancel: true);
+        if (mounted) {
+          showVeilToast(
+            context,
+            'Удерживай кнопку, чтобы записать голосовое',
+            icon: Icons.mic_rounded,
           );
         }
         return;
@@ -488,8 +504,14 @@ class _ChatScreenState extends State<ChatScreen> {
                       hasText: v.text.trim().isNotEmpty,
                       recording: _recording,
                       onSend: _send,
-                      onRecordStart: _startRecording,
-                      onRecordEnd: () => _stopRecording(),
+                      onRecordStart: () {
+                        _holding = true;
+                        _startRecording();
+                      },
+                      onRecordEnd: () {
+                        _holding = false;
+                        _stopRecording();
+                      },
                       onRecordDrag: _dragRecording,
                     ),
                   ),
@@ -1090,6 +1112,20 @@ class BubbleBody extends StatelessWidget {
       );
     }
 
+    // Подпись к вложению: текст слева, время с галочками — внизу справа.
+    Widget captionBlock(String t) => Stack(
+      children: [
+        Text.rich(
+          TextSpan(
+            text: t,
+            children: [WidgetSpan(child: SizedBox(width: mine ? 66 : 44, height: 12))],
+          ),
+          style: TextStyle(color: fg, fontSize: 16, height: 1.32),
+        ),
+        Positioned(right: 0, bottom: 0, child: meta),
+      ],
+    );
+
     final hasCaption = m.text.trim().isNotEmpty;
     Widget content;
     switch (m.kind) {
@@ -1123,7 +1159,7 @@ class BubbleBody extends StatelessWidget {
                   media,
                   Padding(
                     padding: const EdgeInsets.fromLTRB(10, 6, 8, 4),
-                    child: SizedBox(width: mediaW - 18, child: textBlock(m.text)),
+                    child: SizedBox(width: mediaW - 18, child: captionBlock(m.text)),
                   ),
                 ],
               )
@@ -1137,7 +1173,7 @@ class BubbleBody extends StatelessWidget {
             children: [
               content,
               const SizedBox(height: 6),
-              SizedBox(width: 250, child: textBlock(m.text)),
+              SizedBox(width: 250, child: captionBlock(m.text)),
             ],
           );
         }
@@ -1798,13 +1834,28 @@ class _SendMicButton extends StatelessWidget {
     );
 
     if (hasText) return Pressable(scale: 0.85, onTap: onSend, haptic: false, child: button);
-    return GestureDetector(
-      onLongPressStart: (_) => onRecordStart(),
-      onLongPressMoveUpdate: (d) => onRecordDrag(d.offsetFromOrigin.dx),
-      onLongPressEnd: (_) => onRecordEnd(),
-      onTap: () =>
-          showVeilToast(context, 'Удерживай, чтобы записать голосовое', icon: Icons.mic_rounded),
-      child: button,
+    // Отпускание пальца ловим и «сырыми» событиями: если жест прервался
+    // (например, всплыл системный запрос), запись всё равно остановится.
+    return Listener(
+      onPointerUp: (_) {
+        if (recording) onRecordEnd();
+      },
+      onPointerCancel: (_) {
+        if (recording) onRecordEnd();
+      },
+      child: GestureDetector(
+        onLongPressStart: (_) => onRecordStart(),
+        onLongPressMoveUpdate: (d) => onRecordDrag(d.offsetFromOrigin.dx),
+        onLongPressEnd: (_) => onRecordEnd(),
+        onTap: recording
+            ? onRecordEnd
+            : () => showVeilToast(
+                context,
+                'Удерживай, чтобы записать голосовое',
+                icon: Icons.mic_rounded,
+              ),
+        child: button,
+      ),
     );
   }
 }

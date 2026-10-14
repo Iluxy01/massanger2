@@ -575,6 +575,8 @@ class AppState extends ChangeNotifier {
     final id = newMessageId();
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
     final local = live == null ? path : await live!.media.import(chatId, id, path, ext);
+    // Временную копию (запись голоса, снимок, копия из галереи) больше не храним.
+    if (live != null && local != path) await live!.media.dropTemp(path);
     return send(
       chatId,
       caption,

@@ -227,7 +227,7 @@ class RelayPool {
       for (final u in urls)
         if (_relays[u]?.state == RelayState.online) u,
     };
-    if (targets.isEmpty) return Future.value({});
+    if (targets.isEmpty || _closed) return Future.value({});
     final w = _waiters[e.id] = _Waiter(targets);
     final msg = jsonEncode(['EVENT', e.toJson()]);
     for (final u in targets) {
