@@ -1041,11 +1041,7 @@ class _QuotedReply extends StatelessWidget {
     final acc = context.accent;
     final fg = mine ? acc.onAccent : vc.text;
     final name = m.mine ? 'Вы' : contact.name;
-    final text = m.kind == MsgKind.voice
-        ? '🎤 Голосовое'
-        : m.secret
-        ? '🔒 Секретное сообщение'
-        : m.text;
+    final text = m.preview;
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
@@ -1691,11 +1687,7 @@ class _ReplyPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
-    final text = m.kind == MsgKind.voice
-        ? '🎤 Голосовое сообщение'
-        : m.secret
-        ? '🔒 Секретное сообщение'
-        : m.text;
+    final text = m.preview;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Glass(

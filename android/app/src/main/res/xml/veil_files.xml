@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Какие файлы можно показать другому приложению: только вложения из чатов. -->
+<paths>
+    <files-path name="media" path="media/" />
+</paths>

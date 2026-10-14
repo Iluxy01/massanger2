@@ -144,6 +144,7 @@ class AppState extends ChangeNotifier {
     for (final list in _messages.values) {
       for (final m in list) {
         bytes += 120 + m.text.length * 2 + m.voiceSeconds * 2000;
+        if (m.att?.local ?? false) bytes += m.att!.size;
       }
     }
     return bytes;
@@ -361,6 +362,7 @@ class AppState extends ChangeNotifier {
     unread.remove(id);
     pinned.remove(id);
     live?.store.deleteChat(id);
+    live?.media.deleteChat(id);
     _saveSettings();
   }
 
@@ -428,6 +430,7 @@ class AppState extends ChangeNotifier {
   void deleteMessage(String chatId, Message m) {
     messagesOf(chatId).remove(m);
     live?.store.deleteMessage(m.id);
+    live?.media.deleteFile(m);
     notifyChanged();
   }
 
@@ -489,13 +492,17 @@ class AppState extends ChangeNotifier {
     return c;
   }
 
-  void send(
+  Message send(
     String chatId,
     String text, {
     Message? replyTo,
     bool secret = false,
     MsgKind kind = MsgKind.text,
     int voiceSeconds = 0,
+    Attachment? att,
+    GeoPoint? geo,
+    Poll? poll,
+    String? id,
   }) {
     // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
     // (в базе время хранится с точностью до миллисекунды).
@@ -506,7 +513,7 @@ class AppState extends ChangeNotifier {
     }
     final time = DateTime.fromMillisecondsSinceEpoch(ms);
     final m = Message(
-      id: randomHex(16).toLowerCase(),
+      id: id ?? newMessageId(),
       mine: true,
       text: text,
       time: time,
@@ -515,6 +522,9 @@ class AppState extends ChangeNotifier {
       secret: secret,
       kind: kind,
       voiceSeconds: voiceSeconds,
+      att: att,
+      geo: geo,
+      poll: poll,
     );
     messagesOf(chatId).add(m);
     drafts.remove(chatId);
@@ -530,7 +540,87 @@ class AppState extends ChangeNotifier {
     } else {
       _simulateReply(chatId, m);
     }
+    return m;
   }
+
+  String newMessageId() => randomHex(16).toLowerCase();
+
+  /// Мой идентификатор в голосах опросов.
+  String get me => live?.keys?.pub ?? 'me';
+
+  /// Ход передачи файлов: id сообщения → доля 0..1. Слушается каждым
+  /// пузырём отдельно — прогресс не перерисовывает весь чат.
+  final Map<String, ValueNotifier<double>> transfers = {};
+
+  /// Передачи, которые не удались (показываем «повторить»).
+  final Set<String> failedTransfers = {};
+
+  /// Отправить файл (фото, видео, голосовое, документ). [path] — исходный файл;
+  /// он копируется в папку приложения.
+  Future<Message> sendFile(
+    String chatId, {
+    required MsgKind kind,
+    required String path,
+    required String name,
+    required String mime,
+    required int size,
+    String caption = '',
+    int width = 0,
+    int height = 0,
+    int duration = 0,
+    String? thumb,
+    List<int>? wave,
+    Message? replyTo,
+  }) async {
+    final id = newMessageId();
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    final local = live == null ? path : await live!.media.import(chatId, id, path, ext);
+    return send(
+      chatId,
+      caption,
+      id: id,
+      kind: kind,
+      replyTo: replyTo,
+      att: Attachment(
+        name: name,
+        mime: mime,
+        size: size,
+        width: width,
+        height: height,
+        duration: duration,
+        thumb: thumb,
+        wave: wave,
+        path: local,
+      ),
+    );
+  }
+
+  Message sendLocation(String chatId, GeoPoint point, {Message? replyTo}) =>
+      send(chatId, '', kind: MsgKind.geo, geo: point, replyTo: replyTo);
+
+  Message sendPoll(String chatId, Poll poll) => send(chatId, '', kind: MsgKind.poll, poll: poll);
+
+  /// Проголосовать в опросе (повторно — изменить голос; пустой список — отозвать).
+  void vote(String chatId, Message m, List<int> options) {
+    final poll = m.poll;
+    if (poll == null) return;
+    if (live != null) {
+      live!.vote(chatId, m, options);
+    } else {
+      poll.votes[me] = Poll.cleanVote(options, poll.options.length);
+      // Демо: друг тоже голосует.
+      if (!poll.votes.containsKey(chatId)) {
+        _later(1200, () => poll.votes[chatId] = [_rnd.nextInt(poll.options.length)]);
+      }
+    }
+    notifyChanged();
+  }
+
+  /// Скачать файл из сообщения (документы — по нажатию; повтор после ошибки).
+  void download(String chatId, Message m) => live?.media.download(chatId, m);
+
+  /// Повторить отправку файла после ошибки.
+  void retrySend(String chatId, Message m) => live?.media.send(chatId, m);
 
   /// Новое входящее сообщение (из сети).
   Future<void> onIncoming(Contact c, Message m) async {

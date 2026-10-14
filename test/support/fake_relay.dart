@@ -13,6 +13,13 @@ class FakeRelay {
   /// обрыве в мобильной сети).
   bool frozen = false;
 
+  /// Предел размера события (как у настоящих: многие не берут больше 64 КБ).
+  int maxEventBytes = 1 << 30;
+
+  /// Отказывать в приёме событий крупнее этого размера с такой причиной.
+  String? rejectBig;
+  int rejectBigOver = 1 << 30;
+
   int get port => _server.port;
 
   Future<void> start() => startOn(0);
@@ -41,7 +48,19 @@ class FakeRelay {
   }
 
   bool _match(Map<String, dynamic> f, Map<String, dynamic> e) {
+    if (f['ids'] is List && !(f['ids'] as List).contains(e['id'])) return false;
+    if (f['authors'] is List && !(f['authors'] as List).contains(e['pubkey'])) return false;
     if (f['kinds'] is List && !(f['kinds'] as List).contains(e['kind'])) return false;
+    for (final entry in f.entries) {
+      if (entry.key.length == 2 && entry.key.startsWith('#') && entry.key != '#p') {
+        final name = entry.key.substring(1);
+        final vals = [
+          for (final t in e['tags'] as List)
+            if ((t as List).first == name && t.length > 1) t[1],
+        ];
+        if (!(entry.value as List).any(vals.contains)) return false;
+      }
+    }
     if (f['since'] is num && (e['created_at'] as num) < (f['since'] as num)) return false;
     if (f['#p'] is List) {
       final ps = [
@@ -69,13 +88,29 @@ class FakeRelay {
         final id = m[1] as String;
         final filters = [for (final f in m.skip(2)) f as Map<String, dynamic>];
         _subs[ws]![id] = filters;
+        final limit = filters.length == 1 && filters.first['limit'] is int
+            ? filters.first['limit'] as int
+            : 1 << 30;
+        var sent = 0;
         for (final e in stored) {
-          if (filters.any((f) => _match(f, e))) ws.add(jsonEncode(['EVENT', id, e]));
+          if (sent >= limit) break;
+          if (filters.any((f) => _match(f, e))) {
+            ws.add(jsonEncode(['EVENT', id, e]));
+            sent++;
+          }
         }
         ws.add(jsonEncode(['EOSE', id]));
       case 'EVENT':
         final e = m[1] as Map<String, dynamic>;
         published++;
+        if (raw.length > maxEventBytes) {
+          ws.add(jsonEncode(['OK', e['id'], false, 'invalid: event too large: ${raw.length}']));
+          return;
+        }
+        if (rejectBig != null && raw.length > rejectBigOver) {
+          ws.add(jsonEncode(['OK', e['id'], false, rejectBig]));
+          return;
+        }
         final kind = e['kind'] as int;
         if (kind < 20000 || kind >= 30000) stored.add(e);
         ws.add(jsonEncode(['OK', e['id'], true, '']));

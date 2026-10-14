@@ -37,7 +37,7 @@ class SystemNotify implements Notify {
     final body = m.secret
         ? '🔒 Секретное сообщение'
         : showText()
-        ? m.text
+        ? m.preview
         : 'Новое сообщение';
     await _plugin.show(
       id: from.id.hashCode & 0x7fffffff,

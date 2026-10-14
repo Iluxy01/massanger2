@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'giftwrap.dart';
+import 'media.dart';
 import 'nostr.dart';
 
 /// Один постоянный фоновый поток для шифрования конвертов.
@@ -63,11 +67,31 @@ class CryptoWorker {
     return r == null ? null : r as (String, Event);
   }
 
+  /// Прочитать кусок файла, зашифровать и подписать.
+  Future<Event> sealChunk({
+    required Keys signer,
+    required String key,
+    required String path,
+    required int index,
+    int chunkSize = MediaCodec.chunkSize,
+  }) async => await _call(['seal', signer.priv, key, path, index, chunkSize]) as Event;
+
+  /// Расшифровать кусок (null — повреждён или чужой).
+  Future<Uint8List?> openChunk(String key, int index, String content) async =>
+      await _call(['open', key, index, content]) as Uint8List?;
+
+  /// SHA-256 файла.
+  Future<String> hashFile(String path) async => await _call(['hash', path]) as String;
+
   static void _main(SendPort out) {
     final inbox = ReceivePort();
     out.send(inbox.sendPort);
     final keys = <String, Keys>{}; // приватный → пара (публичный считается один раз)
-    Keys k(String priv) => keys[priv] ??= Keys(priv);
+    Keys k(String priv) {
+      if (keys.length > 64 && !keys.containsKey(priv)) keys.clear(); // ключи файлов одноразовые
+      return keys[priv] ??= Keys(priv);
+    }
+
     inbox.listen((msg) {
       final [id as int, req as List] = msg as List;
       try {
@@ -80,6 +104,18 @@ class CryptoWorker {
             ttl: Duration(seconds: req[5] as int),
           ),
           'unwrap' => GiftWrap.unwrap(k(req[1] as String), req[2] as Event),
+          'seal' => MediaCodec.seal(
+            k(req[1] as String),
+            base64.decode(req[2] as String),
+            req[4] as int,
+            MediaCodec.readChunk(req[3] as String, req[4] as int, req[5] as int),
+          ),
+          'open' => MediaCodec.open(
+            base64.decode(req[1] as String),
+            req[2] as int,
+            req[3] as String,
+          ),
+          'hash' => MediaCodec.hashFile(req[1] as String),
           _ => throw ArgumentError('unknown ${req[0]}'),
         };
         out.send([id, true, result]);

@@ -56,7 +56,7 @@ class _ChatsTabState extends State<ChatsTab> {
           .where(
             (c) =>
                 c.name.toLowerCase().contains(q) ||
-                (app.lastMessage(c.id)?.text.toLowerCase().contains(q) ?? false),
+                (app.lastMessage(c.id)?.preview.toLowerCase().contains(q) ?? false),
           )
           .toList();
     }
@@ -399,12 +399,8 @@ class _ChatTile extends StatelessWidget {
       final String body;
       if (draft != null) {
         body = draft;
-      } else if (last.kind == MsgKind.voice) {
-        body = '🎤 Голосовое · ${fmtDuration(last.voiceSeconds)}';
-      } else if (last.secret) {
-        body = '🔒 Секретное сообщение';
       } else {
-        body = last.text;
+        body = last.preview;
       }
       preview = Text.rich(
         key: ValueKey('text${last.id}$draft'),

@@ -7,7 +7,7 @@ import '../theme/palette.dart';
 enum MsgStatus { sending, sent, delivered, read }
 
 /// Тип сообщения.
-enum MsgKind { text, voice }
+enum MsgKind { text, voice, photo, video, file, geo, poll }
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
 
@@ -119,6 +119,203 @@ class Contact {
         ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0;
 }
 
+/// Вложение (фото, видео, файл, голосовое).
+///
+/// Сам файл передаётся отдельно: он шифруется случайным ключом [key] и
+/// кусками лежит на ретрансляторах (см. core/media.dart). В сообщении — только
+/// описание и ключ. На телефоне файл хранится в папке приложения ([path]).
+class Attachment {
+  Attachment({
+    required this.name,
+    required this.mime,
+    required this.size,
+    this.sha = '',
+    this.key = '',
+    this.signer = '',
+    this.chunks = 0,
+    this.chunkSize = 0,
+    List<String>? relays,
+    this.width = 0,
+    this.height = 0,
+    this.duration = 0,
+    this.thumb,
+    this.wave,
+    this.path,
+  }) : relays = relays ?? [];
+
+  String name;
+  String mime;
+  int size;
+
+  /// SHA-256 содержимого (hex) — проверка целостности после скачивания.
+  String sha;
+
+  /// Ключ AES-256 (base64) и одноразовый ключ, которым подписаны куски.
+  String key;
+  String signer;
+  int chunks;
+  int chunkSize;
+
+  /// Ретрансляторы, которые приняли куски (у них спрашиваем первыми).
+  List<String> relays;
+
+  /// Размер картинки/видео в пикселях и длительность в секундах.
+  int width;
+  int height;
+  int duration;
+
+  /// Крошечное превью (PNG, base64) — видно, пока файл не скачан.
+  String? thumb;
+
+  /// Форма волны голосового: значения 0..31.
+  List<int>? wave;
+
+  /// Где файл лежит на этом телефоне (null — ещё не скачан).
+  String? path;
+
+  bool get uploaded => signer.isNotEmpty && key.isNotEmpty && chunks > 0;
+  bool get local => path != null;
+
+  String get ext {
+    final i = name.lastIndexOf('.');
+    return i < 0 || i == name.length - 1 ? '' : name.substring(i + 1).toLowerCase();
+  }
+
+  /// [wire] — для отправки другу: без локального пути.
+  Map<String, dynamic> toJson({bool wire = false}) => {
+    'n': name,
+    'm': mime,
+    's': size,
+    if (sha.isNotEmpty) 'h': sha,
+    if (key.isNotEmpty) 'k': key,
+    if (signer.isNotEmpty) 'a': signer,
+    if (chunks > 0) 'c': chunks,
+    if (chunkSize > 0) 'cs': chunkSize,
+    if (relays.isNotEmpty) 'r': relays,
+    if (width > 0) 'w': width,
+    if (height > 0) 'hh': height,
+    if (duration > 0) 'd': duration,
+    if (thumb != null) 't': thumb,
+    if (wave != null) 'wv': wave,
+    if (!wire && path != null) 'p': path,
+  };
+
+  static Attachment? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final n = o['n'], m = o['m'], s = o['s'];
+    if (n is! String || m is! String || s is! num) return null;
+    int i(String k) => o[k] is num ? (o[k] as num).toInt() : 0;
+    String str(String k) => o[k] is String ? o[k] as String : '';
+    final name = n.replaceAll(RegExp(r'[/\\\x00-\x1f]'), '_');
+    return Attachment(
+      name: name.length > 120 ? name.substring(name.length - 120) : name,
+      mime: m.length > 100 ? 'application/octet-stream' : m,
+      size: s.toInt(),
+      sha: str('h'),
+      key: str('k'),
+      signer: str('a'),
+      chunks: i('c'),
+      chunkSize: i('cs'),
+      relays: o['r'] is List ? (o['r'] as List).whereType<String>().take(12).toList() : null,
+      width: i('w'),
+      height: i('hh'),
+      duration: i('d'),
+      thumb: o['t'] is String && (o['t'] as String).length < 12000 ? o['t'] as String : null,
+      wave: o['wv'] is List
+          ? (o['wv'] as List).whereType<num>().take(64).map((e) => e.toInt().clamp(0, 31)).toList()
+          : null,
+      path: o['p'] is String ? o['p'] as String : null,
+    );
+  }
+}
+
+/// Одноразовая точка на карте.
+class GeoPoint {
+  const GeoPoint(this.lat, this.lng, {this.accuracy = 0});
+
+  final double lat;
+  final double lng;
+
+  /// Точность в метрах.
+  final double accuracy;
+
+  Map<String, dynamic> toJson() => {'la': lat, 'lo': lng, if (accuracy > 0) 'ac': accuracy.round()};
+
+  static GeoPoint? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final la = o['la'], lo = o['lo'];
+    if (la is! num || lo is! num) return null;
+    if (la.abs() > 90 || lo.abs() > 180) return null;
+    return GeoPoint(
+      la.toDouble(),
+      lo.toDouble(),
+      accuracy: o['ac'] is num ? (o['ac'] as num).toDouble() : 0,
+    );
+  }
+}
+
+/// Опрос. Голоса: кто → какие варианты (индексы).
+class Poll {
+  Poll({
+    required this.question,
+    required this.options,
+    this.multi = false,
+    Map<String, List<int>>? votes,
+  }) : votes = votes ?? {};
+
+  final String question;
+  final List<String> options;
+
+  /// Можно выбрать несколько вариантов.
+  final bool multi;
+  final Map<String, List<int>> votes;
+
+  /// Сколько человек выбрали вариант [i].
+  int count(int i) => votes.values.where((v) => v.contains(i)).length;
+
+  /// Сколько человек проголосовало.
+  int get voters => votes.values.where((v) => v.isNotEmpty).length;
+
+  List<int> of(String who) => votes[who] ?? const [];
+
+  /// [wire] — для отправки: без голосов.
+  Map<String, dynamic> toJson({bool wire = false}) => {
+    'q': question,
+    'o': options,
+    if (multi) 'mu': true,
+    if (!wire && votes.isNotEmpty) 'v': votes,
+  };
+
+  static Poll? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final q = o['q'], opts = o['o'];
+    if (q is! String || opts is! List) return null;
+    final options = [
+      for (final x in opts.whereType<String>().take(10)) x.length > 100 ? x.substring(0, 100) : x,
+    ];
+    if (options.length < 2) return null;
+    final votes = <String, List<int>>{};
+    if (o['v'] is Map) {
+      for (final e in (o['v'] as Map).entries) {
+        if (e.key is String && e.value is List) {
+          votes[e.key as String] = cleanVote(e.value as List, options.length);
+        }
+      }
+    }
+    return Poll(
+      question: q.length > 300 ? q.substring(0, 300) : q,
+      options: options,
+      multi: o['mu'] == true,
+      votes: votes,
+    );
+  }
+
+  /// Только допустимые номера вариантов, без повторов.
+  static List<int> cleanVote(List<dynamic> raw, int n) =>
+      {for (final x in raw.whereType<num>()) x.toInt()}.where((i) => i >= 0 && i < n).toList()
+        ..sort();
+}
+
 /// Одно сообщение переписки. Хранится только локально.
 class Message {
   Message({
@@ -132,10 +329,15 @@ class Message {
     this.kind = MsgKind.text,
     this.voiceSeconds = 0,
     this.reaction,
+    this.att,
+    this.geo,
+    this.poll,
   });
 
   final String id;
   final bool mine;
+
+  /// Текст сообщения или подпись к вложению.
   final String text;
   final DateTime time;
   MsgStatus status;
@@ -145,8 +347,39 @@ class Message {
   final bool secret;
   bool revealed = false;
   final MsgKind kind;
+
+  /// Длительность голосового (у демо-сообщений без файла).
   final int voiceSeconds;
   String? reaction;
+
+  /// Фото, видео, файл или голосовое.
+  final Attachment? att;
+
+  /// Геопозиция.
+  final GeoPoint? geo;
+
+  /// Опрос.
+  final Poll? poll;
+
+  /// Длительность голосового в секундах.
+  int get seconds => att?.duration ?? voiceSeconds;
+
+  /// Короткое описание — для списка чатов, уведомлений и ответов.
+  String get preview {
+    final caption = text.trim();
+    String with_(String label) => caption.isEmpty ? label : '$label · $caption';
+    return switch (kind) {
+      MsgKind.text => secret ? '🔒 Секретное сообщение' : text,
+      MsgKind.voice => '🎤 Голосовое · ${_dur(seconds)}',
+      MsgKind.photo => with_('📷 Фото'),
+      MsgKind.video => with_('🎬 Видео'),
+      MsgKind.file => with_('📎 ${att?.name ?? 'Файл'}'),
+      MsgKind.geo => '📍 Геопозиция',
+      MsgKind.poll => '📊 ${poll?.question ?? 'Опрос'}',
+    };
+  }
+
+  static String _dur(int s) => '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -157,7 +390,15 @@ class Message {
     if (replyTo != null) 'reply': replyTo!.id,
     if (secret) 'secret': true,
     if (reaction != null) 'react': reaction,
+    if (kind != MsgKind.text) 'k': kind.name,
+    if (voiceSeconds > 0) 'vs': voiceSeconds,
+    if (att != null) 'att': att!.toJson(),
+    if (geo != null) 'geo': geo!.toJson(),
+    if (poll != null) 'poll': poll!.toJson(),
   };
+
+  static MsgKind kindOf(Object? name) =>
+      MsgKind.values.firstWhere((k) => k.name == name, orElse: () => MsgKind.text);
 
   /// [lookup] находит сообщение, на которое ответили.
   static Message fromJson(Map<String, dynamic> j, Message? Function(String id) lookup) => Message(
@@ -169,5 +410,10 @@ class Message {
     replyTo: j['reply'] is String ? lookup(j['reply'] as String) : null,
     secret: j['secret'] == true,
     reaction: j['react'] as String?,
+    kind: kindOf(j['k']),
+    voiceSeconds: (j['vs'] as num?)?.toInt() ?? 0,
+    att: Attachment.fromJson(j['att']),
+    geo: GeoPoint.fromJson(j['geo']),
+    poll: Poll.fromJson(j['poll']),
   );
 }

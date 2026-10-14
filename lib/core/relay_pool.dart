@@ -78,6 +78,9 @@ class RelayPool {
   final Map<String, Completer<bool>> _pendingOk = {};
   final Map<String, Set<String>> _okBy = {};
   final Map<String, Set<String>> _sources = {};
+  final Map<String, _Waiter> _waiters = {};
+  final Map<String, _Fetch> _fetches = {};
+  int _fetchSeq = 0;
   Timer? _health;
   bool _closed = false;
   bool _started = false;
@@ -97,6 +100,10 @@ class RelayPool {
 
   List<String> get urls => _relays.keys.toList();
   int get onlineCount => _relays.values.where((r) => r.state == RelayState.online).length;
+  List<String> get onlineUrls => [
+    for (final r in _relays.values)
+      if (r.state == RelayState.online) r.url,
+  ];
   RelayState stateOf(String url) => _relays[url]?.state ?? RelayState.offline;
   String? errorOf(String url) => _relays[url]?.error;
 
@@ -209,6 +216,70 @@ class RelayPool {
     return c.future;
   }
 
+  /// Опубликовать в выбранные ретрансляторы и дождаться ответа каждого.
+  /// Возвращает, кто принял; причины отказов — в [rejected].
+  Future<Set<String>> publishTo(
+    Event e,
+    Iterable<String> urls, {
+    Duration timeout = const Duration(seconds: 20),
+  }) {
+    final targets = {
+      for (final u in urls)
+        if (_relays[u]?.state == RelayState.online) u,
+    };
+    if (targets.isEmpty) return Future.value({});
+    final w = _waiters[e.id] = _Waiter(targets);
+    final msg = jsonEncode(['EVENT', e.toJson()]);
+    for (final u in targets) {
+      _send(_relays[u]!, msg, queue: false);
+    }
+    w.timer = Timer(timeout, () => _finishWaiter(e.id));
+    return w.done.future;
+  }
+
+  /// Почему ретрансляторы отказались принять событие [id] (url → причина).
+  Map<String, String> rejected(String id) => _rejected[id] ?? const {};
+  final Map<String, Map<String, String>> _rejected = {};
+
+  void _finishWaiter(String id) {
+    final w = _waiters.remove(id);
+    if (w == null) return;
+    w.timer?.cancel();
+    if (!w.done.isCompleted) w.done.complete(w.accepted);
+  }
+
+  /// Разовый запрос к одному ретранслятору. [onEvent] — на каждое событие.
+  /// Завершается по EOSE, отказу, обрыву, молчанию дольше [idle] или через [total].
+  Future<void> fetch(
+    String url,
+    Map<String, dynamic> filter,
+    void Function(Event e) onEvent, {
+    Duration idle = const Duration(seconds: 12),
+    Duration total = const Duration(seconds: 90),
+  }) async {
+    final r = _relays[url];
+    if (r == null || r.state != RelayState.online || _closed) return;
+    final id = 'f${_fetchSeq++}';
+    final f = _fetches[id] = _Fetch(url, onEvent, r.gen);
+    _send(r, jsonEncode(['REQ', id, filter]), queue: false);
+    final end = DateTime.now().add(total);
+    while (!f.done.isCompleted) {
+      final now = DateTime.now();
+      if (now.isAfter(end) ||
+          now.difference(f.last) > idle ||
+          r.gen != f.gen ||
+          r.state != RelayState.online ||
+          _closed) {
+        break;
+      }
+      await Future.any([f.done.future, Future<void>.delayed(const Duration(milliseconds: 250))]);
+    }
+    _fetches.remove(id);
+    if (r.state == RelayState.online && r.gen == f.gen) {
+      _send(r, jsonEncode(['CLOSE', id]), queue: false);
+    }
+  }
+
   void _send(_Relay r, String msg, {required bool queue}) {
     if (r.state == RelayState.online && r.ch != null) {
       try {
@@ -266,6 +337,15 @@ class RelayPool {
 
   void _lost(_Relay r, String why) {
     r.gen++; // всё, что придёт от этого соединения дальше, игнорируем
+    // Ждущие ответа от этого ретранслятора — уже не дождутся.
+    for (final e in _waiters.entries.toList()) {
+      final w = e.value;
+      if (w.targets.contains(r.url) &&
+          w.answered.add(r.url) &&
+          w.answered.length >= w.targets.length) {
+        _finishWaiter(e.key);
+      }
+    }
     r.sub?.cancel();
     r.sub = null;
     try {
@@ -293,7 +373,15 @@ class RelayPool {
       final m = jsonDecode(raw as String) as List;
       switch (m[0]) {
         case 'EVENT':
-          if (m.length < 3 || m[1] != subId) return;
+          if (m.length < 3) return;
+          final f = _fetches[m[1]];
+          if (f != null) {
+            if (f.url != r.url) return;
+            f.last = DateTime.now();
+            f.onEvent(Event.fromJson(m[2] as Map<String, dynamic>));
+            return;
+          }
+          if (m[1] != subId) return;
           final e = Event.fromJson(m[2] as Map<String, dynamic>);
           (_sources[e.id] ??= {}).add(r.url);
           if (_sources.length > 2000) _sources.remove(_sources.keys.first);
@@ -302,6 +390,11 @@ class RelayPool {
             _events.add(e);
           }
         case 'EOSE':
+          final f = m.length > 1 ? _fetches[m[1]] : null;
+          if (f != null) {
+            if (!f.done.isCompleted) f.done.complete();
+            return;
+          }
           if (m.length > 1 && m[1] == _probeId) {
             _send(r, jsonEncode(['CLOSE', _probeId]), queue: false);
             return;
@@ -318,8 +411,20 @@ class RelayPool {
             (_okBy[id] ??= {}).add(r.url);
             if (_okBy.length > 2000) _okBy.remove(_okBy.keys.first);
           } else {
-            r.error = m.length > 3 ? 'отклонил: ${m[3]}' : 'отклонил событие';
-            _notify();
+            final why = m.length > 3 ? '${m[3]}' : '';
+            (_rejected[id] ??= {})[r.url] = why;
+            if (_rejected.length > 2000) _rejected.remove(_rejected.keys.first);
+            // Отказ по одному куску вложения (размер, частота) — не «поломка» связи.
+            if (!_waiters.containsKey(id)) {
+              r.error = why.isNotEmpty ? 'отклонил: $why' : 'отклонил событие';
+              _notify();
+            }
+          }
+          final w = _waiters[id];
+          if (w != null && w.targets.contains(r.url)) {
+            w.answered.add(r.url);
+            if (ok) w.accepted.add(r.url);
+            if (w.answered.length >= w.targets.length) _finishWaiter(id);
           }
           final c = _pendingOk[id];
           if (ok && c != null && !c.isCompleted) {
@@ -327,6 +432,11 @@ class RelayPool {
             _pendingOk.remove(id);
           }
         case 'CLOSED':
+          final f = m.length > 1 ? _fetches[m[1]] : null;
+          if (f != null) {
+            if (!f.done.isCompleted) f.done.complete();
+            return;
+          }
           if (m.length > 1 && m[1] == _probeId) return;
           r.error = m.length > 2 ? '${m[2]}' : '${m.last}';
           _notify();
@@ -376,7 +486,33 @@ class RelayPool {
     for (final c in _pendingOk.values) {
       if (!c.isCompleted) c.complete(false);
     }
+    for (final id in _waiters.keys.toList()) {
+      _finishWaiter(id);
+    }
+    for (final f in _fetches.values) {
+      if (!f.done.isCompleted) f.done.complete();
+    }
     await _events.close();
     await _changes.close();
   }
+}
+
+class _Waiter {
+  _Waiter(this.targets);
+
+  final Set<String> targets;
+  final Set<String> answered = {};
+  final Set<String> accepted = {};
+  final done = Completer<Set<String>>();
+  Timer? timer;
+}
+
+class _Fetch {
+  _Fetch(this.url, this.onEvent, this.gen);
+
+  final String url;
+  final void Function(Event e) onEvent;
+  final int gen;
+  final done = Completer<void>();
+  DateTime last = DateTime.now();
 }

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../core/giftwrap.dart';
@@ -11,6 +13,7 @@ import '../core/relay_pool.dart';
 import '../core/store.dart';
 import '../models/models.dart';
 import 'app_state.dart';
+import 'media_engine.dart';
 
 /// Показ системных уведомлений (реализация — в core/notifier.dart).
 abstract class Notify {
@@ -22,7 +25,18 @@ abstract class Notify {
 /// Экраны работают только с [AppState]; этот класс подгружает в него данные,
 /// сохраняет изменения и обменивается зашифрованными конвертами с друзьями.
 class Live {
-  Live._(this.app, this.store, this.secrets, this._connector);
+  Live._(this.app, this.store, this.secrets, this._connector, [String? mediaDir]) {
+    media = MediaEngine(
+      this,
+      () async => mediaDir ?? p.join((await getApplicationSupportDirectory()).path, 'media'),
+    );
+  }
+
+  /// Файлы: фото, видео, голосовые, документы.
+  late final MediaEngine media;
+
+  /// Запущены фоновой проверкой (без интерфейса): файлы не качаем.
+  bool background = false;
 
   final AppState app;
   final Store store;
@@ -62,6 +76,7 @@ class Live {
   DateTime _lastTyping = DateTime(2000);
   int _lastOnline = 0;
   bool _closed = false;
+  bool get closed => _closed;
 
   /// До какого момента (сек) мы точно забрали всё у ретрансляторов.
   int _syncedAt = 0;
@@ -75,7 +90,7 @@ class Live {
     final s = DeviceSecrets();
     final store = await Store.open(s, shared: false, createKey: false);
     if (store == null) return null;
-    final live = Live._(app, store, s, null);
+    final live = Live._(app, store, s, null)..background = true;
     app.live = live;
     await live._load(network: false);
     return live;
@@ -88,10 +103,11 @@ class Live {
     String? dbPath,
     Connector? connector,
     bool network = true,
+    String? mediaDir,
   }) async {
     final s = secrets ?? DeviceSecrets();
     final store = await Store.open(s, factory: dbFactory, path: dbPath);
-    final live = Live._(app, store!, s, connector);
+    final live = Live._(app, store!, s, connector, mediaDir);
     app.live = live;
     await live._load(network: network);
     return live;
@@ -120,7 +136,10 @@ class Live {
       app.profile = Profile.fromJson(prof);
       await reload();
       await _requeueUnconfirmed();
-      if (network) startNetwork();
+      if (network) {
+        startNetwork();
+        _resumeMedia();
+      }
     }
     _expiry = Timer.periodic(const Duration(seconds: 30), (_) => _expire());
     // «Приложение живо» (даже свёрнутое) — пока стучит этот пульс, фоновая
@@ -223,7 +242,10 @@ class Live {
         _relayStates[url] = st;
       }
       final n = p.onlineCount;
-      if (n > _lastOnline) _flushOutbox();
+      if (n > _lastOnline) {
+        _flushOutbox();
+        if (_lastOnline == 0) _resumeMedia();
+      }
       _lastOnline = n;
       app.notifyChanged();
     });
@@ -391,8 +413,25 @@ class Live {
 
     switch (p.type) {
       case Payload.msg:
-        final id = p.str('id'), text = p.str('text');
-        if (id == null || text == null || id.length > 64) return;
+        final id = p.str('id'), text = p.str('text') ?? '';
+        if (id == null || id.length > 64) return;
+        final kind = Message.kindOf(p.data['k']);
+        final att = Attachment.fromJson(p.data['att'])?..path = null;
+        final geo = GeoPoint.fromJson(p.data['geo']);
+        final poll = Poll.fromJson(p.data['poll'])?..votes.clear();
+        final valid = switch (kind) {
+          MsgKind.text => true,
+          MsgKind.voice ||
+          MsgKind.photo ||
+          MsgKind.video ||
+          MsgKind.file => att != null && att.uploaded && att.size <= MediaEngine.maxBytes,
+          MsgKind.geo => geo != null,
+          MsgKind.poll => poll != null,
+        };
+        if (!valid) {
+          log('  непонятное сообщение ${short(id)} (${p.data['k']}) — пропущено');
+          return;
+        }
         final list = app.messagesOf(sender);
         if (list.any((m) => m.id == id)) {
           // Повтор (отправитель не получил наш отчёт) — подтверждаем ещё раз.
@@ -428,7 +467,11 @@ class Live {
           time: time,
           status: MsgStatus.delivered,
           replyTo: reply,
-          secret: p.flag('secret'),
+          secret: kind == MsgKind.text && p.flag('secret'),
+          kind: kind,
+          att: att,
+          geo: geo,
+          poll: poll,
         );
         var at = list.length;
         while (at > 0 && list[at - 1].time.isAfter(m.time)) {
@@ -445,6 +488,23 @@ class Live {
           }),
         );
         await app.onIncoming(c, m);
+        if (!background && !c.request && MediaEngine.autoKind(m)) {
+          unawaited(media.download(sender, m));
+        }
+      case Payload.vote:
+        final id = p.str('id');
+        final raw = p.data['o'];
+        if (id == null || raw is! List) return;
+        for (final m in app.messagesOf(sender)) {
+          final poll = m.poll;
+          if (m.id == id && poll != null) {
+            poll.votes[sender] = Poll.cleanVote(raw, poll.options.length);
+            if (!poll.multi && poll.votes[sender]!.length > 1) {
+              poll.votes[sender] = [poll.votes[sender]!.first];
+            }
+            await saveMessage(sender, m);
+          }
+        }
       case Payload.receipt:
         final ids = (p.data['ids'] as List?)?.whereType<String>().toSet() ?? {};
         final st = p.str('s') == 'r' ? MsgStatus.read : MsgStatus.delivered;
@@ -537,14 +597,58 @@ class Live {
     'text': m.text,
     if (m.replyTo != null) 'reply': m.replyTo!.id,
     if (m.secret) 'secret': true,
+    if (m.kind != MsgKind.text) 'k': m.kind.name,
+    if (m.att != null) 'att': m.att!.toJson(wire: true),
+    if (m.geo != null) 'geo': m.geo!.toJson(),
+    if (m.poll != null) 'poll': m.poll!.toJson(wire: true),
     'p': myCard.toJson(),
   }).toMap();
 
   Future<void> sendMessage(String chat, Message m) async {
     await saveMessage(chat, m);
-    // Сообщение лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
+    // С вложением: сначала файл, потом само сообщение (см. MediaEngine.send).
+    if (m.att != null && !m.att!.uploaded) {
+      unawaited(media.send(chat, m));
+      return;
+    }
+    await queueMessage(chat, m);
+  }
+
+  /// Сообщение лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
+  Future<void> queueMessage(String chat, Message m) async {
     await store.queue(m.id, chat, _msgPayload(m));
     await _flushOutbox();
+  }
+
+  /// Продолжить прерванное: незалитые файлы и недокачанные фото/голосовые.
+  void _resumeMedia() {
+    if (background || _closed) return;
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
+    for (final c in app.contacts) {
+      for (final m in app.messagesOf(c.id)) {
+        final att = m.att;
+        if (att == null || media.busy(m.id) || m.time.isBefore(cutoff)) continue;
+        if (m.mine && !att.uploaded && m.status == MsgStatus.sending) {
+          unawaited(media.send(c.id, m));
+        } else if (!m.mine &&
+            !att.local &&
+            !c.request &&
+            MediaEngine.autoKind(m) &&
+            !app.failedTransfers.contains(m.id)) {
+          unawaited(media.download(c.id, m));
+        }
+      }
+    }
+  }
+
+  /// Проголосовать (или изменить голос).
+  Future<void> vote(String chat, Message m, List<int> options) async {
+    final poll = m.poll;
+    final me = keys?.pub;
+    if (poll == null || me == null) return;
+    poll.votes[me] = Poll.cleanVote(options, poll.options.length);
+    await saveMessage(chat, m);
+    _control(chat, Payload(Payload.vote, {'id': m.id, 'o': poll.votes[me]}));
   }
 
   /// После перезапуска: всё, что друг ещё не подтвердил, — снова в очередь.
@@ -556,7 +660,8 @@ class Live {
         if (m.mine &&
             m.status.index < MsgStatus.delivered.index &&
             m.time.isAfter(cutoff) &&
-            !queued.contains(m.id)) {
+            !queued.contains(m.id) &&
+            (m.att == null || m.att!.uploaded)) {
           await store.queue(m.id, c.id, _msgPayload(m));
         }
       }
@@ -712,6 +817,7 @@ class Live {
     app.contacts.removeWhere((c) => c.id == id);
     app.setMessages(id, []);
     await store.deleteContact(id);
+    await media.deleteChat(id);
     log('удалён контакт ${short(id)}');
   }
 
@@ -758,6 +864,9 @@ class Live {
       final cutoff = now.subtract(Duration(minutes: c.disappearing));
       final list = app.messagesOf(c.id);
       final before = list.length;
+      for (final m in list) {
+        if (m.time.isBefore(cutoff)) media.deleteFile(m);
+      }
       list.removeWhere((m) => m.time.isBefore(cutoff));
       if (list.length != before) {
         changed = true;
@@ -772,6 +881,7 @@ class Live {
     await close();
     await secrets.deleteAll();
     await store.destroy();
+    await media.wipe();
   }
 
   Future<void> close() async {

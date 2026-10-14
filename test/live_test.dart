@@ -40,6 +40,7 @@ void main() {
       dbFactory: databaseFactoryFfi,
       dbPath: db ?? '${tmp.path}/$name.db',
       connector: (_) => WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:${relay.port}')),
+      mediaDir: '${tmp.path}/$name-media',
     );
     if (!app.onboarded) {
       await app.createProfile(name: name, emoji: '🦊', colorIndex: 2);

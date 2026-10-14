@@ -303,7 +303,7 @@ class _InAppBannerState extends State<_InAppBanner> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                e.message.text,
+                                e.message.secret ? '🔒 Секретное сообщение' : e.message.preview,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(color: vc.textDim, fontSize: 14),

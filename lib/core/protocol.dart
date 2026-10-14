@@ -2,7 +2,8 @@ import 'dart:convert';
 
 /// Внутренний протокол Veil — JSON внутри зашифрованного конверта.
 ///
-/// t = msg    сообщение          {id, text, reply?, secret?, p?}
+/// t = msg    сообщение          {id, text, reply?, secret?, p?, k?, att?, geo?, poll?}
+/// t = vote   голос в опросе     {id, o: [номера вариантов]}
 /// t = rcpt   отчёт о доставке   {ids, s: d|r}
 /// t = react  реакция            {id, e?}
 /// t = hello  «я тебя добавил»   {p}
@@ -24,6 +25,7 @@ class Payload {
   static const ttl = 'ttl';
   static const typing = 'typ';
   static const ping = 'ping';
+  static const vote = 'vote';
 
   Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
 
