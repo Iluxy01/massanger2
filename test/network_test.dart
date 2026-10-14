@@ -58,7 +58,7 @@ void main() {
           await Future<void>.delayed(const Duration(milliseconds: 250));
         }
         final ok = stored && got.contains(GiftWrap.kindWrap);
-        if (ok) working++;
+        if (ok && defaultRelays.contains(url)) working++;
         // ignore: avoid_print
         print(
           '${ok ? '✅' : '❌'} $url  принят=$stored  доставлен=${got.contains(1059)}  '

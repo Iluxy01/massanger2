@@ -122,6 +122,8 @@ void main() {
       final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
       final aPub = aliceLive.keys!.pub;
       await until(() => bob.contact(aPub) != null, 'друг появился');
+      // От незнакомцев («заявок») файлы сами не качаются — Боб принимает Алису.
+      bob.acceptRequest(aPub);
       try {
         Future<String> file(String name, int size) async {
           final r = Random();
