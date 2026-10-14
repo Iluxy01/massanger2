@@ -34,7 +34,7 @@ jobs:
 
       # Живая проверка бесплатных ретрансляторов (результат — в логе этого шага).
       - name: Проверка ретрансляторов
-        run: flutter test test/media_probe_test.dart test/network_test.dart test/network_e2e_test.dart --reporter expanded
+        run: flutter test test/network_e2e_test.dart test/network_test.dart --reporter expanded
         env:
           VEIL_NETWORK_TEST: '1'
         continue-on-error: true

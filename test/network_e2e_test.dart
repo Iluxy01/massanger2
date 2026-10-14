@@ -2,6 +2,8 @@
 library;
 
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -29,6 +31,7 @@ void main() {
       secrets: secrets,
       dbFactory: databaseFactoryFfi,
       dbPath: '${tmp.path}/$name.db',
+      mediaDir: '${tmp.path}/$name-media',
     );
     if (!app.onboarded) await app.createProfile(name: name, emoji: '🦊', colorIndex: 1);
     return (app, live);
@@ -105,5 +108,57 @@ void main() {
     },
     skip: enabled ? false : 'нужен интернет (VEIL_NETWORK_TEST=1)',
     timeout: const Timeout(Duration(minutes: 5)),
+  );
+
+  test(
+    'файлы через публичные ретрансляторы: фото 400 КБ и видео 3 МБ',
+    () async {
+      final (alice, aliceLive) = await phone('Алиса', MemorySecrets());
+      final (bob, bobLive) = await phone('Боб', MemorySecrets());
+      await until(
+        () => aliceLive.pool!.onlineCount >= 3 && bobLive.pool!.onlineCount >= 3,
+        'подключение',
+      );
+      final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+      final aPub = aliceLive.keys!.pub;
+      await until(() => bob.contact(aPub) != null, 'друг появился');
+
+      Future<String> file(String name, int size) async {
+        final r = Random();
+        final f = File('${tmp.path}/$name');
+        await f.writeAsBytes(Uint8List.fromList(List.generate(size, (_) => r.nextInt(256))));
+        return f.path;
+      }
+
+      for (final (kind, name, size, secs) in [
+        (MsgKind.photo, 'photo.jpg', 400 * 1024, 60),
+        (MsgKind.video, 'clip.mp4', 3 * 1024 * 1024, 240),
+      ]) {
+        final src = await file(name, size);
+        final m = await alice.sendFile(
+          c.id,
+          kind: kind,
+          path: src,
+          name: name,
+          mime: 'application/octet-stream',
+          size: size,
+        );
+        await until(() => m.att!.uploaded, '$name: залито', seconds: secs);
+        await until(() => bob.messagesOf(aPub).any((x) => x.id == m.id), '$name: сообщение пришло');
+        final got = bob.messagesOf(aPub).firstWhere((x) => x.id == m.id);
+        await until(() => got.att!.local, '$name: скачано у друга', seconds: secs);
+        expect(File(got.att!.path!).readAsBytesSync(), File(src).readAsBytesSync());
+      }
+      // ignore: avoid_print
+      print(
+        'журнал Алисы (файлы):\n${aliceLive.journal.where((l) => l.contains('файл') || l.contains('кусок') || l.contains('куски')).join('\n')}',
+      );
+      // ignore: avoid_print
+      print('журнал Боба (файлы):\n${bobLive.journal.where((l) => l.contains('файл')).join('\n')}');
+      await aliceLive.close();
+      await bobLive.close();
+    },
+    skip: enabled ? false : 'нужен интернет (VEIL_NETWORK_TEST=1)',
+    timeout: const Timeout(Duration(minutes: 12)),
   );
 }
