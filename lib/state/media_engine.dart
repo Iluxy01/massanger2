@@ -38,7 +38,6 @@ class MediaEngine {
   static const maxBytes = 20 * 1024 * 1024;
 
   final Map<String, Future<bool>> _jobs = {};
-  Future<void> _downloads = Future.value();
 
   /// Ретрансляторы, которые отказались принять крупное событие (до перезапуска).
   final Set<String> _noBig = {};
@@ -267,7 +266,27 @@ class MediaEngine {
 
   // ───────────────────────── получение ─────────────────────────
 
-  /// Скачать файл из сообщения. Загрузки идут по одной.
+  /// Сколько файлов качается одновременно.
+  static const parallelDownloads = 3;
+  int _activeDownloads = 0;
+  final List<Completer<void>> _downloadQueue = [];
+
+  /// Когда последний раз пробовали скачать (для повторов с паузой).
+  final Map<String, DateTime> _lastTry = {};
+  final Map<String, int> _tries = {};
+
+  /// Пауза перед повтором неудачной загрузки: 10 с, 30 с, 1 мин, 2 мин, дальше 5 мин.
+  static const _retryAfter = [10, 30, 60, 120, 300];
+
+  /// Пора ли снова попробовать скачать после неудачи.
+  bool retryDue(String msgId) {
+    final last = _lastTry[msgId];
+    if (last == null) return true;
+    final n = (_tries[msgId] ?? 1).clamp(1, _retryAfter.length);
+    return DateTime.now().difference(last).inSeconds >= _retryAfter[n - 1];
+  }
+
+  /// Скачать файл из сообщения (до [parallelDownloads] одновременно).
   Future<bool> download(String chat, Message m) {
     final running = _jobs[m.id];
     if (running != null) return running;
@@ -276,18 +295,43 @@ class MediaEngine {
     _progress(m.id);
     live.app.failedTransfers.remove(m.id);
     live.app.notifyChanged();
-    _downloads = _downloads.then((_) async {
+    () async {
+      if (_activeDownloads >= parallelDownloads) {
+        final slot = Completer<void>();
+        _downloadQueue.add(slot);
+        await slot.future;
+      }
+      _activeDownloads++;
       var ok = false;
       try {
+        _lastTry[m.id] = DateTime.now();
+        _tries[m.id] = (_tries[m.id] ?? 0) + 1;
         ok = await _download(chat, m);
       } catch (e) {
         live.log('ОШИБКА получения файла (${Live.short(m.id)}): $e');
       }
+      _activeDownloads--;
+      if (_downloadQueue.isNotEmpty) _downloadQueue.removeAt(0).complete();
+      if (ok) {
+        _tries.remove(m.id);
+        _lastTry.remove(m.id);
+      }
       _jobs.remove(m.id);
       _done(m.id, ok);
       c.complete(ok);
-    });
+    }();
     return c.future;
+  }
+
+  /// Дождаться хоть одного ретранслятора на связи (сразу после запуска
+  /// соединения ещё устанавливаются — это не повод считать загрузку неудачной).
+  Future<bool> _waitOnline(RelayPool pl, Duration max) async {
+    final end = DateTime.now().add(max);
+    while (pl.onlineCount == 0) {
+      if (live.closed || DateTime.now().isAfter(end)) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return true;
   }
 
   Future<bool> _download(String chat, Message m) async {
@@ -304,6 +348,7 @@ class MediaEngine {
     final have = <int>{};
     final pending = <int>{};
     var writes = Future<void>.value();
+    var lastChunk = DateTime.now();
     final progress = _progress(m.id);
     final sw = Stopwatch()..start();
     live.log('↓ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n)');
@@ -312,6 +357,7 @@ class MediaEngine {
       final i = MediaCodec.indexOf(e);
       if (e.pubkey != att.signer || i == null || i < 0 || i >= n) return;
       if (have.contains(i) || !pending.add(i)) return;
+      lastChunk = DateTime.now();
       writes = writes.then((_) async {
         final bytes = await CryptoWorker.shared.openChunk(
           att.key,
@@ -329,43 +375,70 @@ class MediaEngine {
       });
     }
 
+    bool complete() => have.length >= n || live.closed;
+
+    Map<String, dynamic> filter() {
+      final missing = [
+        for (var i = 0; i < n; i++)
+          if (!have.contains(i)) i,
+      ];
+      // По тегу p — так ретрансляторы отдают и обычные конверты. Если не
+      // хватает немногих — спрашиваем точечно по номерам.
+      return {
+        'kinds': [MediaCodec.kind],
+        '#p': [att.signer],
+        'limit': missing.length,
+        if (missing.length < n && missing.length <= 200) '#c': [for (final i in missing) '$i'],
+      };
+    }
+
     try {
-      for (var round = 0; round < 2 && have.length < n; round++) {
-        if (round > 0) await Future<void>.delayed(const Duration(seconds: 3));
+      for (var round = 0; round < 3 && !complete(); round++) {
+        if (round > 0) await Future<void>.delayed(Duration(seconds: round * 3));
+        if (!await _waitOnline(pl, const Duration(seconds: 40))) break;
         final online = pl.onlineUrls;
         final order = [
           ...att.relays.where(online.contains),
           ...online.where((u) => !att.relays.contains(u)),
         ];
-        for (final url in order) {
-          if (have.length >= n || live.closed) break;
-          final missing = [
-            for (var i = 0; i < n; i++)
-              if (!have.contains(i)) i,
-          ];
-          // Если не хватает немногих — спрашиваем точечно по номерам.
-          // По тегу p — так ретрансляторы отдают и обычные конверты (запросы
-          // kind 1059 по автору некоторые не обслуживают).
-          final filter = <String, dynamic>{
-            'kinds': [MediaCodec.kind],
-            '#p': [att.signer],
-            'limit': missing.length,
-            if (missing.length < n && missing.length <= 200) '#c': [for (final i in missing) '$i'],
-          };
-          await pl.fetch(
-            url,
-            filter,
-            onEvent,
-            idle: const Duration(seconds: 15),
-            total: Duration(seconds: 30 + n),
-          );
-          await writes;
+        // Спрашиваем первого; если 2,5 с от него ни куска (или он закончил,
+        // а файла ещё нет) — подключаем следующего параллельно. Медленный или
+        // «полуживой» ретранслятор больше не держит загрузку.
+        final running = <Future<void>>[];
+        var next = 0;
+        var launchedAt = DateTime(2000);
+        while (!complete()) {
+          final stalled =
+              DateTime.now().difference(lastChunk) > const Duration(milliseconds: 2500) &&
+              DateTime.now().difference(launchedAt) > const Duration(milliseconds: 2500);
+          final idle = running.isEmpty;
+          if ((idle || stalled) && next < order.length && running.length < 3) {
+            final url = order[next++];
+            launchedAt = DateTime.now();
+            lastChunk = DateTime.now();
+            late final Future<void> f;
+            f = pl
+                .fetch(
+                  url,
+                  filter(),
+                  onEvent,
+                  idle: const Duration(seconds: 10),
+                  total: Duration(seconds: 30 + n),
+                  stop: complete,
+                )
+                .whenComplete(() => running.remove(f));
+            running.add(f);
+            continue;
+          }
+          if (running.isEmpty) break; // спросили всех
+          await Future.any([...running, Future<void>.delayed(const Duration(milliseconds: 300))]);
         }
+        await writes;
       }
       await writes;
       if (have.length < n) {
         await raf.close();
-        live.log('  файл не получен: ${have.length} из $n кусков');
+        live.log('  файл не получен: ${have.length} из $n кусков — повторю позже');
         if (part.existsSync()) await part.delete();
         return false;
       }

@@ -256,7 +256,11 @@ class Live {
     p.start();
     _presence = Timer.periodic(const Duration(seconds: 60), (_) => _ping());
     // Переотправка неподтверждённых сообщений (по расписанию с паузами).
-    _resend = Timer.periodic(const Duration(seconds: 30), (_) => _flushOutbox());
+    _resend = Timer.periodic(const Duration(seconds: 30), (_) {
+      _flushOutbox();
+      // Недокачанные файлы — повторяем сами, с растущей паузой.
+      if (app.foreground) resumeMedia();
+    });
     // Подстраховка: изредка заново спросить новое (дёшево — окно маленькое).
     _resub = Timer.periodic(const Duration(minutes: 10), (_) {
       if (app.foreground) p.subscribe(_filters);
@@ -638,7 +642,7 @@ class Live {
             !att.local &&
             !c.request &&
             MediaEngine.autoKind(m) &&
-            !app.failedTransfers.contains(m.id)) {
+            media.retryDue(m.id)) {
           unawaited(media.download(c.id, m));
         }
       }

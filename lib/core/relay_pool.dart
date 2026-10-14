@@ -271,6 +271,7 @@ class RelayPool {
     void Function(Event e) onEvent, {
     Duration idle = const Duration(seconds: 12),
     Duration total = const Duration(seconds: 90),
+    bool Function()? stop,
   }) async {
     final r = _relays[url];
     if (r == null || r.state != RelayState.online || _closed) return;
@@ -284,7 +285,8 @@ class RelayPool {
           now.difference(f.last) > idle ||
           r.gen != f.gen ||
           r.state != RelayState.online ||
-          _closed) {
+          _closed ||
+          (stop?.call() ?? false)) {
         break;
       }
       await Future.any([f.done.future, Future<void>.delayed(const Duration(milliseconds: 250))]);

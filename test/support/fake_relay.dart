@@ -4,7 +4,7 @@ import 'dart:io';
 /// Мини-ретранслятор Nostr для тестов: хранит события, отдаёт по фильтрам,
 /// рассылает новые подписчикам. Эфемерные (20000–29999) не хранит.
 class FakeRelay {
-  late final HttpServer _server;
+  late HttpServer _server;
   final List<Map<String, dynamic>> stored = [];
   final Map<WebSocket, Map<String, List<Map<String, dynamic>>>> _subs = {};
   int published = 0;

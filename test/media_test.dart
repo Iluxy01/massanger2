@@ -253,6 +253,66 @@ void main() {
     await bobLive.close();
   });
 
+  test('загрузка, начатая без связи, дожидается сети и завершается', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    final src = await randomFile('doc.pdf', 150 * 1024);
+    final m = await alice.sendFile(
+      bobId,
+      kind: MsgKind.file,
+      path: src,
+      name: 'doc.pdf',
+      mime: 'application/pdf',
+      size: 150 * 1024,
+    );
+    await until(() => m.att!.uploaded, what: 'залито');
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
+    final got = bob.messagesOf(aliceId).single;
+    // Связь пропала (как сразу после открытия приложения), а загрузка уже началась.
+    final ports = [for (final r in relays) r.port];
+    for (final r in relays) {
+      await r.stop();
+    }
+    await until(() => bobLive.pool!.onlineCount == 0, what: 'обрыв');
+    bob.download(aliceId, got);
+    await Future<void>.delayed(const Duration(seconds: 5));
+    expect(bob.failedTransfers, isEmpty, reason: 'не сдаёмся, пока нет сети');
+    for (var i = 0; i < relays.length; i++) {
+      await relays[i].startOn(ports[i]);
+    }
+    await until(() => got.att!.local, what: 'скачалось после появления сети', seconds: 30);
+    expect(File(got.att!.path!).readAsBytesSync(), File(src).readAsBytesSync());
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('молчащий ретранслятор с кусками не держит загрузку', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    // Куски лежат у всех трёх (третий в этом тесте берёт крупное).
+    relays[2].rejectBig = null;
+    final src = await randomFile('doc2.pdf', 200 * 1024);
+    final m = await alice.sendFile(
+      bobId,
+      kind: MsgKind.file,
+      path: src,
+      name: 'doc2.pdf',
+      mime: 'application/pdf',
+      size: 200 * 1024,
+    );
+    await until(() => m.att!.uploaded, what: 'залито');
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
+    final got = bob.messagesOf(aliceId).single;
+    // Первый из подсказанных ретрансляторов «завис»: соединение есть, ответов нет.
+    final first = got.att!.relays.first;
+    relays[urls.indexOf(first)].frozen = true;
+    final sw = Stopwatch()..start();
+    bob.download(aliceId, got);
+    await until(() => got.att!.local, what: 'скачалось с другого', seconds: 15);
+    expect(sw.elapsed.inSeconds, lessThan(8), reason: 'не ждём молчуна до таймаута');
+    relays[urls.indexOf(first)].frozen = false;
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('документ скачивается по нажатию; удаление друга стирает файлы', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
     final src = await randomFile('отчёт.pdf', 100 * 1024);
