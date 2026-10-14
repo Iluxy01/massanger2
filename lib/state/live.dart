@@ -141,7 +141,7 @@ class Live {
       await _requeueUnconfirmed();
       if (network) {
         startNetwork();
-        _resumeMedia();
+        resumeMedia();
       }
     }
     _expiry = Timer.periodic(const Duration(seconds: 30), (_) => _expire());
@@ -247,7 +247,7 @@ class Live {
       final n = p.onlineCount;
       if (n > _lastOnline) {
         _flushOutbox();
-        if (_lastOnline == 0) _resumeMedia();
+        if (_lastOnline == 0) resumeMedia();
       }
       _lastOnline = n;
       app.notifyChanged();
@@ -310,7 +310,7 @@ class Live {
     pool?.wake();
     pool?.subscribe(_filters);
     unawaited(_flushOutbox());
-    _resumeMedia();
+    resumeMedia();
     _ping();
     // Чат был открыт, пока приложение было свёрнуто — теперь его видно.
     final open = app.openChat;
@@ -625,7 +625,7 @@ class Live {
   }
 
   /// Продолжить прерванное: незалитые файлы и недокачанные фото/голосовые.
-  void _resumeMedia() {
+  void resumeMedia() {
     if (background || _closed) return;
     final cutoff = DateTime.now().subtract(const Duration(days: 7));
     for (final c in app.contacts) {

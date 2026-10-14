@@ -172,6 +172,32 @@ void main() {
     await bobLive.close();
   });
 
+  test('от незнакомца фото само не качается — только после «принять»', () async {
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount == 3 && bobLive.pool!.onlineCount == 3);
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    final aliceId = aliceLive.keys!.pub;
+    final src = await randomFile('p.jpg', 60 * 1024);
+    await alice.sendFile(
+      c.id,
+      kind: MsgKind.photo,
+      path: src,
+      name: 'p.jpg',
+      mime: 'image/jpeg',
+      size: 60 * 1024,
+    );
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'фото от заявки');
+    final got = bob.messagesOf(aliceId).single;
+    expect(bob.contact(aliceId)!.request, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(got.att!.local, isFalse, reason: 'от незнакомцев — только по нажатию');
+    bob.acceptRequest(aliceId);
+    await until(() => got.att!.local, what: 'после «принять» скачалось само');
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('документ скачивается по нажатию; удаление друга стирает файлы', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
     final src = await randomFile('отчёт.pdf', 100 * 1024);

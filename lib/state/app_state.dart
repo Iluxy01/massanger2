@@ -424,6 +424,8 @@ class AppState extends ChangeNotifier {
     if (c == null) return;
     c.request = false;
     live?.saveContact(c);
+    // Теперь это друг — его фото и голосовые скачиваются сами.
+    live?.resumeMedia();
     notifyChanged();
   }
 
@@ -533,6 +535,7 @@ class AppState extends ChangeNotifier {
       // Ответили незнакомцу — значит, приняли его.
       c.request = false;
       live?.saveContact(c);
+      live?.resumeMedia();
     }
     notifyChanged();
     if (live != null) {
