@@ -87,6 +87,20 @@ class Contact {
   /// Таймер исчезающих сообщений в минутах (0 — выключено).
   int disappearing = 0;
 
+  /// Через какие ретрансляторы друг сейчас на связи (он сам сообщает). Файлы
+  /// для него кладём туда, где он их точно сможет забрать: в мобильной сети
+  /// часть ретрансляторов бывает недоступна.
+  List<String> reach = [];
+
+  /// Только адреса ретрансляторов, не больше 12.
+  static List<String> cleanRelays(Object? o) => o is List
+      ? o
+            .whereType<String>()
+            .where((u) => (u.startsWith('wss://') || u.startsWith('ws://')) && u.length < 120)
+            .take(12)
+            .toList()
+      : [];
+
   List<Color> get colors => gradientAt(colorIndex);
 
   Map<String, dynamic> toJson() => {
@@ -99,6 +113,7 @@ class Contact {
     'blocked': blocked,
     'request': request,
     'ttl': disappearing,
+    if (reach.isNotEmpty) 'rl': reach,
     if (lastSeen != null) 'seen': lastSeen!.millisecondsSinceEpoch,
   };
 
@@ -116,7 +131,8 @@ class Contact {
               : null,
         )
         ..blocked = j['blocked'] == true
-        ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0;
+        ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0
+        ..reach = cleanRelays(j['rl']);
 }
 
 /// Вложение (фото, видео, файл, голосовое).
@@ -142,7 +158,12 @@ class Attachment {
     this.wave,
     this.path,
     this.scheme = 0,
+    this.signerKey = '',
   }) : relays = relays ?? [];
+
+  /// Закрытый ключ, которым подписаны куски (только у отправителя, другу не
+  /// уходит): нужен, чтобы по просьбе друга положить куски ещё куда-то.
+  String signerKey;
 
   /// Как зашифрованы куски (см. MediaCodec.scheme). 0 — первая версия.
   int scheme;
@@ -159,6 +180,7 @@ class Attachment {
     relays = List.of(o.relays);
     scheme = o.scheme;
     path = o.path;
+    if (o.signerKey.isNotEmpty) signerKey = o.signerKey;
   }
 
   String name;
@@ -217,6 +239,7 @@ class Attachment {
     if (thumb != null) 't': thumb,
     if (wave != null) 'wv': wave,
     if (!wire && path != null) 'p': path,
+    if (!wire && signerKey.isNotEmpty) 'sk': signerKey,
   };
 
   static Attachment? fromJson(Object? o) {
@@ -245,6 +268,7 @@ class Attachment {
           : null,
       path: o['p'] is String ? o['p'] as String : null,
       scheme: i('v'),
+      signerKey: str('sk'),
     );
   }
 }

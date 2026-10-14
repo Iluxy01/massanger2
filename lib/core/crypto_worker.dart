@@ -74,7 +74,8 @@ class CryptoWorker {
     required String path,
     required int index,
     int chunkSize = MediaCodec.chunkSize,
-  }) async => await _call(['seal', signer.priv, key, path, index, chunkSize]) as Event;
+    int scheme = MediaCodec.scheme,
+  }) async => await _call(['seal', signer.priv, key, path, index, chunkSize, scheme]) as Event;
 
   /// Расшифровать кусок (null — повреждён или чужой).
   Future<Uint8List?> openChunk(String key, int index, String content, {int scheme = 1}) async =>
@@ -109,6 +110,7 @@ class CryptoWorker {
             base64.decode(req[2] as String),
             req[4] as int,
             MediaCodec.readChunk(req[3] as String, req[4] as int, req[5] as int),
+            scheme: req[6] as int,
           ),
           'open' => MediaCodec.open(
             base64.decode(req[1] as String),

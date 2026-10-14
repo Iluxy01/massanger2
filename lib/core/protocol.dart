@@ -4,6 +4,9 @@ import 'dart:convert';
 ///
 /// t = msg    сообщение          {id, text, reply?, secret?, p?, k?, att?, geo?, poll?}
 /// t = vote   голос в опросе     {id, o: [номера вариантов]}
+/// t = need   «не могу скачать файл» {id, r: [ретрансляторы, где я на связи]}
+/// t = have   «положил туда»       {id, r: [ретрансляторы с кусками]}
+/// ping и msg несут r — где отправитель сейчас на связи.
 /// t = rcpt   отчёт о доставке   {ids, s: d|r}
 /// t = react  реакция            {id, e?}
 /// t = hello  «я тебя добавил»   {p}
@@ -26,6 +29,8 @@ class Payload {
   static const typing = 'typ';
   static const ping = 'ping';
   static const vote = 'vote';
+  static const need = 'need';
+  static const have = 'have';
 
   Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
 

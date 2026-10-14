@@ -125,15 +125,25 @@ class MediaEngine {
     return ok;
   }
 
-  List<String> _targets(Iterable<String> exclude) {
+  /// Куда класть куски. [prefer] — ретрансляторы, через которые на связи
+  /// получатель: они идут первыми (иначе в мобильной сети друг может не
+  /// дотянуться до тех, что быстрее всего у нас по Wi-Fi).
+  List<String> _targets(Iterable<String> exclude, {Set<String> prefer = const {}}) {
     final pl = live.pool;
     if (pl == null) return const [];
     final now = DateTime.now();
-    final list = [
-      for (final u in pl.onlineUrls)
-        if (!_noBig.contains(u) && !exclude.contains(u) && !(_cooldown[u]?.isAfter(now) ?? false))
-          u,
-    ]..sort((a, b) => _rank(pl, a).compareTo(_rank(pl, b)));
+    int group(String u) => prefer.isEmpty || prefer.contains(u) ? 0 : 1;
+    final list =
+        [
+          for (final u in pl.onlineUrls)
+            if (!_noBig.contains(u) &&
+                !exclude.contains(u) &&
+                !(_cooldown[u]?.isAfter(now) ?? false))
+              u,
+        ]..sort((a, b) {
+          final g = group(a).compareTo(group(b));
+          return g != 0 ? g : _rank(pl, a).compareTo(_rank(pl, b));
+        });
     return list;
   }
 
@@ -185,6 +195,7 @@ class MediaEngine {
     final signer = Keys.generate();
     final key = base64.encode(randomBytes(32));
     final n = MediaCodec.chunkCount(att.size);
+    final prefer = (live.app.contact(chat)?.reach ?? const <String>[]).toSet();
     final holders = <String, int>{};
     final progress = _progress(m.id);
     var next = 0, done = 0;
@@ -212,7 +223,7 @@ class MediaEngine {
           }
           // Кусок — сразу в два самых быстрых ретранслятора; дальше идём, как
           // только принял первый (второй догонит сам, его ответ тоже учтём).
-          final targets = _targets(asked).take(replicas).toList();
+          final targets = _targets(asked, prefer: prefer).take(replicas).toList();
           if (targets.isEmpty) {
             asked.clear(); // все отказали или молчат — пробуем снова после паузы
             await Future<void>.delayed(Duration(milliseconds: 800 + round * 700));
@@ -250,6 +261,7 @@ class MediaEngine {
     att
       ..key = key
       ..signer = signer.pub
+      ..signerKey = signer.priv
       ..chunks = n
       ..chunkSize = MediaCodec.chunkSize
       ..scheme = MediaCodec.scheme
@@ -262,6 +274,85 @@ class MediaEngine {
       '${att.relays.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
     );
     return true;
+  }
+
+  /// Друг не смог забрать куски — кладём их туда, где он на связи. Файл и ключи
+  /// у нас есть; куски шифруются заново тем же ключом и подписываются тем же
+  /// ключом файла, так что друг найдёт их тем же запросом.
+  /// Возвращает ретрансляторы, куда легли все куски.
+  Future<List<String>> mirror(String chat, Message m, List<String> where) async {
+    final att = m.att;
+    final pl = live.pool;
+    if (att == null || pl == null || !att.uploaded || att.signerKey.isEmpty) return const [];
+    final path = att.path;
+    if (path == null || !File(path).existsSync()) return const [];
+    final online = pl.onlineUrls.toSet();
+    final targets = where.where(online.contains).where((u) => !_noBig.contains(u)).toList()
+      ..sort((a, b) => _rank(pl, a).compareTo(_rank(pl, b)));
+    if (targets.isEmpty) return const [];
+    final chosen = targets.take(replicas).toList();
+    if (_mirroring.contains(m.id)) return const [];
+    _mirroring.add(m.id);
+    try {
+      live.log(
+        '↻ копия файла ${att.name} для ${live.who(chat)} → '
+        '${chosen.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
+      );
+      final signer = Keys(att.signerKey);
+      final cs = att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize;
+      final good = {for (final u in chosen) u: 0};
+      var next = 0;
+      Future<void> lane() async {
+        while (next < att.chunks && !live.closed) {
+          final i = next++;
+          final ev = await CryptoWorker.shared.sealChunk(
+            signer: signer,
+            key: att.key,
+            path: path,
+            index: i,
+            chunkSize: cs,
+            scheme: att.scheme,
+          );
+          _ours.add(ev.id);
+          final ok = await pl.publishTo(ev, chosen, timeout: const Duration(seconds: 10));
+          for (final u in ok) {
+            good[u] = good[u]! + 1;
+          }
+        }
+      }
+
+      await Future.wait([for (var i = 0; i < window; i++) lane()]);
+      final full = [
+        for (final e in good.entries)
+          if (e.value == att.chunks) e.key,
+      ];
+      if (full.isNotEmpty) {
+        att.relays = {...full, ...att.relays}.take(8).toList();
+        await _publishResult(chat, m);
+      }
+      live.log(
+        '  копия готова: ${full.isEmpty ? 'не удалось' : full.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
+      );
+      return full;
+    } finally {
+      _mirroring.remove(m.id);
+    }
+  }
+
+  final Set<String> _mirroring = {};
+
+  /// Когда последний раз просили отправителя положить куски поближе.
+  final Map<String, DateTime> _asked = {};
+
+  /// Друг сообщил, что положил куски ещё и сюда — пробуем скачать сразу.
+  Future<void> gotMirror(String chat, Message m, List<String> where) async {
+    final att = m.att;
+    if (att == null || att.local) return;
+    att.relays = {...where, ...att.relays}.take(8).toList();
+    await _publishResult(chat, m);
+    _lastTry.remove(m.id);
+    _tries.remove(m.id);
+    unawaited(download(chat, m));
   }
 
   // ───────────────────────── получение ─────────────────────────
@@ -315,6 +406,16 @@ class MediaEngine {
       if (ok) {
         _tries.remove(m.id);
         _lastTry.remove(m.id);
+      } else if (!live.closed) {
+        // Соединения могли «зависнуть» после смены сети — проверить и переподключить.
+        live.pool?.wake();
+        // И попросить отправителя положить куски туда, где мы на связи
+        // (не чаще раза в 2 минуты на файл).
+        final last = _asked[m.id];
+        if (!m.mine && (last == null || DateTime.now().difference(last).inMinutes >= 2)) {
+          _asked[m.id] = DateTime.now();
+          live.askMirror(chat, m);
+        }
       }
       _jobs.remove(m.id);
       _done(m.id, ok);

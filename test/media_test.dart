@@ -49,19 +49,23 @@ void main() {
     await tmp.delete(recursive: true);
   });
 
-  WebSocketChannel connect(Uri u) {
+  WebSocketChannel connect(Uri u, [Set<String>? only]) {
     final i = urls.indexOf('ws://${u.host}');
+    // «Мобильная сеть»: до остальных ретрансляторов не дотянуться.
+    if (only != null && !only.contains('ws://${u.host}')) {
+      return WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:1'));
+    }
     return WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:${relays[max(i, 0)].port}'));
   }
 
-  Future<(AppState, Live)> phone(String name, {MemorySecrets? secrets}) async {
+  Future<(AppState, Live)> phone(String name, {MemorySecrets? secrets, Set<String>? only}) async {
     final app = AppState();
     final live = await Live.boot(
       app,
       secrets: secrets ?? MemorySecrets(),
       dbFactory: databaseFactoryFfi,
       dbPath: '${tmp.path}/$name.db',
-      connector: connect,
+      connector: (u) => connect(u, only),
       mediaDir: '${tmp.path}/$name-media',
       tempDir: '${tmp.path}/cache',
     );
@@ -309,6 +313,75 @@ void main() {
     await until(() => got.att!.local, what: 'скачалось с другого', seconds: 15);
     expect(sw.elapsed.inSeconds, lessThan(8), reason: 'не ждём молчуна до таймаута');
     relays[urls.indexOf(first)].frozen = false;
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  /// Алиса «на Wi-Fi» видит все три ретранслятора, Боб «в мобильной сети» —
+  /// только третий. Все три принимают куски.
+  Future<(AppState, Live, AppState, Live, String, String)> splitNetwork() async {
+    relays[2].rejectBig = null;
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб', only: {'ws://picky.test'});
+    await until(
+      () => aliceLive.pool!.onlineCount == 3 && bobLive.pool!.onlineCount == 1,
+      what: 'связь',
+    );
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    await until(() => bob.contact(aliceLive.keys!.pub) != null, what: 'hello');
+    bob.acceptRequest(aliceLive.keys!.pub);
+    return (alice, aliceLive, bob, bobLive, c.id, aliceLive.keys!.pub);
+  }
+
+  test('файлы кладутся туда, где получатель на связи (Wi-Fi → мобильная сеть)', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await splitNetwork();
+    // Боб пишет первым — вместе с сообщением Алиса узнаёт, где он на связи.
+    bob.send(aliceId, 'я с мобильного');
+    await until(() => alice.contact(bobId)!.reach.isNotEmpty, what: 'Алиса узнала сеть Боба');
+    expect(alice.contact(bobId)!.reach, ['ws://picky.test']);
+
+    final src = await randomFile('photo_m.jpg', 200 * 1024);
+    final m = await alice.sendFile(
+      bobId,
+      kind: MsgKind.photo,
+      path: src,
+      name: 'photo_m.jpg',
+      mime: 'image/jpeg',
+      size: 200 * 1024,
+    );
+    await until(() => m.att!.uploaded, what: 'залито');
+    expect(m.att!.relays, contains('ws://picky.test'));
+    await until(
+      () => bob.messagesOf(aliceId).any((x) => x.att?.local ?? false),
+      what: 'Боб скачал',
+      seconds: 20,
+    );
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('не нашёл кусков — попросил отправителя положить копию, и скачал', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await splitNetwork();
+    // Алиса ничего не знает о сети Боба — куски уйдут в самые быстрые для неё.
+    expect(alice.contact(bobId)!.reach, isEmpty);
+    final src = await randomFile('voice_m.m4a', 120 * 1024);
+    final m = await alice.sendFile(
+      bobId,
+      kind: MsgKind.voice,
+      path: src,
+      name: 'voice.m4a',
+      mime: 'audio/mp4',
+      size: 120 * 1024,
+      duration: 5,
+    );
+    await until(() => m.att!.uploaded, what: 'залито');
+    expect(m.att!.relays, isNot(contains('ws://picky.test')), reason: 'Бобу оттуда не достать');
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение дошло');
+    final got = bob.messagesOf(aliceId).single;
+    await until(() => got.att!.local, what: 'скачано через копию', seconds: 45);
+    expect(File(got.att!.path!).readAsBytesSync(), File(src).readAsBytesSync());
+    expect(bobLive.journal.any((l) => l.contains('прошу')), isTrue);
+    expect(aliceLive.journal.any((l) => l.contains('копия готова: ws://picky.test')), isTrue);
     await aliceLive.close();
     await bobLive.close();
   });

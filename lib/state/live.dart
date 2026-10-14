@@ -413,6 +413,14 @@ class Live {
     // «В сети» — только по живым сигналам, а не по отчётам из фоновой проверки
     // или старым сообщениям, пролежавшим на ретрансляторе.
     final fresh = DateTime.now().difference(sentAt).inSeconds.abs() < 120;
+    // Где друг сейчас на связи — туда и кладём ему файлы.
+    if (p.data['r'] is List && (fresh || p.type == Payload.ping)) {
+      final r = Contact.cleanRelays(p.data['r']);
+      if (r.isNotEmpty && r.join() != c.reach.join()) {
+        c.reach = r;
+        await saveContact(c);
+      }
+    }
     if (p.type == Payload.ping) {
       p.data['on'] == false ? _seenOffline(c) : _seenOnline(c);
     } else if (fresh && (p.type == Payload.typing || p.type == Payload.msg)) {
@@ -513,6 +521,33 @@ class Live {
             await saveMessage(sender, m);
           }
         }
+      case Payload.need:
+        // Друг не может забрать наш файл — положим куски туда, где он на связи.
+        final id = p.str('id');
+        final where = Contact.cleanRelays(p.data['r']);
+        if (id == null || where.isEmpty) return;
+        for (final m in app.messagesOf(sender)) {
+          if (m.id == id && m.mine && m.att != null) {
+            log('  друг не может скачать ${m.att!.name} — делаю копию');
+            unawaited(
+              media.mirror(sender, m, where).then((got) {
+                if (got.isNotEmpty) {
+                  _control(sender, Payload(Payload.have, {'id': id, 'r': got}));
+                }
+              }),
+            );
+          }
+        }
+      case Payload.have:
+        final id = p.str('id');
+        final where = Contact.cleanRelays(p.data['r']);
+        if (id == null || where.isEmpty) return;
+        for (final m in app.messagesOf(sender)) {
+          if (m.id == id && !m.mine && m.att != null && !background) {
+            log('  друг положил копию ${m.att!.name} — качаю');
+            unawaited(media.gotMirror(sender, m, where));
+          }
+        }
       case Payload.receipt:
         final ids = (p.data['ids'] as List?)?.whereType<String>().toSet() ?? {};
         final st = p.str('s') == 'r' ? MsgStatus.read : MsgStatus.delivered;
@@ -593,7 +628,11 @@ class Live {
           return tb.compareTo(ta);
         });
     for (final c in targets.take(8)) {
-      _control(c.id, Payload(Payload.ping, {'on': online}), ephemeral: true);
+      _control(
+        c.id,
+        Payload(Payload.ping, {'on': online, if (online) 'r': _reach()}),
+        ephemeral: true,
+      );
     }
   }
 
@@ -609,6 +648,7 @@ class Live {
     if (m.att != null) 'att': m.att!.toJson(wire: true),
     if (m.geo != null) 'geo': m.geo!.toJson(),
     if (m.poll != null) 'poll': m.poll!.toJson(wire: true),
+    'r': _reach(),
     'p': myCard.toJson(),
   }).toMap();
 
@@ -647,6 +687,17 @@ class Live {
         }
       }
     }
+  }
+
+  /// Ретрансляторы, через которые мы сейчас на связи.
+  List<String> _reach() => pool?.onlineUrls.take(12).toList() ?? const [];
+
+  /// Попросить отправителя положить куски файла туда, где мы на связи.
+  void askMirror(String chat, Message m) {
+    final r = _reach();
+    if (r.isEmpty) return;
+    log('  прошу ${who(chat)} положить ${m.att?.name ?? 'файл'} поближе');
+    _control(chat, Payload(Payload.need, {'id': m.id, 'r': r}));
   }
 
   /// Проголосовать (или изменить голос).
