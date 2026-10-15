@@ -10,6 +10,8 @@ import 'package:veil/core/media.dart';
 import 'package:veil/core/nostr.dart';
 import 'package:veil/core/relay_pool.dart';
 
+import 'network_test.dart' show candidateRelays;
+
 /// Диагностика для вложений: принимает ли каждый ретранслятор куски файла и
 /// по какому фильтру их отдаёт обратно. Только печатает результат.
 ///   VEIL_NETWORK_TEST=1 flutter test test/media_probe_test.dart
@@ -19,7 +21,9 @@ void main() {
   test(
     'куски файла: приём и выдача по разным фильтрам',
     () async {
-      final lines = await Future.wait([for (final url in defaultRelays) _probe(url)]);
+      final lines = await Future.wait([
+        for (final url in [...defaultRelays, ...candidateRelays]) _probe(url),
+      ]);
       // ignore: avoid_print
       print(lines.join('\n'));
     },
