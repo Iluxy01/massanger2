@@ -28,18 +28,26 @@ class VideoNote {
 class NoteRecorder {
   CameraController? controller;
   bool _recording = false;
+  List<CameraDescription> _cams = const [];
+  bool _flipping = false;
 
-  /// Открыть фронтальную камеру и начать запись. false — нет камеры или разрешения.
-  Future<bool> start() async {
+  /// Есть и фронтальная, и основная камера — можно переворачивать.
+  bool get canFlip =>
+      _cams.any((c) => c.lensDirection == CameraLensDirection.front) &&
+      _cams.any((c) => c.lensDirection != CameraLensDirection.front);
+
+  /// Открыть камеру (фронтальную или основную — [back]) и начать запись.
+  /// false — нет камеры или разрешения.
+  Future<bool> start({bool back = false}) async {
     try {
-      final cams = await availableCameras();
+      final cams = _cams = await availableCameras();
       if (cams.isEmpty) return false;
-      final front = cams.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cams.first,
-      );
+      bool want(CameraDescription c) => back
+          ? c.lensDirection == CameraLensDirection.back
+          : c.lensDirection == CameraLensDirection.front;
+      final first = cams.firstWhere(want, orElse: () => cams.first);
       final c = CameraController(
-        front,
+        first,
         // 480p и умеренный битрейт: минута ≈ 8 МБ — быстро уходит через ретрансляторы.
         ResolutionPreset.medium,
         enableAudio: true,
@@ -55,6 +63,27 @@ class NoteRecorder {
     } catch (_) {
       await _close();
       return false;
+    }
+  }
+
+  /// Перевернуть камеру (фронтальная ↔ основная) — запись при этом не прерывается.
+  Future<bool> flip() async {
+    final c = controller;
+    if (c == null || !c.value.isInitialized || !canFlip || _flipping) return false;
+    final front = c.description.lensDirection == CameraLensDirection.front;
+    final next = _cams.firstWhere(
+      (d) => front
+          ? d.lensDirection != CameraLensDirection.front
+          : d.lensDirection == CameraLensDirection.front,
+    );
+    _flipping = true;
+    try {
+      await c.setDescription(next);
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _flipping = false;
     }
   }
 
@@ -148,9 +177,13 @@ class NoteRecordingOverlay extends StatelessWidget {
     required this.seconds,
     required this.recording,
     this.cancel = false,
+    this.onFlip,
   });
 
   final NoteRecorder recorder;
+
+  /// Перевернуть камеру (кнопку можно нажать вторым пальцем, пока держишь запись).
+  final VoidCallback? onFlip;
   final int seconds;
 
   /// Камера уже пишет (иначе — ещё открывается).
@@ -165,103 +198,120 @@ class NoteRecordingOverlay extends StatelessWidget {
     final radius = side * VideoNote.corner;
     final c = recorder.controller;
     final live = c != null && c.value.isInitialized;
-    return IgnorePointer(
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: const Duration(milliseconds: 260).by(context),
-        curve: Curves.easeOutCubic,
-        builder: (_, t, child) => BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 14 * t, sigmaY: 14 * t),
-          child: ColoredBox(
-            color: Colors.black.withValues(alpha: 0.45 * t),
-            child: Opacity(
-              opacity: t,
-              child: Transform.scale(scale: 0.85 + 0.15 * t, child: child),
-            ),
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 260).by(context),
+      curve: Curves.easeOutCubic,
+      builder: (_, t, child) => BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14 * t, sigmaY: 14 * t),
+        child: ColoredBox(
+          color: Colors.black.withValues(alpha: 0.45 * t),
+          child: Opacity(
+            opacity: t,
+            child: Transform.scale(scale: 0.85 + 0.15 * t, child: child),
           ),
         ),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: side,
-                height: side,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(7),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(radius - 7),
-                        child: live
-                            ? FittedBox(
-                                fit: BoxFit.cover,
-                                clipBehavior: Clip.hardEdge,
-                                child: SizedBox(
-                                  // Превью камеры отдаёт размер в «альбомной» ориентации.
-                                  width: c.value.previewSize?.height ?? 480,
-                                  height: c.value.previewSize?.width ?? 640,
-                                  child: CameraPreview(c),
-                                ),
-                              )
-                            : const ColoredBox(
-                                color: Colors.black,
-                                child: Center(
-                                  child: CircularProgressIndicator(color: Colors.white),
-                                ),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: side,
+              height: side,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(7),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(radius - 7),
+                      child: live
+                          ? FittedBox(
+                              fit: BoxFit.cover,
+                              clipBehavior: Clip.hardEdge,
+                              child: SizedBox(
+                                // Превью камеры отдаёт размер в «альбомной» ориентации.
+                                width: c.value.previewSize?.height ?? 480,
+                                height: c.value.previewSize?.width ?? 640,
+                                child: CameraPreview(c),
                               ),
+                            )
+                          : const ColoredBox(
+                              color: Colors.black,
+                              child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                            ),
+                    ),
+                  ),
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(end: recording ? seconds / VideoNote.maxSeconds : 0),
+                    duration: const Duration(milliseconds: 950),
+                    builder: (_, v, _) => CustomPaint(
+                      painter: _EdgeProgressPainter(
+                        progress: v,
+                        colors: cancel
+                            ? const [Colors.redAccent, Colors.redAccent]
+                            : [acc.a, acc.b],
+                        radius: radius,
+                        track: Colors.white.withValues(alpha: 0.25),
                       ),
                     ),
-                    TweenAnimationBuilder<double>(
-                      tween: Tween(end: recording ? seconds / VideoNote.maxSeconds : 0),
-                      duration: const Duration(milliseconds: 950),
-                      builder: (_, v, _) => CustomPaint(
-                        painter: _EdgeProgressPainter(
-                          progress: v,
-                          colors: cancel
-                              ? const [Colors.redAccent, Colors.redAccent]
-                              : [acc.a, acc.b],
-                          radius: radius,
-                          track: Colors.white.withValues(alpha: 0.25),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 18),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 9,
-                      height: 9,
-                      decoration: BoxDecoration(
-                        color: recording ? Colors.redAccent : Colors.white38,
-                        shape: BoxShape.circle,
-                      ),
+            ),
+            const SizedBox(height: 18),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: recording ? Colors.redAccent : Colors.white38,
+                      shape: BoxShape.circle,
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${fmtDuration(seconds)} / ${fmtDuration(VideoNote.maxSeconds)}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${fmtDuration(seconds)} / ${fmtDuration(VideoNote.maxSeconds)}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontFeatures: [FontFeature.tabularFigures()],
                     ),
-                  ],
+                  ),
+                ],
+              ),
+            ),
+            if (onFlip != null && recorder.canFlip) ...[
+              const SizedBox(height: 14),
+              Pressable(
+                scale: 0.85,
+                onTap: onFlip,
+                child: Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withValues(alpha: 0.45),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
+                  ),
+                  child: const Icon(
+                    Icons.flip_camera_android_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
                 ),
               ),
             ],
-          ),
+          ],
         ),
       ),
     );

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veil/app.dart';
 import 'package:veil/models/models.dart';
+import 'package:veil/screens/settings_tab.dart';
 import 'package:veil/screens/wifi_hint.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/widgets/avatar.dart';
@@ -212,6 +213,30 @@ void main() {
     await tester.pump(const Duration(seconds: 4)); // подсказка исчезла
     await settle(tester);
     expect(find.byIcon(Icons.mic_rounded), findsNWidgets(mics));
+    await close(tester, state);
+  });
+
+  testWidgets('настройка: с какой камеры начинать видеосообщение', (tester) async {
+    final state = await launch(tester, banner: false);
+    expect(state.noteCamera, 0, reason: 'по умолчанию — фронтальная');
+    // Вкладка «Профиль» — аватарка в нижней панели.
+    await tester.tap(find.byWidgetPredicate((w) => w is Avatar && w.size == 26).last);
+    await settle(tester);
+    await tester.scrollUntilVisible(
+      find.text('Камера в начале записи'),
+      300,
+      scrollable: find
+          .descendant(of: find.byType(SettingsTab), matching: find.byType(Scrollable))
+          .first,
+    );
+    await settle(tester);
+    await tester.tap(find.text('Основная'));
+    await settle(tester);
+    expect(state.noteCamera, 1);
+    expect(find.textContaining('Сначала снимает то, что перед тобой'), findsOneWidget);
+    final copy = AppState.demo()..applySettings(state.settingsForTest);
+    expect(copy.noteCamera, 1, reason: 'сохраняется');
+    copy.dispose();
     await close(tester, state);
   });
 

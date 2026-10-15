@@ -146,10 +146,30 @@ class _VideoRecorderScreenState extends State<VideoRecorderScreen> with WidgetsB
     }
   }
 
+  bool _flipping = false;
+
   Future<void> _flip() async {
-    if (_cams.length < 2 || _recording) return;
+    if (_cams.length < 2 || _flipping) return;
     context.appRead.tick(HapticKind.selection);
-    _cam = (_cam + 1) % _cams.length;
+    final next = (_cam + 1) % _cams.length;
+    final c = _c;
+    if (_recording && c != null) {
+      // Во время записи — переключаем камеру, не прерывая видео.
+      _flipping = true;
+      try {
+        await c.setDescription(_cams[next]);
+        _cam = next;
+      } catch (_) {
+        if (mounted) {
+          showVeilToast(context, 'Камеру не перевернуть', icon: Icons.error_outline_rounded);
+        }
+      } finally {
+        _flipping = false;
+      }
+      if (mounted) setState(() {});
+      return;
+    }
+    _cam = next;
     await _open();
   }
 
@@ -291,7 +311,7 @@ class _VideoRecorderScreenState extends State<VideoRecorderScreen> with WidgetsB
                 ),
                 SizedBox(
                   width: 56,
-                  child: _cams.length > 1 && !_recording
+                  child: _cams.length > 1
                       ? IconButton(
                           onPressed: _flip,
                           icon: const Icon(

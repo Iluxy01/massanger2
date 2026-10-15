@@ -72,6 +72,9 @@ class AppState extends ChangeNotifier {
   /// (служба с тихим значком в шторке). Выключено — проверка раз в ~15 минут.
   bool instantNotify = false;
 
+  /// С какой камеры начинается запись видеосообщения: 0 — фронтальная, 1 — основная.
+  int noteCamera = 0;
+
   /// Подсказку «отправляй файлы через мобильный интернет» уже показывали.
   bool wifiHintShown = false;
 
@@ -243,6 +246,7 @@ class AppState extends ChangeNotifier {
     'look': look,
     'motion': motion,
     'instant': instantNotify,
+    'noteCam': noteCamera,
     if (wifiHintShown) 'wifiHint': true,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
@@ -264,6 +268,7 @@ class AppState extends ChangeNotifier {
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     instantNotify = s['instant'] == true;
     wifiHintShown = s['wifiHint'] == true;
+    noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
     themeTick.value++;
     pinned
       ..clear()
@@ -320,6 +325,11 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint('service: $e');
     }
+  }
+
+  void setNoteCamera(int v) {
+    noteCamera = v;
+    _saveSettings();
   }
 
   void markWifiHintShown() {

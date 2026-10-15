@@ -169,6 +169,24 @@ class SettingsTab extends StatelessWidget {
               ],
             ),
 
+            // ── Видеосообщения ──
+            const _Section('Видеосообщения'),
+            _Group(
+              children: [
+                _LevelPicker(
+                  icon: Icons.cameraswitch_rounded,
+                  title: 'Камера в начале записи',
+                  labels: const ['Фронтальная', 'Основная'],
+                  hints: const [
+                    'Сначала снимает тебя; перевернуть можно во время записи',
+                    'Сначала снимает то, что перед тобой; перевернуть можно во время записи',
+                  ],
+                  value: app.noteCamera,
+                  onChanged: app.setNoteCamera,
+                ),
+              ],
+            ),
+
             // ── Приватность ──
             const _Section('Приватность'),
             _Group(

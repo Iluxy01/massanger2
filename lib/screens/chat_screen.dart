@@ -225,7 +225,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _cancelArmed = false;
     });
     FocusScope.of(context).unfocus();
-    final ok = await r.start();
+    final ok = await r.start(back: _app.noteCamera == 1);
     if (!mounted) {
       await r.stop(cancel: true);
       return;
@@ -261,6 +261,13 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _recSeconds++);
       if (_recSeconds >= VideoNote.maxSeconds) _stopRecording();
     });
+  }
+
+  Future<void> _flipNote() async {
+    final r = _noteRec;
+    if (r == null) return;
+    _app.tick(HapticKind.selection);
+    if (await r.flip() && mounted) setState(() {});
   }
 
   void _toggleNoteMode() {
@@ -441,6 +448,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         seconds: _recSeconds,
                         recording: _recNote,
                         cancel: _cancelArmed,
+                        onFlip: _recNote ? _flipNote : null,
                       ),
                   ],
                 ),
