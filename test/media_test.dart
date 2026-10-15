@@ -49,31 +49,23 @@ void main() {
     await tmp.delete(recursive: true);
   });
 
-  WebSocketChannel connect(Uri u, [Set<String>? only, bool tight = false]) {
+  WebSocketChannel connect(Uri u, [Set<String>? only]) {
     final i = urls.indexOf('ws://${u.host}');
     // «Мобильная сеть»: до остальных ретрансляторов не дотянуться.
     if (only != null && !only.contains('ws://${u.host}')) {
       return WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:1'));
     }
-    // «Урезанная» мобильная сеть: соединения замерзают после ~14 КБ.
-    return WebSocketChannel.connect(
-      Uri.parse('ws://127.0.0.1:${relays[max(i, 0)].port}${tight ? '/m' : ''}'),
-    );
+    return WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:${relays[max(i, 0)].port}'));
   }
 
-  Future<(AppState, Live)> phone(
-    String name, {
-    MemorySecrets? secrets,
-    Set<String>? only,
-    bool tight = false,
-  }) async {
+  Future<(AppState, Live)> phone(String name, {MemorySecrets? secrets, Set<String>? only}) async {
     final app = AppState();
     final live = await Live.boot(
       app,
       secrets: secrets ?? MemorySecrets(),
       dbFactory: databaseFactoryFfi,
       dbPath: '${tmp.path}/$name.db',
-      connector: (u) => connect(u, only, tight),
+      connector: (u) => connect(u, only),
       mediaDir: '${tmp.path}/$name-media',
       tempDir: '${tmp.path}/cache',
     );
@@ -95,10 +87,9 @@ void main() {
   /// Двое друзей, оба на связи со всеми тремя ретрансляторами.
   Future<(AppState, Live, AppState, Live, String, String)> friends({
     MemorySecrets? aliceSecrets,
-    bool bobTight = false,
   }) async {
     final (alice, aliceLive) = await phone('Алиса', secrets: aliceSecrets);
-    final (bob, bobLive) = await phone('Боб', tight: bobTight);
+    final (bob, bobLive) = await phone('Боб');
     await until(
       () => aliceLive.pool!.onlineCount == 3 && bobLive.pool!.onlineCount == 3,
       what: 'связь',
@@ -394,70 +385,6 @@ void main() {
     await aliceLive.close();
     await bobLive.close();
   });
-
-  test('мобильная сеть режет соединения: файл приходит мелкими кусками', () async {
-    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends(bobTight: true);
-    // Один из ретрансляторов не смотрит на номер куска в фильтре (как snort).
-    relays[0].ignoreTagFilters = true;
-    // Свежие соединения Боба замерзают после ~14 КБ — крупный кусок (~62 КБ) не пройдёт.
-    final src = await randomFile('photo.jpg', 120 * 1024);
-    final sent = await alice.sendFile(
-      bobId,
-      kind: MsgKind.photo,
-      path: src,
-      name: 'photo.jpg',
-      mime: 'image/jpeg',
-      size: File(src).lengthSync(),
-    );
-    await until(() => sent.att!.uploaded, what: 'заливка');
-    expect(sent.att!.small, isFalse, reason: 'про сеть Боба ещё ничего не известно');
-    await until(
-      () => bob.messagesOf(aliceId).any((m) => m.att?.local ?? false),
-      what: 'фото у Боба (через мелкую копию)',
-      seconds: 60,
-    );
-    final got = bob.messagesOf(aliceId).firstWhere((m) => m.att != null);
-    expect(got.att!.small, isTrue);
-    expect(await File(got.att!.path!).readAsBytes(), await File(src).readAsBytes());
-    expect(relays.fold<int>(0, (a, r) => a + r.frozenByLimit), greaterThan(0));
-    expect(bobLive.media.tight, isTrue);
-    expect(bobLive.journal.join('\n'), contains('мелкая нарезка'));
-    expect(aliceLive.journal.join('\n'), contains('мелкая копия'));
-
-    // Боб пишет в ответ — Алиса узнаёт, что его сеть «урезана», и следующий
-    // файл сразу режет мелко (без лишнего круга).
-    bob.send(aliceId, 'спасибо');
-    await until(() => alice.contact(bobId)?.tight ?? false, what: 'флаг сети Боба');
-    final src2 = await randomFile('b.jpg', 60 * 1024 + 7);
-    final second = await alice.sendFile(
-      bobId,
-      kind: MsgKind.photo,
-      path: src2,
-      name: 'b.jpg',
-      mime: 'image/jpeg',
-      size: File(src2).lengthSync(),
-    );
-    await until(() => second.att!.uploaded, what: 'заливка второго');
-    expect(second.att!.small, isTrue);
-    expect(second.att!.chunks, MediaCodec.chunkCount(60 * 1024 + 7, MediaCodec.smallChunk));
-    await until(
-      () => bob.messagesOf(aliceId).where((m) => m.att?.local ?? false).length == 2,
-      what: 'второй файл у Боба',
-      seconds: 40,
-    );
-    final got2 = bob.messagesOf(aliceId).lastWhere((m) => m.att != null);
-    expect(await File(got2.att!.path!).readAsBytes(), await File(src2).readAsBytes());
-    // А текст по-прежнему ходит.
-    alice.send(bobId, 'дошло?');
-    // (общее соединение Боба тоже могло замёрзнуть — оно переподключится)
-    await until(
-      () => bob.messagesOf(aliceId).any((m) => m.text == 'дошло?'),
-      what: 'текст',
-      seconds: 45,
-    );
-    await aliceLive.close();
-    await bobLive.close();
-  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('документ скачивается по нажатию; удаление друга стирает файлы', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();

@@ -415,8 +415,7 @@ class Live {
     await reload();
     // Проверить соединения (мобильная сеть могла их тихо оборвать) и
     // заново спросить накопившееся.
-    _paused = false;
-    tuneProbe();
+    pool?.idleProbe = const Duration(seconds: 45);
     pool?.wake();
     pool?.subscribe(_filters);
     unawaited(_flushOutbox());
@@ -432,22 +431,9 @@ class Live {
 
   /// Приложение свернули — сразу сообщаем друзьям «не в сети».
   void paused() {
-    _paused = true;
-    tuneProbe();
+    // В фоне (с «мгновенными уведомлениями») проверяем соединения реже — батарея.
+    pool?.idleProbe = const Duration(minutes: 4);
     _ping(online: false);
-  }
-
-  bool _paused = false;
-
-  /// Как часто проверять молчащие соединения. В фоне (с «мгновенными
-  /// уведомлениями») — реже, батарея. В «урезанной» мобильной сети соединения
-  /// замерзают чаще — проверяем чаще, чтобы сообщения не застревали.
-  void tuneProbe() {
-    pool?.idleProbe = _paused
-        ? const Duration(minutes: 4)
-        : media.tight
-        ? const Duration(seconds: 15)
-        : const Duration(seconds: 45);
   }
 
   /// Фоновая проверка: подключиться, забрать накопившееся, выйти.
@@ -534,16 +520,6 @@ class Live {
     // «В сети» — только по живым сигналам, а не по отчётам из фоновой проверки
     // или старым сообщениям, пролежавшим на ретрансляторе.
     final fresh = DateTime.now().difference(sentAt).inSeconds.abs() < 120;
-    // Сеть друга «урезана» — файлы ему мелкими кусками.
-    if (p.type == Payload.ping || (fresh && p.type == Payload.msg)) {
-      final was = c.tight;
-      if (p.data['tn'] == 1) {
-        c.tightAt = DateTime.now();
-      } else if (p.type == Payload.ping && p.data['on'] != false) {
-        c.tightAt = null;
-      }
-      if (was != c.tight) await saveContact(c);
-    }
     // Где друг сейчас на связи — туда и кладём ему файлы.
     if (p.data['r'] is List && (fresh || p.type == Payload.ping)) {
       final r = Contact.cleanRelays(p.data['r']);
@@ -660,11 +636,10 @@ class Live {
         for (final m in app.messagesOf(sender)) {
           if (m.id == id && m.mine && m.att != null) {
             log('  друг не может скачать ${m.att!.name} — делаю копию');
-            final small = p.data['sm'] == 1;
             unawaited(
-              media.mirror(sender, m, where, small: small).then((got) {
+              media.mirror(sender, m, where).then((got) {
                 if (got.isNotEmpty) {
-                  _control(sender, Payload(Payload.have, {'id': id, 'r': got, if (small) 'sm': 1}));
+                  _control(sender, Payload(Payload.have, {'id': id, 'r': got}));
                 }
               }),
             );
@@ -677,7 +652,7 @@ class Live {
         for (final m in app.messagesOf(sender)) {
           if (m.id == id && !m.mine && m.att != null && !background) {
             log('  друг положил копию ${m.att!.name} — качаю');
-            unawaited(media.gotMirror(sender, m, where, small: p.data['sm'] == 1));
+            unawaited(media.gotMirror(sender, m, where));
           }
         }
       case Payload.receipt:
@@ -762,11 +737,7 @@ class Live {
     for (final c in targets.take(8)) {
       _control(
         c.id,
-        Payload(Payload.ping, {
-          'on': online,
-          if (online) 'r': _reach(),
-          if (online && media.tight) 'tn': 1,
-        }),
+        Payload(Payload.ping, {'on': online, if (online) 'r': _reach()}),
         ephemeral: true,
       );
     }
@@ -785,7 +756,6 @@ class Live {
     if (m.geo != null) 'geo': m.geo!.toJson(),
     if (m.poll != null) 'poll': m.poll!.toJson(wire: true),
     'r': _reach(),
-    if (media.tight) 'tn': 1,
     'p': myCard.toJson(),
   }).toMap();
 
@@ -830,13 +800,11 @@ class Live {
   List<String> _reach() => pool?.onlineUrls.take(12).toList() ?? const [];
 
   /// Попросить отправителя положить куски файла туда, где мы на связи.
-  void askMirror(String chat, Message m, {bool small = false}) {
+  void askMirror(String chat, Message m) {
     final r = _reach();
     if (r.isEmpty) return;
-    log(
-      '  прошу ${who(chat)} положить ${m.att?.name ?? 'файл'} поближе${small ? ' (мелкими кусками)' : ''}',
-    );
-    _control(chat, Payload(Payload.need, {'id': m.id, 'r': r, if (small) 'sm': 1}));
+    log('  прошу ${who(chat)} положить ${m.att?.name ?? 'файл'} поближе');
+    _control(chat, Payload(Payload.need, {'id': m.id, 'r': r}));
   }
 
   /// Проголосовать (или изменить голос).

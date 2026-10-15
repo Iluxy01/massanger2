@@ -24,52 +24,16 @@ class FakeRelay {
   String? rejectBig;
   int rejectBigOver = 1 << 30;
 
-  /// «Урезанная» мобильная сеть: соединения, открытые по пути `/m`, замолкают
-  /// навсегда, как только ретранслятор отправил по ним больше [tightBytes]
-  /// (так ведут себя соединения с зарубежными серверами в мобильных сетях России).
-  int tightBytes = 14 * 1024;
-  final Set<WebSocket> _tight = {};
-  final Map<WebSocket, int> _sent = {};
-
-  /// Сколько соединений «замёрзло» на лимите.
-  int frozenByLimit = 0;
-
-  /// Не смотреть на фильтры по тегам (кроме #p) — как relay.snort.social.
-  bool ignoreTagFilters = false;
-
   int get port => _server.port;
-
-  void _send(WebSocket ws, String text) {
-    if (_tight.contains(ws)) {
-      final before = _sent[ws] ?? 0;
-      if (before > tightBytes) return;
-      final after = before + text.length;
-      _sent[ws] = after;
-      if (after > tightBytes) {
-        frozenByLimit++;
-        return; // данные «застряли» — дальше по этому соединению ничего не придёт
-      }
-    }
-    ws.add(text);
-  }
 
   Future<void> start() => startOn(0);
 
   Future<void> startOn(int port) async {
     _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
     _server.listen((req) async {
-      final tight = req.uri.path == '/m';
       final ws = await WebSocketTransformer.upgrade(req);
       _subs[ws] = {};
-      if (tight) _tight.add(ws);
-      ws.listen(
-        (raw) => _on(ws, raw as String),
-        onDone: () {
-          _subs.remove(ws);
-          _tight.remove(ws);
-          _sent.remove(ws);
-        },
-      );
+      ws.listen((raw) => _on(ws, raw as String), onDone: () => _subs.remove(ws));
     });
   }
 
@@ -92,10 +56,7 @@ class FakeRelay {
     if (f['authors'] is List && !(f['authors'] as List).contains(e['pubkey'])) return false;
     if (f['kinds'] is List && !(f['kinds'] as List).contains(e['kind'])) return false;
     for (final entry in f.entries) {
-      if (entry.key.length == 2 &&
-          entry.key.startsWith('#') &&
-          entry.key != '#p' &&
-          !ignoreTagFilters) {
+      if (entry.key.length == 2 && entry.key.startsWith('#') && entry.key != '#p') {
         final name = entry.key.substring(1);
         final vals = [
           for (final t in e['tags'] as List)
@@ -131,7 +92,7 @@ class FakeRelay {
         final id = m[1] as String;
         final filters = [for (final f in m.skip(2)) f as Map<String, dynamic>];
         if (noAuthorQueries && filters.any((f) => f['authors'] != null)) {
-          _send(ws, jsonEncode(['CLOSED', id, 'restricted: gift wraps only by #p']));
+          ws.add(jsonEncode(['CLOSED', id, 'restricted: gift wraps only by #p']));
           return;
         }
         _subs[ws]![id] = filters;
@@ -142,30 +103,30 @@ class FakeRelay {
         for (final e in stored) {
           if (sent >= limit) break;
           if (filters.any((f) => _match(f, e))) {
-            _send(ws, jsonEncode(['EVENT', id, e]));
+            ws.add(jsonEncode(['EVENT', id, e]));
             sent++;
           }
         }
-        _send(ws, jsonEncode(['EOSE', id]));
+        ws.add(jsonEncode(['EOSE', id]));
       case 'EVENT':
         final e = m[1] as Map<String, dynamic>;
         published++;
         if (raw.length > maxEventBytes) {
-          _send(ws, jsonEncode(['OK', e['id'], false, 'invalid: event too large: ${raw.length}']));
+          ws.add(jsonEncode(['OK', e['id'], false, 'invalid: event too large: ${raw.length}']));
           return;
         }
         if (rejectBig != null && raw.length > rejectBigOver) {
-          _send(ws, jsonEncode(['OK', e['id'], false, rejectBig]));
+          ws.add(jsonEncode(['OK', e['id'], false, rejectBig]));
           return;
         }
         final kind = e['kind'] as int;
         if (kind < 20000 || kind >= 30000) stored.add(e);
-        _send(ws, jsonEncode(['OK', e['id'], true, '']));
+        ws.add(jsonEncode(['OK', e['id'], true, '']));
         for (final entry in _subs.entries) {
           for (final sub in entry.value.entries) {
             if (sub.value.any((f) => _match(f, e))) {
               try {
-                _send(entry.key, jsonEncode(['EVENT', sub.key, e]));
+                entry.key.add(jsonEncode(['EVENT', sub.key, e]));
               } catch (_) {}
             }
           }
