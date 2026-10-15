@@ -124,6 +124,14 @@ class Live {
     if (settings != null) app.applySettings(settings);
     final r = await store.get('relays');
     if (r != null) relays = (jsonDecode(r) as List).cast<String>();
+    // Сохранён прежний стандартный список (нажимали «Сбросить») — обновляем
+    // на новый. Свой, изменённый вручную, список не трогаем.
+    if (r != null &&
+        relays.length == previousDefaultRelays.length &&
+        relays.toSet().containsAll(previousDefaultRelays)) {
+      relays = List.of(defaultRelays);
+      await store.set('relays', jsonEncode(relays));
+    }
     app.hasPin = (await secrets.read('pin') ?? '').isNotEmpty;
     app.locked = app.hasPin;
 

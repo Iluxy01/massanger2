@@ -14,18 +14,8 @@ import 'package:veil/core/relay_pool.dart';
 const candidateRelays = [
   'wss://relay.damus.io',
   'wss://relay.nos.social',
-  'wss://relay.mostr.pub',
-  'wss://relay.0xchat.com',
-  'wss://relay.nostr.net',
-  'wss://nostr.wine',
-  'wss://relay.nostr.band',
-  'wss://nostr21.com',
-  'wss://relay.nostrplebs.com',
-  'wss://nostr.einundzwanzig.space',
-  'wss://relay.fountain.fm',
-  'wss://nostr.lu.ke',
-  'wss://relay.coinos.io',
-  'wss://relay.nostr.bg',
+  'wss://offchain.pub',
+  'wss://nostr.bitcoiner.social',
 ];
 
 void main() {

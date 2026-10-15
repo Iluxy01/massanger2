@@ -12,6 +12,21 @@ const defaultRelays = [
   'wss://relay.primal.net',
   'wss://nos.lol',
   'wss://nostr.mom',
+  'wss://relay.mostr.pub',
+  'wss://relay.snort.social',
+  'wss://nostr-pub.wellorder.net',
+  'wss://nostr.oxtr.dev',
+  'wss://relay.coinos.io',
+  'wss://nostr.data.haus',
+];
+
+/// Прежний список по умолчанию: offchain.pub и nostr.bitcoiner.social стали
+/// отказывать незнакомым ключам («web of trust») — заменены на проверенные в CI.
+/// Если у человека сохранён ровно этот список, он обновляется сам.
+const previousDefaultRelays = [
+  'wss://relay.primal.net',
+  'wss://nos.lol',
+  'wss://nostr.mom',
   'wss://offchain.pub',
   'wss://relay.snort.social',
   'wss://nostr-pub.wellorder.net',

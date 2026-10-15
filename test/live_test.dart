@@ -313,4 +313,21 @@ void main() {
     expect(app.hasPin, isFalse);
     await live.close();
   });
+
+  test('сохранённый прежний список ретрансляторов обновляется, свой — нет', () async {
+    final secrets = MemorySecrets();
+    final (app, live) = await phone('Ретр', secrets: secrets);
+    await live.setRelays(List.of(previousDefaultRelays));
+    await live.close();
+    final (app2, live2) = await phone('Ретр', secrets: secrets);
+    expect(live2.relays, defaultRelays, reason: 'старый стандартный → новый');
+    await live2.setRelays(['wss://мой.ретранслятор']);
+    await live2.close();
+    final (app3, live3) = await phone('Ретр', secrets: secrets);
+    expect(live3.relays, ['wss://мой.ретранслятор'], reason: 'свой список не трогаем');
+    await live3.close();
+    app.dispose();
+    app2.dispose();
+    app3.dispose();
+  });
 }
