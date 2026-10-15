@@ -65,7 +65,9 @@ void main() {
     expect(e.verify(), isTrue);
     final copy = Event.fromJson(jsonDecode(jsonEncode(e.toJson())));
     expect(copy.verify(), isTrue);
-    copy.sig = '${copy.sig.substring(0, 126)}00';
+    // Портим последний байт подписи (гарантированно другим значением).
+    final last = copy.sig.substring(126);
+    copy.sig = '${copy.sig.substring(0, 126)}${last == '00' ? '01' : '00'}';
     expect(copy.verify(), isFalse);
   });
 }

@@ -30,6 +30,9 @@ Future<void> _boot(AppState state) async {
   final live = await Live.boot(state);
   live.notify = SystemNotify(() => state.notificationText);
   state.applyScreenshotProtection();
+  // Повторный запуск того же приложения (окно закрывали, а служба держала его
+  // живым) сюда не попадает; при обычном запуске — включаем службу, если надо.
+  await state.syncInstantService();
   try {
     await SystemNotify.init();
     await scheduleBackgroundSync();

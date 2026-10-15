@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../core/backup.dart';
 import '../core/giftwrap.dart';
 import '../core/nostr.dart';
 import '../core/protocol.dart';
@@ -211,6 +212,101 @@ class Live {
     startNetwork();
   }
 
+  // ───────────────────────── резервная копия ─────────────────────────
+
+  /// Сохранить зашифрованную копию в [out]. [withMedia] — вместе с фото и файлами.
+  Future<void> exportBackup(String out, String password, {bool withMedia = true}) async {
+    final priv = await secrets.read('priv');
+    final profile = await store.getJson('profile');
+    if (priv == null || profile == null) throw StateError('нет профиля');
+    final root = await media.root();
+    final files = <String, String>{};
+    final chats = <String, List<Map<String, dynamic>>>{};
+    for (final c in await store.contacts()) {
+      final id = c['id'] as String;
+      final list = await store.messages(id, limit: 1 << 30);
+      for (final j in list) {
+        final att = j['att'];
+        if (att is Map && att['p'] is String) {
+          final abs = att['p'] as String;
+          // В копии путь — относительный: на новом телефоне папка другая.
+          if (withMedia && p.isWithin(root, abs) && File(abs).existsSync()) {
+            final rel = p.relative(abs, from: root);
+            files[rel] = abs;
+            att['p'] = 'rel:$rel';
+          } else {
+            att.remove('p');
+          }
+        }
+      }
+      chats[id] = list;
+    }
+    await Backup.write(out, password, {
+      'v': 1,
+      'created': nowSec(),
+      'priv': priv,
+      'profile': profile,
+      'settings': await store.getJson('settings'),
+      'relays': await store.get('relays'),
+      'contacts': await store.contacts(),
+      'messages': chats,
+    }, files);
+    log('сохранена резервная копия (файлов: ${files.length})');
+  }
+
+  /// Восстановить из копии на «чистом» телефоне (до создания профиля).
+  Future<void> restoreBackup(String path, String password) async {
+    if (keys != null) throw StateError('профиль уже есть');
+    final root = await media.root();
+    final content = await Backup.read(path, password, root);
+    final m = content.manifest;
+    final priv = m['priv'];
+    final profile = m['profile'];
+    if (priv is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(priv) || profile is! Map) {
+      throw BackupError('Файл копии повреждён');
+    }
+    await secrets.write('priv', priv);
+    await store.setJson('profile', Map<String, dynamic>.from(profile));
+    if (m['settings'] is Map) {
+      final st = Map<String, dynamic>.from(m['settings'] as Map);
+      await store.setJson('settings', st);
+      app.applySettings(st);
+    }
+    if (m['relays'] is String) {
+      await store.set('relays', m['relays'] as String);
+      relays = (jsonDecode(m['relays'] as String) as List).cast<String>();
+    }
+    for (final c in (m['contacts'] as List? ?? const [])) {
+      final j = Map<String, dynamic>.from(c as Map);
+      await store.saveContact(j['id'] as String, j);
+    }
+    final chats = m['messages'] is Map ? m['messages'] as Map : const {};
+    for (final e in chats.entries) {
+      for (final raw in e.value as List) {
+        final j = Map<String, dynamic>.from(raw as Map);
+        final att = j['att'];
+        if (att is Map && att['p'] is String && (att['p'] as String).startsWith('rel:')) {
+          att['p'] = p.join(root, (att['p'] as String).substring(4));
+        }
+        await store.saveMessage(e.key as String, j['id'] as String, (j['ts'] as num).toInt(), j);
+      }
+    }
+    // Забрать с ретрансляторов то, что пришло после сохранения копии.
+    final created = (m['created'] as num?)?.toInt() ?? nowSec();
+    _syncedAt = created - 3600;
+    await store.set('synced', '$_syncedAt');
+    keys = Keys(priv);
+    app.profile = Profile.fromJson(Map<String, dynamic>.from(profile));
+    await reload();
+    await _requeueUnconfirmed();
+    log(
+      'восстановлено из копии: контактов ${(m['contacts'] as List?)?.length ?? 0}, '
+      'файлов ${content.files.length}',
+    );
+    startNetwork();
+    resumeMedia();
+  }
+
   VeilCard get myCard {
     final p = app.profile!;
     return VeilCard(name: p.name, emoji: p.emoji, color: p.colorIndex, bio: p.bio);
@@ -311,6 +407,7 @@ class Live {
     await reload();
     // Проверить соединения (мобильная сеть могла их тихо оборвать) и
     // заново спросить накопившееся.
+    pool?.idleProbe = const Duration(seconds: 45);
     pool?.wake();
     pool?.subscribe(_filters);
     unawaited(_flushOutbox());
@@ -326,6 +423,8 @@ class Live {
 
   /// Приложение свернули — сразу сообщаем друзьям «не в сети».
   void paused() {
+    // В фоне (с «мгновенными уведомлениями») проверяем соединения реже — батарея.
+    pool?.idleProbe = const Duration(minutes: 4);
     _ping(online: false);
   }
 

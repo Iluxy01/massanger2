@@ -202,7 +202,8 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Отправить опрос'));
     await settle(tester);
-    final sent = state.lastMessage('dima')!;
+    // Демо-друг иногда отвечает сам — берём своё последнее сообщение.
+    final sent = state.messagesOf('dima').lastWhere((m) => m.mine);
     expect(sent.kind, MsgKind.poll);
     expect(sent.poll!.question, 'Во сколько созвон?');
     expect(sent.poll!.options, ['19:00', '20:00']);
@@ -212,10 +213,11 @@ void main() {
     await settle(tester);
     await tester.tap(find.text('Место'));
     await settle(tester);
+    await settle(tester); // поиск места в демо + появление листа
     expect(find.text('Отправить геопозицию'), findsOneWidget);
     await tester.tap(find.text('Отправить геопозицию'));
     await settle(tester);
-    final geo = state.lastMessage('dima')!;
+    final geo = state.messagesOf('dima').lastWhere((m) => m.mine);
     expect(geo.kind, MsgKind.geo);
     expect(geo.geo!.lat, closeTo(55.75, 0.01));
     await close(tester, state);

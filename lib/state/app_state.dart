@@ -68,6 +68,10 @@ class AppState extends ChangeNotifier {
   /// Уровень анимаций (0 выкл · 1 быстрые · 2 обычные · 3 плавные).
   int motion = 2;
 
+  /// «Мгновенные уведомления»: приложение остаётся на связи и в свёрнутом виде
+  /// (служба с тихим значком в шторке). Выключено — проверка раз в ~15 минут.
+  bool instantNotify = false;
+
   /// Меняется только при смене темы/акцента — от него перестраивается всё
   /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
   final themeTick = ValueNotifier<int>(0);
@@ -203,6 +207,16 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// Сохранить зашифрованную копию (ключ, переписка, по желанию — файлы).
+  Future<void> exportBackup(String out, String password, {bool withMedia = true}) =>
+      live!.exportBackup(out, password, withMedia: withMedia);
+
+  /// Восстановить всё из копии (на новом телефоне, вместо создания профиля).
+  Future<void> restoreBackup(String path, String password) async {
+    await live!.restoreBackup(path, password);
+    notifyChanged();
+  }
+
   void updateProfile({String? name, String? emoji, int? colorIndex, String? bio}) {
     final p = profile;
     if (p == null) return;
@@ -225,6 +239,7 @@ class AppState extends ChangeNotifier {
     'banner': inAppBanner,
     'look': look,
     'motion': motion,
+    'instant': instantNotify,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
   };
@@ -243,6 +258,7 @@ class AppState extends ChangeNotifier {
     inAppBanner = s['banner'] as bool? ?? true;
     look = ((s['look'] as num?)?.toInt() ?? 1).clamp(0, 2);
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
+    instantNotify = s['instant'] == true;
     themeTick.value++;
     pinned
       ..clear()
@@ -280,6 +296,25 @@ class AppState extends ChangeNotifier {
     motion = v;
     themeTick.value++;
     _saveSettings();
+  }
+
+  static const _service = MethodChannel('veil/service');
+
+  /// Включить/выключить «мгновенные уведомления».
+  Future<void> setInstantNotify(bool v) async {
+    instantNotify = v;
+    _saveSettings();
+    await syncInstantService();
+  }
+
+  /// Запустить или остановить службу «на связи» по текущей настройке.
+  Future<void> syncInstantService() async {
+    if (demo || live == null) return;
+    try {
+      await _service.invokeMethod<bool>(instantNotify ? 'start' : 'stop');
+    } catch (e) {
+      debugPrint('service: $e');
+    }
   }
 
   void setFlag(void Function() change) {

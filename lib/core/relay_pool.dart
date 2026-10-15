@@ -64,8 +64,9 @@ class RelayPool {
 
   final Connector _connector;
 
-  /// Сколько можно молчать, прежде чем проверить соединение.
-  final Duration idleProbe;
+  /// Сколько можно молчать, прежде чем проверить соединение. В свёрнутом
+  /// приложении — реже (батарея).
+  Duration idleProbe;
 
   /// Сколько ждать ответа на проверку, прежде чем переподключиться.
   final Duration probeTimeout;

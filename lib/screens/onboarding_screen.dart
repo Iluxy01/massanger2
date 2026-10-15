@@ -10,6 +10,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import '../widgets/visual.dart';
+import 'backup_screens.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -29,7 +30,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final Widget body = switch (step) {
-      _Step.intro => _Intro(onDone: () => setState(() => step = _Step.profile)),
+      _Step.intro => _Intro(
+        onDone: () => setState(() => step = _Step.profile),
+        onRestore: () async {
+          final app = context.appRead;
+          if (await restoreFromBackup(context) && !app.demo) {
+            SystemNotify.requestPermission().catchError((_) {});
+          }
+        },
+      ),
       _Step.profile => _ProfileSetup(
         name: name,
         emoji: emoji,
@@ -106,8 +115,11 @@ const _pages = [
 ];
 
 class _Intro extends StatefulWidget {
-  const _Intro({required this.onDone});
+  const _Intro({required this.onDone, required this.onRestore});
   final VoidCallback onDone;
+
+  /// «У меня есть резервная копия» — перенос с прошлого телефона.
+  final VoidCallback onRestore;
 
   @override
   State<_Intro> createState() => _IntroState();
@@ -210,6 +222,14 @@ class _IntroState extends State<_Intro> {
                     );
                   }
                 },
+              ),
+              const SizedBox(height: 6),
+              TextButton(
+                onPressed: widget.onRestore,
+                child: Text(
+                  'У меня есть резервная копия',
+                  style: TextStyle(color: vc.textDim, fontSize: 14),
+                ),
               ),
             ],
           ),

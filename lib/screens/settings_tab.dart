@@ -10,6 +10,7 @@ import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
 import 'lock_screen.dart';
 import '../widgets/visual.dart';
+import 'backup_screens.dart';
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
@@ -238,6 +239,27 @@ class SettingsTab extends StatelessWidget {
                   ),
                 ),
                 _Tile(
+                  icon: Icons.bolt_rounded,
+                  title: 'Мгновенные уведомления',
+                  subtitle: app.instantNotify
+                      ? 'Сообщения приходят сразу · значок «на связи» в шторке'
+                      : 'Сейчас — проверка раз в ~15 минут, когда Veil закрыт',
+                  trailing: VeilSwitch(
+                    value: app.instantNotify,
+                    onChanged: (v) {
+                      app.setInstantNotify(v);
+                      if (v) {
+                        showVeilToast(
+                          context,
+                          'Veil останется на связи в фоне. Если сообщения всё равно '
+                          'опаздывают — разреши ему работать без ограничений батареи',
+                          icon: Icons.bolt_rounded,
+                        );
+                      }
+                    },
+                  ),
+                ),
+                _Tile(
                   icon: Icons.notifications_rounded,
                   title: 'Текст в уведомлениях',
                   subtitle: app.notificationText ? 'Показывается' : 'Только «Новое сообщение»',
@@ -262,12 +284,8 @@ class SettingsTab extends StatelessWidget {
                 _Tile(
                   icon: Icons.backup_rounded,
                   title: 'Зашифрованная копия',
-                  subtitle: 'Файл, который можешь перенести на новый телефон',
-                  onTap: () => showVeilToast(
-                    context,
-                    'Экспорт появится вместе с хранилищем',
-                    icon: Icons.backup_rounded,
-                  ),
+                  subtitle: 'Файл под паролем — чтобы перенести Veil на новый телефон',
+                  onTap: () => showExportBackup(context),
                 ),
               ],
             ),
