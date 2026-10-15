@@ -75,11 +75,28 @@ class CryptoWorker {
     required int index,
     int chunkSize = MediaCodec.chunkSize,
     int scheme = MediaCodec.scheme,
-  }) async => await _call(['seal', signer.priv, key, path, index, chunkSize, scheme]) as Event;
+    bool small = false,
+  }) async =>
+      await _call([
+            'seal',
+            signer.priv,
+            key,
+            path,
+            index,
+            small ? MediaCodec.smallChunk : chunkSize,
+            scheme,
+            small,
+          ])
+          as Event;
 
   /// Расшифровать кусок (null — повреждён или чужой).
-  Future<Uint8List?> openChunk(String key, int index, String content, {int scheme = 1}) async =>
-      await _call(['open', key, index, content, scheme]) as Uint8List?;
+  Future<Uint8List?> openChunk(
+    String key,
+    int index,
+    String content, {
+    int scheme = 1,
+    bool small = false,
+  }) async => await _call(['open', key, index, content, scheme, small]) as Uint8List?;
 
   /// SHA-256 файла.
   Future<String> hashFile(String path) async => await _call(['hash', path]) as String;
@@ -111,12 +128,14 @@ class CryptoWorker {
             req[4] as int,
             MediaCodec.readChunk(req[3] as String, req[4] as int, req[5] as int),
             scheme: req[6] as int,
+            small: req[7] as bool,
           ),
           'open' => MediaCodec.open(
             base64.decode(req[1] as String),
             req[2] as int,
             req[3] as String,
             scheme: req[4] as int,
+            small: req[5] as bool,
           ),
           'hash' => MediaCodec.hashFile(req[1] as String),
           _ => throw ArgumentError('unknown ${req[0]}'),

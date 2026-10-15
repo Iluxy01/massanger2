@@ -64,6 +64,8 @@ Future<String> _probe(String url) async {
   final key = randomBytes(32);
   final events = [
     for (var i = 0; i < 2; i++) MediaCodec.seal(signer, key, i, randomBytes(MediaCodec.chunkSize)),
+    // Мелкий кусок (для «урезанных» мобильных сетей) — номер в теге `s`.
+    MediaCodec.seal(signer, key, 0, randomBytes(MediaCodec.smallChunk), small: true),
   ];
   final accepted = <String>[];
   for (final e in events) {
@@ -98,6 +100,11 @@ Future<String> _probe(String url) async {
       'kinds': [1059],
       '#p': [signer.pub],
       '#c': ['1'],
+    }),
+    '#p+#s': await query('e', {
+      'kinds': [1059],
+      '#p': [signer.pub],
+      '#s': ['0'],
     }),
     'authors': await query('d', {
       'kinds': [1059],

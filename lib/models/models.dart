@@ -92,6 +92,11 @@ class Contact {
   /// часть ретрансляторов бывает недоступна.
   List<String> reach = [];
 
+  /// Когда друг последний раз сообщил, что его сеть «урезана» (соединения
+  /// замерзают после ~16 КБ). Тогда файлы для него — мелкими кусками.
+  DateTime? tightAt;
+  bool get tight => tightAt != null && DateTime.now().difference(tightAt!).inMinutes < 60;
+
   /// Только адреса ретрансляторов, не больше 12.
   static List<String> cleanRelays(Object? o) => o is List
       ? o
@@ -114,6 +119,7 @@ class Contact {
     'request': request,
     'ttl': disappearing,
     if (reach.isNotEmpty) 'rl': reach,
+    if (tightAt != null) 'tn': tightAt!.millisecondsSinceEpoch,
     if (lastSeen != null) 'seen': lastSeen!.millisecondsSinceEpoch,
   };
 
@@ -132,7 +138,10 @@ class Contact {
         )
         ..blocked = j['blocked'] == true
         ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0
-        ..reach = cleanRelays(j['rl']);
+        ..reach = cleanRelays(j['rl'])
+        ..tightAt = j['tn'] is num
+            ? DateTime.fromMillisecondsSinceEpoch((j['tn'] as num).toInt())
+            : null;
 }
 
 /// Вложение (фото, видео, файл, голосовое).
@@ -159,7 +168,12 @@ class Attachment {
     this.path,
     this.scheme = 0,
     this.signerKey = '',
+    this.small = false,
   }) : relays = relays ?? [];
+
+  /// Куски мелкие (5 КБ, для «урезанных» мобильных сетей) — качать по
+  /// отдельным коротким соединениям.
+  bool small;
 
   /// Закрытый ключ, которым подписаны куски (только у отправителя, другу не
   /// уходит): нужен, чтобы по просьбе друга положить куски ещё куда-то.
@@ -181,6 +195,7 @@ class Attachment {
     scheme = o.scheme;
     path = o.path;
     if (o.signerKey.isNotEmpty) signerKey = o.signerKey;
+    small = o.small;
   }
 
   String name;
@@ -232,6 +247,7 @@ class Attachment {
     if (chunks > 0) 'c': chunks,
     if (chunkSize > 0) 'cs': chunkSize,
     if (scheme > 0) 'v': scheme,
+    if (small) 'sm': 1,
     if (relays.isNotEmpty) 'r': relays,
     if (width > 0) 'w': width,
     if (height > 0) 'hh': height,
@@ -269,6 +285,7 @@ class Attachment {
       path: o['p'] is String ? o['p'] as String : null,
       scheme: i('v'),
       signerKey: str('sk'),
+      small: o['sm'] == 1,
     );
   }
 }

@@ -194,14 +194,17 @@ class MediaEngine {
     att.sha = await w.hashFile(path);
     final signer = Keys.generate();
     final key = base64.encode(randomBytes(32));
-    final n = MediaCodec.chunkCount(att.size);
+    // Друг в «урезанной» сети — сразу мелкими кусками (иначе он их не заберёт).
+    final small = live.app.contact(chat)?.tight ?? false;
+    final n = MediaCodec.chunkCount(att.size, small ? MediaCodec.smallChunk : MediaCodec.chunkSize);
     final prefer = (live.app.contact(chat)?.reach ?? const <String>[]).toSet();
     final holders = <String, int>{};
     final progress = _progress(m.id);
     var next = 0, done = 0;
     var failed = false;
     live.log(
-      '↑ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n) для ${live.who(chat)}',
+      '↑ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n${small ? ', мелкие' : ''}) '
+      'для ${live.who(chat)}',
     );
     final sw = Stopwatch()..start();
 
@@ -210,7 +213,7 @@ class MediaEngine {
     Future<void> lane() async {
       while (!failed && next < n) {
         final i = next++;
-        final ev = await w.sealChunk(signer: signer, key: key, path: path, index: i);
+        final ev = await w.sealChunk(signer: signer, key: key, path: path, index: i, small: small);
         _ours.add(ev.id);
         if (_ours.length > 5000) _ours.remove(_ours.first);
         live.pool?.onReject ??= _onReject;
@@ -263,7 +266,8 @@ class MediaEngine {
       ..signer = signer.pub
       ..signerKey = signer.priv
       ..chunks = n
-      ..chunkSize = MediaCodec.chunkSize
+      ..chunkSize = small ? MediaCodec.smallChunk : MediaCodec.chunkSize
+      ..small = small
       ..scheme = MediaCodec.scheme
       ..relays = (holders.keys.toList()..sort((a, b) => holders[b]!.compareTo(holders[a]!)))
           .take(6)
@@ -280,7 +284,12 @@ class MediaEngine {
   /// у нас есть; куски шифруются заново тем же ключом и подписываются тем же
   /// ключом файла, так что друг найдёт их тем же запросом.
   /// Возвращает ретрансляторы, куда легли все куски.
-  Future<List<String>> mirror(String chat, Message m, List<String> where) async {
+  Future<List<String>> mirror(
+    String chat,
+    Message m,
+    List<String> where, {
+    bool small = false,
+  }) async {
     final att = m.att;
     final pl = live.pool;
     if (att == null || pl == null || !att.uploaded || att.signerKey.isEmpty) return const [];
@@ -295,15 +304,18 @@ class MediaEngine {
     _mirroring.add(m.id);
     try {
       live.log(
-        '↻ копия файла ${att.name} для ${live.who(chat)} → '
+        '↻ ${small ? 'мелкая ' : ''}копия файла ${att.name} для ${live.who(chat)} → '
         '${chosen.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
       );
       final signer = Keys(att.signerKey);
-      final cs = att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize;
+      final cs = small
+          ? MediaCodec.smallChunk
+          : (att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize);
+      final count = small ? MediaCodec.chunkCount(att.size, cs) : att.chunks;
       final good = {for (final u in chosen) u: 0};
       var next = 0;
       Future<void> lane() async {
-        while (next < att.chunks && !live.closed) {
+        while (next < count && !live.closed) {
           final i = next++;
           final ev = await CryptoWorker.shared.sealChunk(
             signer: signer,
@@ -312,6 +324,7 @@ class MediaEngine {
             index: i,
             chunkSize: cs,
             scheme: att.scheme,
+            small: small,
           );
           _ours.add(ev.id);
           final ok = await pl.publishTo(ev, chosen, timeout: const Duration(seconds: 10));
@@ -324,9 +337,10 @@ class MediaEngine {
       await Future.wait([for (var i = 0; i < window; i++) lane()]);
       final full = [
         for (final e in good.entries)
-          if (e.value == att.chunks) e.key,
+          if (e.value == count) e.key,
       ];
-      if (full.isNotEmpty) {
+      // Мелкая копия — отдельно от наших крупных кусков (у себя ничего не меняем).
+      if (full.isNotEmpty && !small) {
         att.relays = {...full, ...att.relays}.take(8).toList();
         await _publishResult(chat, m);
       }
@@ -345,14 +359,25 @@ class MediaEngine {
   final Map<String, DateTime> _asked = {};
 
   /// Друг сообщил, что положил куски ещё и сюда — пробуем скачать сразу.
-  Future<void> gotMirror(String chat, Message m, List<String> where) async {
+  Future<void> gotMirror(String chat, Message m, List<String> where, {bool small = false}) async {
     final att = m.att;
     if (att == null || att.local) return;
     att.relays = {...where, ...att.relays}.take(8).toList();
+    if (small) att.small = true;
     await _publishResult(chat, m);
     _lastTry.remove(m.id);
     _tries.remove(m.id);
-    unawaited(download(chat, m));
+    // Если прямо сейчас идёт попытка (крупными) — начнём сразу после неё.
+    final running = _jobs[m.id];
+    if (running != null) {
+      unawaited(
+        running.whenComplete(() {
+          if (!(m.att?.local ?? true)) download(chat, m);
+        }),
+      );
+    } else {
+      unawaited(download(chat, m));
+    }
   }
 
   // ───────────────────────── получение ─────────────────────────
@@ -410,11 +435,11 @@ class MediaEngine {
         // Соединения могли «зависнуть» после смены сети — проверить и переподключить.
         live.pool?.wake();
         // И попросить отправителя положить куски туда, где мы на связи
-        // (не чаще раза в 2 минуты на файл).
+        // (не чаще раза в 2 минуты на файл). В «урезанной» сети — мелкими.
         final last = _asked[m.id];
         if (!m.mine && (last == null || DateTime.now().difference(last).inMinutes >= 2)) {
           _asked[m.id] = DateTime.now();
-          live.askMirror(chat, m);
+          live.askMirror(chat, m, small: tight);
         }
       }
       _jobs.remove(m.id);
@@ -435,14 +460,36 @@ class MediaEngine {
     return true;
   }
 
+  /// Когда последний раз крупный кусок «застрял» (соединение замёрзло).
+  DateTime? _stalledAt;
+
+  /// Сеть «урезана»: недавно соединения с ретрансляторами замерзали на крупных
+  /// кусках (мобильный интернет в России: ~16 КБ на соединение с зарубежным
+  /// сервером). Тогда просим файлы мелкими кусками и сообщаем об этом друзьям.
+  bool get tight {
+    final s = _stalledAt;
+    return s != null && DateTime.now().difference(s).inMinutes < 60;
+  }
+
   Future<bool> _download(String chat, Message m) async {
     final att = m.att;
     final pl = live.pool;
     if (att == null || !att.uploaded || pl == null || live.closed) return false;
     if (att.local && File(att.path!).existsSync()) return true;
-    final n = att.chunks;
-    final cs = att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize;
+    final small = att.small;
+    final cs = small
+        ? MediaCodec.smallChunk
+        : (att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize);
+    final n = small ? MediaCodec.chunkCount(att.size, cs) : att.chunks;
     if (n > maxBytes ~/ cs + 2) return false;
+    // Сеть «урезана», а куски крупные — сразу просим мелкие (параллельно с попыткой).
+    if (!small && tight && !m.mine) {
+      final last = _asked[m.id];
+      if (last == null || DateTime.now().difference(last).inMinutes >= 2) {
+        _asked[m.id] = DateTime.now();
+        live.askMirror(chat, m, small: true);
+      }
+    }
     final dst = await pathFor(chat, m.id, att.ext);
     final part = File('$dst.part');
     final raf = await part.open(mode: FileMode.write);
@@ -452,10 +499,12 @@ class MediaEngine {
     var lastChunk = DateTime.now();
     final progress = _progress(m.id);
     final sw = Stopwatch()..start();
-    live.log('↓ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n)');
+    live.log(
+      '↓ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n${small ? ', мелкие' : ''})',
+    );
 
     void onEvent(Event e) {
-      final i = MediaCodec.indexOf(e);
+      final i = MediaCodec.indexOf(e, small: small);
       if (e.pubkey != att.signer || i == null || i < 0 || i >= n) return;
       if (have.contains(i) || !pending.add(i)) return;
       lastChunk = DateTime.now();
@@ -465,6 +514,7 @@ class MediaEngine {
           i,
           e.content,
           scheme: att.scheme,
+          small: small,
         );
         if (bytes != null && !have.contains(i)) {
           await raf.setPosition(i * cs);
@@ -478,63 +528,18 @@ class MediaEngine {
 
     bool complete() => have.length >= n || live.closed;
 
-    Map<String, dynamic> filter() {
-      final missing = [
-        for (var i = 0; i < n; i++)
-          if (!have.contains(i)) i,
-      ];
-      // По тегу p — так ретрансляторы отдают и обычные конверты. Если не
-      // хватает немногих — спрашиваем точечно по номерам.
-      return {
-        'kinds': [MediaCodec.kind],
-        '#p': [att.signer],
-        'limit': missing.length,
-        if (missing.length < n && missing.length <= 200) '#c': [for (final i in missing) '$i'],
-      };
+    List<String> order() {
+      final all = pl.urls;
+      return [...att.relays.where(all.contains), ...all.where((u) => !att.relays.contains(u))];
     }
 
     try {
-      for (var round = 0; round < 3 && !complete(); round++) {
-        if (round > 0) await Future<void>.delayed(Duration(seconds: round * 3));
-        if (!await _waitOnline(pl, const Duration(seconds: 40))) break;
-        final online = pl.onlineUrls;
-        final order = [
-          ...att.relays.where(online.contains),
-          ...online.where((u) => !att.relays.contains(u)),
-        ];
-        // Спрашиваем первого; если 2,5 с от него ни куска (или он закончил,
-        // а файла ещё нет) — подключаем следующего параллельно. Медленный или
-        // «полуживой» ретранслятор больше не держит загрузку.
-        final running = <Future<void>>[];
-        var next = 0;
-        var launchedAt = DateTime(2000);
-        while (!complete()) {
-          final stalled =
-              DateTime.now().difference(lastChunk) > const Duration(milliseconds: 2500) &&
-              DateTime.now().difference(launchedAt) > const Duration(milliseconds: 2500);
-          final idle = running.isEmpty;
-          if ((idle || stalled) && next < order.length && running.length < 3) {
-            final url = order[next++];
-            launchedAt = DateTime.now();
-            lastChunk = DateTime.now();
-            late final Future<void> f;
-            f = pl
-                .fetch(
-                  url,
-                  filter(),
-                  onEvent,
-                  idle: const Duration(seconds: 10),
-                  total: Duration(seconds: 30 + n),
-                  stop: complete,
-                )
-                .whenComplete(() => running.remove(f));
-            running.add(f);
-            continue;
-          }
-          if (running.isEmpty) break; // спросили всех
-          await Future.any([...running, Future<void>.delayed(const Duration(milliseconds: 300))]);
-        }
-        await writes;
+      if (small) {
+        await _fetchSmall(pl, att, n, order(), have, onEvent, complete, () => writes);
+      } else {
+        await _fetchBig(pl, att, n, have, onEvent, complete, () => writes, () => lastChunk, (t) {
+          lastChunk = t;
+        });
       }
       await writes;
       if (have.length < n) {
@@ -560,6 +565,138 @@ class MediaEngine {
         await raf.close();
       } catch (_) {}
     }
+  }
+
+  /// Крупные куски: каждый ретранслятор — по отдельному короткому соединению;
+  /// если от него 2,5 с ни куска — подключаем следующего параллельно. Если
+  /// соединения замерзают, не получив ни одного куска, — сеть «урезана»: бросаем
+  /// попытку (мелкие куски уже запрошены у отправителя).
+  Future<void> _fetchBig(
+    RelayPool pl,
+    Attachment att,
+    int n,
+    Set<int> have,
+    void Function(Event) onEvent,
+    bool Function() complete,
+    Future<void> Function() writes,
+    DateTime Function() lastChunk,
+    void Function(DateTime) setLast,
+  ) async {
+    Map<String, dynamic> filter() {
+      final missing = [
+        for (var i = 0; i < n; i++)
+          if (!have.contains(i)) i,
+      ];
+      return {
+        'kinds': [MediaCodec.kind],
+        '#p': [att.signer],
+        'limit': missing.length,
+        if (missing.length < n && missing.length <= 200) '#c': [for (final i in missing) '$i'],
+      };
+    }
+
+    for (var round = 0; round < 3 && !complete(); round++) {
+      if (round > 0) await Future<void>.delayed(Duration(seconds: round * 3));
+      if (!await _waitOnline(pl, const Duration(seconds: 40))) break;
+      final online = pl.onlineUrls;
+      final order = [
+        ...att.relays.where(online.contains),
+        ...online.where((u) => !att.relays.contains(u)),
+      ];
+      final running = <Future<void>>[];
+      var next = 0, stalls = 0;
+      var launchedAt = DateTime(2000);
+      while (!complete()) {
+        final now = DateTime.now();
+        final stalled =
+            now.difference(lastChunk()) > const Duration(milliseconds: 2500) &&
+            now.difference(launchedAt) > const Duration(milliseconds: 2500);
+        if ((running.isEmpty || stalled) && next < order.length && running.length < 3) {
+          final url = order[next++];
+          launchedAt = DateTime.now();
+          setLast(DateTime.now());
+          late final Future<void> f;
+          f = pl
+              .fetchFresh(
+                url,
+                filter(),
+                onEvent,
+                idle: const Duration(seconds: 8),
+                total: Duration(seconds: 30 + n),
+                stop: complete,
+              )
+              .then((r) {
+                if (r.events == 0 && !r.finished) stalls++; // открылось, но замолчало
+              })
+              .whenComplete(() => running.remove(f));
+          running.add(f);
+          continue;
+        }
+        if (running.isEmpty) break;
+        await Future.any([...running, Future<void>.delayed(const Duration(milliseconds: 300))]);
+      }
+      await writes();
+      if (have.isNotEmpty) {
+        _stalledAt = null; // крупные куски проходят — сеть в порядке
+      } else if (stalls > 0) {
+        // Ни одного куска, а соединения молчат — «урезанная» сеть.
+        _stalledAt = DateTime.now();
+        live.tuneProbe();
+        live.log('  соединения замерзают на крупных кусках — нужна мелкая нарезка');
+        return;
+      }
+    }
+  }
+
+  /// Мелкие куски: каждый — по своему новому короткому соединению (в «урезанной»
+  /// сети соединение успевает передать ~16 КБ — одного куска хватает). Несколько
+  /// таких соединений работают параллельно.
+  Future<void> _fetchSmall(
+    RelayPool pl,
+    Attachment att,
+    int n,
+    List<String> relays,
+    Set<int> have,
+    void Function(Event) onEvent,
+    bool Function() complete,
+    Future<void> Function() writes,
+  ) async {
+    if (relays.isEmpty) return;
+    var next = 0, misses = 0;
+    // Ретрансляторы, с которых мелкие куски реально приходят, — первыми.
+    final good = <String, int>{};
+    Future<void> worker() async {
+      // Кусков нигде нет — не перебираем весь файл впустую (повторим позже).
+      while (!complete() && misses < (have.isEmpty ? 6 : 24)) {
+        final i = next++;
+        if (i >= n) return;
+        if (have.contains(i)) continue;
+        final order = [...relays]..sort((a, b) => (good[b] ?? 0).compareTo(good[a] ?? 0));
+        for (final url in order.take(4)) {
+          if (have.contains(i) || live.closed) break;
+          final r = await pl.fetchFresh(
+            url,
+            {
+              'kinds': [MediaCodec.kind],
+              '#p': [att.signer],
+              '#s': ['$i'],
+              'limit': 1,
+            },
+            onEvent,
+            idle: const Duration(seconds: 6),
+            total: const Duration(seconds: 12),
+          );
+          await writes();
+          if (r.events > 0) {
+            good[url] = (good[url] ?? 0) + 1;
+            break;
+          }
+        }
+        if (!have.contains(i)) misses++;
+      }
+    }
+
+    await Future.wait([for (var k = 0; k < 6; k++) worker()]);
   }
 
   /// Что скачивать само: фото, голосовые и видео. Документы — по нажатию.

@@ -69,6 +69,15 @@ class MediaCodec {
     return Hmac(sha256, macKey).convert(msg).bytes;
   }
 
+  /// «Мелкие» куски — для сетей, где соединение с зарубежным сервером
+  /// замораживается после ~16 КБ (мобильные операторы в России). Событие ~7 КБ:
+  /// вместе с установкой соединения укладывается в лимит. Ключ — производный
+  /// (у мелких и крупных кусков разные ключи, шифр не повторяется), номер — в теге `s`.
+  static const smallChunk = 5 * 1024;
+
+  static Uint8List smallKey(Uint8List key) =>
+      Uint8List.fromList(Hmac(sha256, key).convert(utf8.encode('veil-media-small')).bytes);
+
   static int chunkCount(int size, [int chunk = chunkSize]) =>
       size == 0 ? 1 : (size + chunk - 1) ~/ chunk;
 
@@ -90,19 +99,32 @@ class MediaCodec {
     Uint8List data, {
     int? expiresAt,
     int scheme = scheme,
+    bool small = false,
   }) => Event.signed(
     signer,
     kind: kind,
-    content: base64.encode(encrypt(key, index, data, scheme: scheme)),
+    content: base64.encode(
+      encrypt(small ? smallKey(key) : key, index, data, scheme: small ? 1 : scheme),
+    ),
     tags: [
       ['p', signer.pub],
-      ['c', '$index'],
+      [small ? 's' : 'c', '$index'],
       ['expiration', '${expiresAt ?? nowSec() + ttl.inSeconds}'],
     ],
   );
 
   /// Расшифровать кусок; null — не наш, повреждён или подменён.
-  static Uint8List? open(Uint8List key, int index, String content, {int scheme = scheme}) {
+  static Uint8List? open(
+    Uint8List key,
+    int index,
+    String content, {
+    int scheme = scheme,
+    bool small = false,
+  }) {
+    if (small) {
+      key = smallKey(key);
+      scheme = 1;
+    }
     try {
       final raw = base64.decode(content);
       if (scheme == 0) return _gcm(false, key, index).process(raw);
@@ -123,7 +145,8 @@ class MediaCodec {
   }
 
   /// Номер куска из события.
-  static int? indexOf(Event e) => int.tryParse(e.tag('c') ?? '');
+  static int? indexOf(Event e, {bool small = false}) =>
+      int.tryParse(e.tag(small ? 's' : 'c') ?? '');
 
   /// Прочитать кусок [index] из файла.
   static Uint8List readChunk(String path, int index, [int chunk = chunkSize]) {
