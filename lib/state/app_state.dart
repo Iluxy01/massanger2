@@ -72,6 +72,9 @@ class AppState extends ChangeNotifier {
   /// (служба с тихим значком в шторке). Выключено — проверка раз в ~15 минут.
   bool instantNotify = false;
 
+  /// Подсказку «отправляй файлы через мобильный интернет» уже показывали.
+  bool wifiHintShown = false;
+
   /// Меняется только при смене темы/акцента — от него перестраивается всё
   /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
   final themeTick = ValueNotifier<int>(0);
@@ -240,6 +243,7 @@ class AppState extends ChangeNotifier {
     'look': look,
     'motion': motion,
     'instant': instantNotify,
+    if (wifiHintShown) 'wifiHint': true,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
   };
@@ -259,6 +263,7 @@ class AppState extends ChangeNotifier {
     look = ((s['look'] as num?)?.toInt() ?? 1).clamp(0, 2);
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     instantNotify = s['instant'] == true;
+    wifiHintShown = s['wifiHint'] == true;
     themeTick.value++;
     pinned
       ..clear()
@@ -315,6 +320,11 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint('service: $e');
     }
+  }
+
+  void markWifiHintShown() {
+    wifiHintShown = true;
+    _saveSettings();
   }
 
   void setFlag(void Function() change) {

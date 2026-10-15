@@ -7,7 +7,18 @@ import '../theme/palette.dart';
 enum MsgStatus { sending, sent, delivered, read }
 
 /// Тип сообщения.
-enum MsgKind { text, voice, photo, video, file, geo, poll }
+enum MsgKind {
+  text,
+  voice,
+  photo,
+  video,
+  file,
+  geo,
+  poll,
+
+  /// Видеосообщение («квадратик»): с фронтальной камеры, до минуты.
+  note,
+}
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
 
@@ -417,6 +428,7 @@ class Message {
       MsgKind.voice => '🎤 Голосовое · ${_dur(seconds)}',
       MsgKind.photo => with_('📷 Фото'),
       MsgKind.video => with_('🎬 Видео'),
+      MsgKind.note => '📹 Видеосообщение · ${_dur(seconds)}',
       MsgKind.file => with_('📎 ${att?.name ?? 'Файл'}'),
       MsgKind.geo => '📍 Геопозиция',
       MsgKind.poll => '📊 ${poll?.question ?? 'Опрос'}',

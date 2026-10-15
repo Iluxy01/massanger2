@@ -181,6 +181,20 @@ Map<String, List<Message>> demoMessages() {
       kind: MsgKind.file,
       att: Attachment(name: 'Маршрут_поездки.pdf', mime: 'application/pdf', size: 1340000),
     ),
+    m(
+      false,
+      '',
+      hour - min * 2,
+      kind: MsgKind.note,
+      att: Attachment(
+        name: 'note.mp4',
+        mime: 'video/mp4',
+        size: 1460000,
+        width: 1,
+        height: 1,
+        duration: 12,
+      ),
+    ),
   ];
 
   final dima = [

@@ -16,9 +16,11 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
+import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
 import 'attach_flows.dart';
 import 'contact_screen.dart';
+import 'wifi_hint.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.contact});
@@ -68,6 +70,16 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _recTimer;
   VoiceRecorder? _voice;
 
+  /// Кнопка в режиме видеосообщения («квадратик»), а не голосового.
+  bool _noteMode = false;
+  NoteRecorder? _noteRec;
+
+  /// Камера для видеосообщения открывается (запись ещё не началась).
+  bool _noteOpening = false;
+
+  /// Идёт запись именно видеосообщения.
+  bool _recNote = false;
+
   /// Палец увели влево во время записи — отпустит, и запись отменится.
   bool _cancelArmed = false;
 
@@ -111,6 +123,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _app.saveDraft(c.id, _input.text);
     _recTimer?.cancel();
     _voice?.stop(cancel: true).whenComplete(() => _voice?.dispose());
+    _noteRec?.stop(cancel: true);
     _input.dispose();
     _scroll.dispose();
     _focus.dispose();
@@ -142,6 +155,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _startRecording() async {
+    // Первая отправка с Wi-Fi — сначала подсказка (запись не начинаем).
+    if (!_app.demo && !_app.wifiHintShown && await onWifi()) {
+      _holding = false;
+      if (mounted) await wifiHint(context);
+      return;
+    }
+    if (!mounted) return;
+    if (_noteMode) return _startNote();
     _app.tick(HapticKind.medium);
     if (!_app.demo) {
       final v = _voice ??= VoiceRecorder();
@@ -187,6 +208,106 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  Future<void> _startNote() async {
+    if (_app.demo) {
+      showVeilToast(
+        context,
+        'В демо-версии видеосообщения не отправляются',
+        icon: Icons.cloud_off_rounded,
+      );
+      return;
+    }
+    _app.tick(HapticKind.medium);
+    final r = _noteRec ??= NoteRecorder();
+    setState(() {
+      _noteOpening = true;
+      _attachOpen = false;
+      _cancelArmed = false;
+    });
+    FocusScope.of(context).unfocus();
+    final ok = await r.start();
+    if (!mounted) {
+      await r.stop(cancel: true);
+      return;
+    }
+    if (!ok) {
+      setState(() => _noteOpening = false);
+      showVeilToast(
+        context,
+        'Разреши доступ к камере и микрофону и удерживай снова',
+        icon: Icons.videocam_off_rounded,
+      );
+      return;
+    }
+    if (!_holding) {
+      // Отпустили, пока камера открывалась (или система спрашивала разрешение).
+      await r.stop(cancel: true);
+      if (!mounted) return;
+      setState(() => _noteOpening = false);
+      showVeilToast(
+        context,
+        'Удерживай кнопку, чтобы записать видеосообщение',
+        icon: Icons.videocam_rounded,
+      );
+      return;
+    }
+    setState(() {
+      _noteOpening = false;
+      _recNote = true;
+      _recording = true;
+      _recSeconds = 0;
+    });
+    _recTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() => _recSeconds++);
+      if (_recSeconds >= VideoNote.maxSeconds) _stopRecording();
+    });
+  }
+
+  void _toggleNoteMode() {
+    _app.tick(HapticKind.selection);
+    setState(() => _noteMode = !_noteMode);
+    showVeilToast(
+      context,
+      _noteMode
+          ? 'Видеосообщение: удерживай кнопку и говори в камеру'
+          : 'Голосовое: удерживай кнопку и говори',
+      icon: _noteMode ? Icons.videocam_rounded : Icons.mic_rounded,
+    );
+  }
+
+  Future<void> _stopNote({required bool cancelled, required int secs}) async {
+    final replyTo = _replyTo;
+    final path = await _noteRec?.stop(cancel: cancelled || secs < 1);
+    if (!mounted) return;
+    setState(() => _recNote = false);
+    if (path == null) {
+      if (!cancelled) {
+        showVeilToast(
+          context,
+          'Удерживай кнопку, чтобы записать видеосообщение',
+          icon: Icons.videocam_rounded,
+        );
+      }
+      return;
+    }
+    _app.tick(HapticKind.light);
+    await _app.sendFile(
+      c.id,
+      kind: MsgKind.note,
+      path: path,
+      name: 'note.mp4',
+      mime: 'video/mp4',
+      size: File(path).lengthSync(),
+      width: 1,
+      height: 1,
+      duration: secs,
+      replyTo: replyTo,
+    );
+    if (!mounted) return;
+    setState(() => _replyTo = null);
+    _toBottom();
+  }
+
   void _dragRecording(double dx) {
     final armed = dx < -90;
     if (armed != _cancelArmed && _recording) {
@@ -204,6 +325,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _recording = false;
       _cancelArmed = false;
     });
+    if (_recNote) return _stopNote(cancelled: cancelled, secs: secs);
     final replyTo = _replyTo;
     if (_app.demo) {
       if (cancelled || secs < 1) {
@@ -309,33 +431,18 @@ class _ChatScreenState extends State<ChatScreen> {
           Column(
             children: [
               Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    FocusScope.of(context).unfocus();
-                    if (_attachOpen) setState(() => _attachOpen = false);
-                  },
-                  child: ListView.builder(
-                    controller: _scroll,
-                    reverse: true,
-                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: EdgeInsets.fromLTRB(12, 12, 12, top + 76),
-                    itemCount: items.length,
-                    itemBuilder: (_, i) => switch (items[i]) {
-                      _DateItem(:final time) => _DateChip(time: time),
-                      _BannerItem() => _EncryptionBanner(contact: c),
-                      _TypingItem() => const _TypingBubble(),
-                      _MsgItem(:final m, :final first, :final last) => _MessageTile(
-                        key: ValueKey(m.id),
-                        m: m,
-                        contact: c,
-                        first: first,
-                        last: last,
-                        animate: !_animated.contains(m.id),
-                        onAnimated: () => _animated.add(m.id),
-                        onReply: () => _setReply(m),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _messageList(items, top),
+                    if (_noteOpening || _recNote)
+                      NoteRecordingOverlay(
+                        recorder: _noteRec!,
+                        seconds: _recSeconds,
+                        recording: _recNote,
+                        cancel: _cancelArmed,
                       ),
-                    },
-                  ),
+                  ],
                 ),
               ),
               if (c.request && !c.blocked) _RequestBar(contact: c),
@@ -365,6 +472,35 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
+
+  Widget _messageList(List<_Item> items, double top) => GestureDetector(
+    onTap: () {
+      FocusScope.of(context).unfocus();
+      if (_attachOpen) setState(() => _attachOpen = false);
+    },
+    child: ListView.builder(
+      controller: _scroll,
+      reverse: true,
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: EdgeInsets.fromLTRB(12, 12, 12, top + 76),
+      itemCount: items.length,
+      itemBuilder: (_, i) => switch (items[i]) {
+        _DateItem(:final time) => _DateChip(time: time),
+        _BannerItem() => _EncryptionBanner(contact: c),
+        _TypingItem() => const _TypingBubble(),
+        _MsgItem(:final m, :final first, :final last) => _MessageTile(
+          key: ValueKey(m.id),
+          m: m,
+          contact: c,
+          first: first,
+          last: last,
+          animate: !_animated.contains(m.id),
+          onAnimated: () => _animated.add(m.id),
+          onReply: () => _setReply(m),
+        ),
+      },
+    ),
+  );
 
   Widget _composer(BuildContext context) {
     final app = context.app;
@@ -502,8 +638,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     valueListenable: _input,
                     builder: (_, v, _) => _SendMicButton(
                       hasText: v.text.trim().isNotEmpty,
-                      recording: _recording,
+                      recording: _recording || _noteOpening,
+                      note: _noteMode,
                       onSend: _send,
+                      onToggleMode: _toggleNoteMode,
                       onRecordStart: () {
                         _holding = true;
                         _startRecording();
@@ -1059,6 +1197,42 @@ class BubbleBody extends StatelessWidget {
                   if (mine) ...[const SizedBox(width: 3), StatusTicks(status: m.status, size: 14)],
                 ],
               ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Видеосообщение — «квадратик» без пузыря.
+    if (m.kind == MsgKind.note && m.att != null) {
+      return Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (m.replyTo != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Glass(
+                radius: 14,
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                child: SizedBox(
+                  width: 200,
+                  child: _QuotedReply(m: m.replyTo!, contact: contact, mine: false),
+                ),
+              ),
+            ),
+          NoteBubble(
+            m: m,
+            chatId: contact.id,
+            meta: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(fmtTime(m.time), style: const TextStyle(color: Colors.white, fontSize: 11)),
+                if (mine) ...[
+                  const SizedBox(width: 3),
+                  StatusTicks(status: m.status, color: Colors.white, size: 15),
+                ],
+              ],
             ),
           ),
         ],
@@ -1784,7 +1958,9 @@ class _SendMicButton extends StatelessWidget {
   const _SendMicButton({
     required this.hasText,
     required this.recording,
+    required this.note,
     required this.onSend,
+    required this.onToggleMode,
     required this.onRecordStart,
     required this.onRecordEnd,
     required this.onRecordDrag,
@@ -1792,7 +1968,13 @@ class _SendMicButton extends StatelessWidget {
 
   final bool hasText;
   final bool recording;
+
+  /// Режим видеосообщения (камера) вместо голосового (микрофон).
+  final bool note;
   final VoidCallback onSend;
+
+  /// Короткое нажатие — переключить микрофон ↔ камеру (как в Telegram).
+  final VoidCallback onToggleMode;
   final VoidCallback onRecordStart;
   final VoidCallback onRecordEnd;
   final ValueChanged<double> onRecordDrag;
@@ -1826,8 +2008,8 @@ class _SendMicButton extends StatelessWidget {
         child: hasText
             ? Icon(Icons.arrow_upward_rounded, key: const ValueKey('send'), color: acc.onAccent)
             : Icon(
-                Icons.mic_rounded,
-                key: const ValueKey('mic'),
+                note ? Icons.videocam_rounded : Icons.mic_rounded,
+                key: ValueKey(note ? 'note' : 'mic'),
                 color: recording ? acc.onAccent : vc.textDim,
               ),
       ),
@@ -1847,13 +2029,7 @@ class _SendMicButton extends StatelessWidget {
         onLongPressStart: (_) => onRecordStart(),
         onLongPressMoveUpdate: (d) => onRecordDrag(d.offsetFromOrigin.dx),
         onLongPressEnd: (_) => onRecordEnd(),
-        onTap: recording
-            ? onRecordEnd
-            : () => showVeilToast(
-                context,
-                'Удерживай, чтобы записать голосовое',
-                icon: Icons.mic_rounded,
-              ),
+        onTap: recording ? onRecordEnd : onToggleMode,
         child: button,
       ),
     );

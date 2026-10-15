@@ -547,6 +547,7 @@ class Live {
           MsgKind.voice ||
           MsgKind.photo ||
           MsgKind.video ||
+          MsgKind.note ||
           MsgKind.file => att != null && att.uploaded && att.size <= MediaEngine.maxBytes,
           MsgKind.geo => geo != null,
           MsgKind.poll => poll != null,

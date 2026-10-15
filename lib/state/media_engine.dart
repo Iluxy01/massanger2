@@ -564,7 +564,10 @@ class MediaEngine {
 
   /// Что скачивать само: фото, голосовые и видео. Документы — по нажатию.
   static bool autoKind(Message m) =>
-      m.kind == MsgKind.photo || m.kind == MsgKind.voice || m.kind == MsgKind.video;
+      m.kind == MsgKind.photo ||
+      m.kind == MsgKind.voice ||
+      m.kind == MsgKind.video ||
+      m.kind == MsgKind.note;
 
   // ───────────────────────── удаление ─────────────────────────
 

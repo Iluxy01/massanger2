@@ -17,6 +17,7 @@ import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
 import '../widgets/visual.dart';
 import 'video_recorder.dart';
+import 'wifi_hint.dart';
 
 /// Сценарии отправки вложений из меню «＋» в чате.
 class AttachFlows {
@@ -34,6 +35,9 @@ class AttachFlows {
     return true;
   }
 
+  /// Нельзя отправлять (демо) или передумали после подсказки про Wi-Fi.
+  Future<bool> _blocked() async => _demoBlocked() || !await wifiHint(context);
+
   bool _tooBig(int size) {
     if (size <= MediaEngine.maxBytes) return false;
     showVeilToast(
@@ -47,7 +51,7 @@ class AttachFlows {
   // ── Фото ──
 
   Future<void> photos({bool camera = false}) async {
-    if (_demoBlocked()) return;
+    if (await _blocked() || !context.mounted) return;
     final picker = ImagePicker();
     List<XFile> files;
     try {
@@ -102,7 +106,7 @@ class AttachFlows {
   // ── Видео ──
 
   Future<void> video() async {
-    if (_demoBlocked()) return;
+    if (await _blocked() || !context.mounted) return;
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -160,7 +164,7 @@ class AttachFlows {
   // ── Документ ──
 
   Future<void> file() async {
-    if (_demoBlocked()) return;
+    if (await _blocked() || !context.mounted) return;
     PlatformFile? f;
     try {
       f = await FilePicker.pickFile();

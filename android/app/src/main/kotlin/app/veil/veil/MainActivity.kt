@@ -3,6 +3,8 @@ package app.veil.veil
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
@@ -69,6 +71,21 @@ class MainActivity : FlutterActivity() {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
                     }
                     result.success(null)
+                } else {
+                    result.notImplemented()
+                }
+            }
+        // Какая сеть сейчас: Wi-Fi или нет (для подсказки об отправке файлов).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "veil/net")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "wifi") {
+                    try {
+                        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                        result.success(caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
                 } else {
                     result.notImplemented()
                 }

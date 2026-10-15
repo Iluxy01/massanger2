@@ -454,6 +454,32 @@ void main() {
     await bobLive.close();
   });
 
+  test('видеосообщение доходит и скачивается само', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    final src = await randomFile('note.mp4', 180 * 1024 + 5);
+    final sent = await alice.sendFile(
+      bobId,
+      kind: MsgKind.note,
+      path: src,
+      name: 'note.mp4',
+      mime: 'video/mp4',
+      size: File(src).lengthSync(),
+      width: 1,
+      height: 1,
+      duration: 7,
+    );
+    await until(() => sent.att!.uploaded, what: 'заливка');
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
+    final got = bob.messagesOf(aliceId).single;
+    expect(got.kind, MsgKind.note);
+    expect(got.seconds, 7);
+    expect(got.preview, '📹 Видеосообщение · 0:07');
+    await until(() => got.att!.local, what: 'автоскачивание');
+    expect(File(got.att!.path!).readAsBytesSync(), File(src).readAsBytesSync());
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('голосовое, геопозиция и опрос с голосами', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
     // Запись голоса лежит во временной папке — после отправки она не нужна.

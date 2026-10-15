@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veil/app.dart';
 import 'package:veil/models/models.dart';
+import 'package:veil/screens/wifi_hint.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/widgets/avatar.dart';
+import 'package:veil/widgets/video_note.dart';
 import 'package:veil/widgets/visual.dart';
 
 /// Проверки визуальных исправлений (демо-режим, без сети).
@@ -171,7 +173,7 @@ void main() {
     // Фото ещё не скачано: размытое превью, размер и кнопка «скачать».
     expect(find.textContaining('Тот самый закат'), findsOneWidget);
     expect(find.text('822 КБ'), findsOneWidget);
-    expect(find.byIcon(Icons.arrow_downward_rounded), findsNWidgets(2));
+    expect(find.byIcon(Icons.arrow_downward_rounded), findsNWidgets(3));
     expect(find.text('Маршрут_поездки.pdf'), findsOneWidget);
     expect(find.text('1,3 МБ · скачать'), findsOneWidget);
     // В списке чатов — понятная подпись.
@@ -179,6 +181,56 @@ void main() {
       state.messagesOf('kate').firstWhere((m) => m.kind == MsgKind.file).preview,
       '📎 Маршрут_поездки.pdf',
     );
+    await close(tester, state);
+  });
+
+  testWidgets('видеосообщение: квадратик в чате, кнопка микрофон ↔ камера', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-kate').first);
+    await settle(tester);
+    // Ещё не скачано: квадратик с длительностью, размером и кнопкой «скачать».
+    expect(find.byType(NoteBubble), findsOneWidget);
+    expect(find.text('0:12 · 1,4 МБ'), findsOneWidget);
+    final box = tester.getSize(find.byType(NoteBubble));
+    expect(box.width, box.height, reason: 'квадрат');
+    expect(
+      state.messagesOf('kate').firstWhere((m) => m.kind == MsgKind.note).preview,
+      '📹 Видеосообщение · 0:12',
+    );
+    // Короткое нажатие на микрофон — режим видеосообщения, и обратно.
+    final mics = find.byIcon(Icons.mic_rounded).evaluate().length;
+    await tester.tap(find.byIcon(Icons.mic_rounded).last);
+    await settle(tester);
+    expect(find.byIcon(Icons.mic_rounded), findsNWidgets(mics - 1));
+    expect(find.byIcon(Icons.videocam_rounded), findsWidgets);
+    expect(find.textContaining('Видеосообщение: удерживай'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await settle(tester);
+    await tester.tap(find.byIcon(Icons.videocam_rounded).last);
+    await settle(tester);
+    expect(find.textContaining('Голосовое: удерживай'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4)); // подсказка исчезла
+    await settle(tester);
+    expect(find.byIcon(Icons.mic_rounded), findsNWidgets(mics));
+    await close(tester, state);
+  });
+
+  testWidgets('подсказка про Wi-Fi: причина по кнопке «Подробнее»', (tester) async {
+    final state = await launch(tester, banner: false);
+    final ctx = tester.element(find.byType(Scaffold).first);
+    bool? answer;
+    showWifiHintSheet(ctx).then((v) => answer = v);
+    await settle(tester);
+    expect(find.text('Отправь через мобильный интернет'), findsOneWidget);
+    expect(find.textContaining('Почему так'), findsNothing);
+    await tester.tap(find.text('Подробнее'));
+    await settle(tester);
+    expect(find.textContaining('Почему так'), findsOneWidget);
+    await tester.ensureVisible(find.text('Понятно, отправить'));
+    await settle(tester);
+    await tester.tap(find.text('Понятно, отправить'));
+    await settle(tester);
+    expect(answer, isTrue);
     await close(tester, state);
   });
 

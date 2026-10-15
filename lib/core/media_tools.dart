@@ -115,6 +115,16 @@ List<int> compressWave(List<double> db, {int bars = 40}) {
 }
 
 const _open = MethodChannel('veil/open');
+const _net = MethodChannel('veil/net');
+
+/// Телефон сейчас подключён через Wi-Fi (не знаем — false).
+Future<bool> onWifi() async {
+  try {
+    return await _net.invokeMethod<bool>('wifi') ?? false;
+  } catch (_) {
+    return false;
+  }
+}
 
 /// Открыть файл в подходящем приложении. false — такого приложения нет.
 Future<bool> openExternally(String path, String mime) async {
