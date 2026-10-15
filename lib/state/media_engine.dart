@@ -687,10 +687,13 @@ class MediaEngine {
             total: const Duration(seconds: 12),
           );
           await writes();
-          if (r.events > 0) {
+          // Считаем только нужный кусок: некоторые ретрансляторы (snort)
+          // не смотрят на фильтр по номеру и отдают что попало.
+          if (have.contains(i)) {
             good[url] = (good[url] ?? 0) + 1;
             break;
           }
+          if (r.events > 0) good[url] = (good[url] ?? 0) - 1;
         }
         if (!have.contains(i)) misses++;
       }

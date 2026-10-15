@@ -34,6 +34,9 @@ class FakeRelay {
   /// Сколько соединений «замёрзло» на лимите.
   int frozenByLimit = 0;
 
+  /// Не смотреть на фильтры по тегам (кроме #p) — как relay.snort.social.
+  bool ignoreTagFilters = false;
+
   int get port => _server.port;
 
   void _send(WebSocket ws, String text) {
@@ -89,7 +92,10 @@ class FakeRelay {
     if (f['authors'] is List && !(f['authors'] as List).contains(e['pubkey'])) return false;
     if (f['kinds'] is List && !(f['kinds'] as List).contains(e['kind'])) return false;
     for (final entry in f.entries) {
-      if (entry.key.length == 2 && entry.key.startsWith('#') && entry.key != '#p') {
+      if (entry.key.length == 2 &&
+          entry.key.startsWith('#') &&
+          entry.key != '#p' &&
+          !ignoreTagFilters) {
         final name = entry.key.substring(1);
         final vals = [
           for (final t in e['tags'] as List)

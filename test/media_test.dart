@@ -397,6 +397,8 @@ void main() {
 
   test('мобильная сеть режет соединения: файл приходит мелкими кусками', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends(bobTight: true);
+    // Один из ретрансляторов не смотрит на номер куска в фильтре (как snort).
+    relays[0].ignoreTagFilters = true;
     // Свежие соединения Боба замерзают после ~14 КБ — крупный кусок (~62 КБ) не пройдёт.
     final src = await randomFile('photo.jpg', 120 * 1024);
     final sent = await alice.sendFile(
