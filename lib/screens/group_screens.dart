@@ -596,3 +596,60 @@ String membersLabel(int n) {
       : 'участников';
   return '$n $word';
 }
+
+/// Выбрать чат (друга или группу) — например, куда переслать.
+Future<Contact?> pickChat(BuildContext context, {String title = 'Выбери чат'}) =>
+    showModalBottomSheet<Contact>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        final app = ctx.app;
+        final vc = app.colors;
+        // Сначала недавние чаты, потом остальные друзья.
+        final seen = <String>{};
+        final chats = [
+          for (final c in [...app.chatList, ...app.archivedChats, ...app.friends])
+            if (!c.blocked && !(c.group?.left ?? false) && seen.add(c.id)) c,
+        ];
+        return DraggableScrollableSheet(
+          initialChildSize: 0.65,
+          maxChildSize: 0.92,
+          minChildSize: 0.4,
+          expand: false,
+          builder: (_, scroll) => Material(
+            color: vc.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            clipBehavior: Clip.antiAlias,
+            child: ListView(
+              controller: scroll,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+                  child: Text(
+                    title,
+                    style: TextStyle(color: vc.text, fontSize: 20, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                for (final c in chats)
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                    leading: Avatar.contact(c, size: 44),
+                    title: Text(
+                      c.name,
+                      style: TextStyle(color: vc.text, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: c.group == null
+                        ? null
+                        : Text(
+                            membersLabel(c.group!.members.length),
+                            style: TextStyle(color: vc.textDim, fontSize: 12.5),
+                          ),
+                    onTap: () => Navigator.pop(ctx, c),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );

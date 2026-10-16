@@ -298,6 +298,55 @@ void main() {
     await close(tester, state);
   });
 
+  testWidgets('меню сообщения: изменить, закрепить, поиск, оформление', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+    await settle(tester);
+    const mineText = 'Удобно, что всё хранится только у нас на телефонах 😌';
+    await tester.dragUntilVisible(find.text(mineText), find.byType(ListView), const Offset(0, 250));
+    await settle(tester);
+    await tester.longPress(find.text(mineText));
+    await settle(tester);
+    for (final a in [
+      'Ответить',
+      'Переслать',
+      'Изменить',
+      'Закрепить',
+      'В избранное',
+      'Удалить у всех',
+    ]) {
+      expect(find.text(a), findsOneWidget, reason: a);
+    }
+    await tester.tap(find.text('Изменить'));
+    await settle(tester);
+    expect(find.text('Редактирование'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).last, 'Всё хранится *только* у нас 😌');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await settle(tester);
+    final edited = state.messagesOf('alice').firstWhere((m) => m.text.contains('только*'));
+    expect(edited.edited, isTrue);
+    expect(find.textContaining('изм.'), findsWidgets);
+    // Оформление: в пузыре без звёздочек.
+    expect(find.text('Всё хранится только у нас 😌'), findsOneWidget);
+
+    // Закрепить — полоска вверху.
+    await tester.longPress(find.text('Всё хранится только у нас 😌'));
+    await settle(tester);
+    await tester.tap(find.text('Закрепить'));
+    await settle(tester);
+    expect(find.text('Закреплено'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+
+    // Поиск в чате.
+    await tester.tap(find.byTooltip('Поиск в чате'));
+    await settle(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'Поиск в чате'), 'термос');
+    await settle(tester);
+    expect(find.text('1 из 1'), findsOneWidget);
+    await close(tester, state);
+  });
+
   testWidgets('подсказка про Wi-Fi: причина по кнопке «Подробнее»', (tester) async {
     final state = await launch(tester, banner: false);
     final ctx = tester.element(find.byType(Scaffold).first);

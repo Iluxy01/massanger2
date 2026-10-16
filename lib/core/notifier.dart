@@ -2,6 +2,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart' hi
 
 import '../models/models.dart';
 import '../state/live.dart';
+import '../widgets/rich_text.dart';
 
 /// Системные уведомления Android. Работают и в фоновой проверке.
 class SystemNotify implements Notify {
@@ -36,7 +37,8 @@ class SystemNotify implements Notify {
     await init();
     // В группе — с именем автора.
     final who = from.group?.member(m.from ?? '');
-    final text = who == null ? m.preview : '${who.name}: ${m.preview}';
+    final preview = Fmt.plain(m.preview);
+    final text = who == null ? preview : '${who.name}: $preview';
     final body = m.secret
         ? '🔒 Секретное сообщение'
         : showText()

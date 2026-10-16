@@ -16,6 +16,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
+import '../widgets/rich_text.dart';
 import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
 import 'attach_flows.dart';
@@ -24,11 +25,16 @@ import 'group_screens.dart';
 import 'wifi_hint.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.contact});
+  const ChatScreen({super.key, required this.contact, this.jumpTo});
 
   final Contact contact;
 
-  static Route<void> route(Contact c) => MaterialPageRoute(builder: (_) => ChatScreen(contact: c));
+  /// Сразу показать это сообщение (из «Избранного»).
+  final String? jumpTo;
+
+  static Route<void> route(Contact c, {String? jumpTo}) => MaterialPageRoute(
+    builder: (_) => ChatScreen(contact: c, jumpTo: jumpTo),
+  );
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -61,7 +67,22 @@ class _ChatScreenState extends State<ChatScreen> {
   late final Set<String> _animated;
 
   Message? _replyTo;
+
+  /// Редактируем своё сообщение (поле ввода — его текст).
+  Message? _editing;
   bool _secret = false;
+
+  // Поиск по чату: совпадения (новые первыми) и текущее.
+  bool _searching = false;
+  final _searchInput = TextEditingController();
+  List<String> _hits = const [];
+  int _hit = 0;
+
+  // Переход к сообщению: ключи плиток и подсветка найденного.
+  final Map<String, GlobalKey> _tileKeys = {};
+  String? _flash;
+  Timer? _flashTimer;
+  List<_Item> _items = const [];
   bool _attachOpen = false;
   bool _showDown = false;
   int _seen = 0;
@@ -105,7 +126,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _animated = _app.messagesOf(c.id).map((m) => m.id).toSet();
     _seen = _app.messagesOf(c.id).length;
     _app.openChat = c.id;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _app.markRead(c.id));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _app.markRead(c.id);
+      final j = widget.jumpTo;
+      if (j != null) _jumpTo(j);
+    });
     _scroll.addListener(_onScroll);
     _focus.addListener(() {
       if (_focus.hasFocus && _attachOpen) setState(() => _attachOpen = false);
@@ -128,6 +153,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _input.dispose();
     _scroll.dispose();
     _focus.dispose();
+    _searchInput.dispose();
+    _flashTimer?.cancel();
     super.dispose();
   }
 
@@ -136,11 +163,21 @@ class _ChatScreenState extends State<ChatScreen> {
     _scroll.animateTo(0, duration: const Duration(milliseconds: 450), curve: Curves.easeOutCubic);
   }
 
-  void _send() {
+  void _send({bool silent = false}) {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     _app.tick(HapticKind.light);
-    _app.send(c.id, text, replyTo: _replyTo, secret: _secret);
+    final editing = _editing;
+    if (editing != null) {
+      _app.editMessage(c.id, editing, text);
+      _input.clear();
+      setState(() => _editing = null);
+      return;
+    }
+    _app.send(c.id, text, replyTo: _replyTo, secret: _secret, silent: silent);
+    if (silent) {
+      showVeilToast(context, 'Отправлено без звука', icon: Icons.notifications_off_rounded);
+    }
     _input.clear();
     setState(() {
       _replyTo = null;
@@ -151,8 +188,141 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _setReply(Message m) {
     _app.tick(HapticKind.medium);
-    setState(() => _replyTo = m);
+    setState(() {
+      _replyTo = m;
+      if (_editing != null) {
+        _editing = null;
+        _input.clear();
+      }
+    });
     _focus.requestFocus();
+  }
+
+  // ───────────── действия с сообщением ─────────────
+
+  void _onAction(Message m, String action) {
+    switch (action) {
+      case 'reply':
+        _setReply(m);
+      case 'edit':
+        setState(() {
+          _editing = m;
+          _replyTo = null;
+          _secret = false;
+        });
+        _input.text = m.text;
+        _input.selection = TextSelection.collapsed(offset: m.text.length);
+        _focus.requestFocus();
+      case 'forward':
+        _forward(m);
+      case 'pin':
+        final pinned = c.pinnedMsg == m.id;
+        _app.pinMessage(c.id, pinned ? null : m);
+        showVeilToast(
+          context,
+          pinned ? 'Откреплено' : 'Закреплено вверху чата',
+          icon: Icons.push_pin_rounded,
+        );
+      case 'star':
+        _app.toggleStar(c.id, m);
+        showVeilToast(
+          context,
+          _app.isStarred(c.id, m) ? 'Добавлено в избранное' : 'Убрано из избранного',
+          icon: Icons.star_rounded,
+        );
+      case 'deleteAll':
+        _app.deleteForAll(c.id, m);
+      case 'jumpReply':
+        final r = m.replyTo;
+        if (r != null) _jumpTo(r.id);
+    }
+  }
+
+  Future<void> _forward(Message m) async {
+    final target = await pickChat(context, title: 'Переслать в…');
+    if (target == null || !mounted) return;
+    final sent = await _app.forward(c.id, m, target.id);
+    if (!mounted) return;
+    showVeilToast(
+      context,
+      sent == null
+          ? 'Сначала скачай файл — потом его можно переслать'
+          : 'Переслано: ${target.name}',
+      icon: sent == null ? Icons.download_rounded : Icons.forward_rounded,
+    );
+  }
+
+  /// Прокрутить к сообщению и подсветить его.
+  Future<void> _jumpTo(String id) async {
+    var idx = _items.indexWhere((i) => i is _MsgItem && i.m.id == id);
+    if (idx < 0) {
+      showVeilToast(context, 'Сообщение не найдено', icon: Icons.search_off_rounded);
+      return;
+    }
+    for (var attempt = 0; attempt < 30 && mounted; attempt++) {
+      final ctx = _tileKeys[id]?.currentContext;
+      if (ctx != null && ctx.mounted) {
+        await Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.45,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
+        );
+        if (!mounted) return;
+        _flashTimer?.cancel();
+        setState(() => _flash = id);
+        _flashTimer = Timer(const Duration(milliseconds: 1400), () {
+          if (mounted) setState(() => _flash = null);
+        });
+        return;
+      }
+      if (!_scroll.hasClients) return;
+      // Плитка ещё не построена — едем в её сторону (лента перевёрнута).
+      final built = [
+        for (final (i, it) in _items.indexed)
+          if (it is _MsgItem && _tileKeys[it.m.id]?.currentContext != null) i,
+      ];
+      final pos = _scroll.position;
+      final step = pos.viewportDimension * 0.8;
+      final dir = built.isEmpty ? 1 : (idx > built.last ? 1 : (idx < built.first ? -1 : 1));
+      final next = (pos.pixels + dir * step).clamp(0.0, pos.maxScrollExtent);
+      if (next == pos.pixels) break;
+      _scroll.jumpTo(next);
+      await WidgetsBinding.instance.endOfFrame;
+      idx = _items.indexWhere((i) => i is _MsgItem && i.m.id == id);
+    }
+  }
+
+  // ───────────── поиск ─────────────
+
+  void _toggleSearch() {
+    setState(() {
+      _searching = !_searching;
+      _searchInput.clear();
+      _hits = const [];
+      _hit = 0;
+    });
+  }
+
+  void _runSearch(String q) {
+    final query = q.trim().toLowerCase();
+    final hits = query.isEmpty
+        ? <String>[]
+        : [
+            for (final m in _app.messagesOf(c.id).reversed)
+              if (!m.secret && _app.previewOf(c.id, m).toLowerCase().contains(query)) m.id,
+          ];
+    setState(() {
+      _hits = hits;
+      _hit = 0;
+    });
+    if (hits.isNotEmpty) _jumpTo(hits.first);
+  }
+
+  void _nextHit(int delta) {
+    if (_hits.isEmpty) return;
+    setState(() => _hit = (_hit + delta) % _hits.length);
+    _jumpTo(_hits[_hit]);
   }
 
   Future<void> _startRecording() async {
@@ -207,6 +377,36 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _recSeconds++);
       if (_recSeconds >= 300) _stopRecording(); // не длиннее 5 минут
     });
+  }
+
+  /// Долгое нажатие на «отправить»: варианты отправки.
+  Future<void> _sendMenu() async {
+    _app.tick(HapticKind.medium);
+    final vc = _app.colors;
+    final silent = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Glass(
+            radius: 24,
+            color: vc.elevated,
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: ListTile(
+              leading: const GradientIcon(Icons.notifications_off_rounded, size: 24),
+              title: Text('Отправить без звука', style: TextStyle(color: vc.text)),
+              subtitle: Text(
+                'Придёт тихо, без уведомления',
+                style: TextStyle(color: vc.textDim, fontSize: 12.5),
+              ),
+              onTap: () => Navigator.pop(ctx, true),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (silent == true && mounted) _send(silent: true);
   }
 
   Future<void> _startNote() async {
@@ -430,7 +630,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final vc = app.colors;
     final msgs = app.messagesOf(c.id);
     final typing = app.typingIndicators && app.typing.contains(c.id);
-    final items = _buildItems(msgs, typing);
+    final items = _items = _buildItems(msgs, typing);
+    final pinnedMsg = app.pinnedOf(c.id);
     final top = MediaQuery.paddingOf(context).top;
     final newBelow = _showDown ? max(0, msgs.length - _seen) : 0;
 
@@ -445,7 +646,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    _messageList(items, top),
+                    _messageList(items, top + (pinnedMsg != null ? 50 : 0)),
                     if (_noteOpening || _recNote)
                       NoteRecordingOverlay(
                         recorder: _noteRec!,
@@ -470,7 +671,29 @@ class _ChatScreenState extends State<ChatScreen> {
             top: 0,
             left: 0,
             right: 0,
-            child: _TopBar(contact: c, typing: typing),
+            child: _TopBar(
+              contact: c,
+              typing: typing,
+              onSearch: _toggleSearch,
+              search: _searching
+                  ? _SearchRow(
+                      input: _searchInput,
+                      hits: _hits.length,
+                      hit: _hit,
+                      onChanged: _runSearch,
+                      onNext: () => _nextHit(1),
+                      onPrev: () => _nextHit(-1),
+                      onClose: _toggleSearch,
+                    )
+                  : null,
+              pinned: pinnedMsg == null
+                  ? null
+                  : _PinnedBar(
+                      text: app.previewOf(c.id, pinnedMsg),
+                      onTap: () => _jumpTo(pinnedMsg.id),
+                      onClose: () => app.pinMessage(c.id, null),
+                    ),
+            ),
           ),
           Positioned(
             right: 16,
@@ -503,15 +726,20 @@ class _ChatScreenState extends State<ChatScreen> {
         _BannerItem() => _EncryptionBanner(contact: c),
         _TypingItem() => const _TypingBubble(),
         _MsgItem(:final m) when m.kind == MsgKind.event => _EventChip(m: m, chatId: c.id),
-        _MsgItem(:final m, :final first, :final last) => _MessageTile(
-          key: ValueKey(m.id),
-          m: m,
-          contact: c,
-          first: first,
-          last: last,
-          animate: !_animated.contains(m.id),
-          onAnimated: () => _animated.add(m.id),
-          onReply: () => _setReply(m),
+        _MsgItem(:final m, :final first, :final last) => KeyedSubtree(
+          key: _tileKeys.putIfAbsent(m.id, GlobalKey.new),
+          child: _MessageTile(
+            key: ValueKey(m.id),
+            m: m,
+            contact: c,
+            first: first,
+            last: last,
+            animate: !_animated.contains(m.id),
+            highlight: _flash == m.id,
+            onAnimated: () => _animated.add(m.id),
+            onReply: () => _setReply(m),
+            onAction: (a) => _onAction(m, a),
+          ),
         ),
       },
     ),
@@ -538,7 +766,17 @@ class _ChatScreenState extends State<ChatScreen> {
           AnimatedSize(
             duration: const Duration(milliseconds: 250).by(context),
             curve: Curves.easeOutCubic,
-            child: _replyTo == null
+            child: _editing != null
+                ? _ReplyPreview(
+                    m: _editing!,
+                    contact: c,
+                    editing: true,
+                    onClose: () {
+                      _input.clear();
+                      setState(() => _editing = null);
+                    },
+                  )
+                : _replyTo == null
                 ? const SizedBox(width: double.infinity)
                 : _ReplyPreview(
                     m: _replyTo!,
@@ -656,6 +894,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       recording: _recording || _noteOpening,
                       note: _noteMode,
                       onSend: _send,
+                      onSendMenu: _editing == null ? _sendMenu : null,
                       onToggleMode: _toggleNoteMode,
                       onRecordStart: () {
                         _holding = true;
@@ -681,10 +920,23 @@ class _ChatScreenState extends State<ChatScreen> {
 // ───────────────────────────── Верхняя панель ─────────────────────────────
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.contact, required this.typing});
+  const _TopBar({
+    required this.contact,
+    required this.typing,
+    required this.onSearch,
+    this.search,
+    this.pinned,
+  });
 
   final Contact contact;
   final bool typing;
+  final VoidCallback onSearch;
+
+  /// Строка поиска (вместо имени), если ищем.
+  final Widget? search;
+
+  /// Полоска закреплённого сообщения.
+  final Widget? pinned;
 
   @override
   Widget build(BuildContext context) {
@@ -742,84 +994,213 @@ class _TopBar extends StatelessWidget {
           border: Border(bottom: BorderSide(color: vc.border)),
         ),
         padding: EdgeInsets.fromLTRB(4, top + 4, 8, 8),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            IconButton(
-              onPressed: () => Navigator.of(context).maybePop(),
-              icon: Icon(Icons.arrow_back_ios_new_rounded, color: vc.text, size: 20),
-            ),
-            Pressable(
-              onTap: openProfile,
-              child: Hero(tag: 'avatar-${c.id}', child: Avatar.contact(c, size: 42)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: openProfile,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            search ??
+                Row(
                   children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            c.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: vc.text,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        if (c.verified) ...[
-                          const SizedBox(width: 4),
-                          const GradientIcon(Icons.verified_rounded, size: 16),
-                        ],
-                        if (c.disappearing > 0) ...[
-                          const SizedBox(width: 6),
-                          Icon(Icons.timer_outlined, size: 15, color: vc.textDim),
-                        ],
-                      ],
+                    IconButton(
+                      onPressed: () => Navigator.of(context).maybePop(),
+                      icon: Icon(Icons.arrow_back_ios_new_rounded, color: vc.text, size: 20),
                     ),
-                    const SizedBox(height: 1),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250).by(context),
-                      transitionBuilder: (ch, a) => FadeTransition(
-                        opacity: a,
-                        child: SlideTransition(
-                          position: Tween(begin: const Offset(0, 0.4), end: Offset.zero).animate(a),
-                          child: ch,
+                    Pressable(
+                      onTap: openProfile,
+                      child: Hero(tag: 'avatar-${c.id}', child: Avatar.contact(c, size: 42)),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: openProfile,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    c.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: vc.text,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                if (c.verified) ...[
+                                  const SizedBox(width: 4),
+                                  const GradientIcon(Icons.verified_rounded, size: 16),
+                                ],
+                                if (c.disappearing > 0) ...[
+                                  const SizedBox(width: 6),
+                                  Icon(Icons.timer_outlined, size: 15, color: vc.textDim),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 1),
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 250).by(context),
+                              transitionBuilder: (ch, a) => FadeTransition(
+                                opacity: a,
+                                child: SlideTransition(
+                                  position: Tween(
+                                    begin: const Offset(0, 0.4),
+                                    end: Offset.zero,
+                                  ).animate(a),
+                                  child: ch,
+                                ),
+                              ),
+                              layoutBuilder: (cur, prev) =>
+                                  Stack(alignment: Alignment.centerLeft, children: [...prev, ?cur]),
+                              child: status,
+                            ),
+                          ],
                         ),
                       ),
-                      layoutBuilder: (cur, prev) =>
-                          Stack(alignment: Alignment.centerLeft, children: [...prev, ?cur]),
-                      child: status,
+                    ),
+                    if (group == null)
+                      IconButton(
+                        onPressed: () => showVeilToast(
+                          context,
+                          'Зашифрованные звонки — в следующей версии',
+                          icon: Icons.call_rounded,
+                        ),
+                        icon: Icon(Icons.call_outlined, color: vc.text),
+                      ),
+                    IconButton(
+                      tooltip: 'Поиск в чате',
+                      onPressed: onSearch,
+                      icon: Icon(Icons.search_rounded, color: vc.text),
                     ),
                   ],
                 ),
+            ?pinned,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Поиск в чате: поле, «3 из 7», вверх/вниз.
+class _SearchRow extends StatelessWidget {
+  const _SearchRow({
+    required this.input,
+    required this.hits,
+    required this.hit,
+    required this.onChanged,
+    required this.onNext,
+    required this.onPrev,
+    required this.onClose,
+  });
+
+  final TextEditingController input;
+  final int hits;
+  final int hit;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onNext;
+  final VoidCallback onPrev;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    return SizedBox(
+      height: 48,
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: onClose,
+            icon: Icon(Icons.close_rounded, color: vc.text),
+          ),
+          Expanded(
+            child: TextField(
+              controller: input,
+              autofocus: true,
+              onChanged: onChanged,
+              textInputAction: TextInputAction.search,
+              style: TextStyle(color: vc.text, fontSize: 16),
+              decoration: InputDecoration(
+                border: InputBorder.none,
+                hintText: 'Поиск в чате',
+                hintStyle: TextStyle(color: vc.textFaint),
               ),
             ),
-            if (group == null)
-              IconButton(
-                onPressed: () => showVeilToast(
-                  context,
-                  'Зашифрованные звонки — в следующей версии',
-                  icon: Icons.call_rounded,
-                ),
-                icon: Icon(Icons.call_outlined, color: vc.text),
+          ),
+          if (input.text.trim().isNotEmpty)
+            Text(
+              hits == 0 ? 'нет' : '${hit + 1} из $hits',
+              style: TextStyle(color: vc.textDim, fontSize: 13),
+            ),
+          IconButton(
+            tooltip: 'Раньше',
+            onPressed: hits > 1 ? onNext : null,
+            icon: Icon(Icons.keyboard_arrow_up_rounded, color: vc.text),
+          ),
+          IconButton(
+            tooltip: 'Позже',
+            onPressed: hits > 1 ? onPrev : null,
+            icon: Icon(Icons.keyboard_arrow_down_rounded, color: vc.text),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Закреплённое сообщение под шапкой чата.
+class _PinnedBar extends StatelessWidget {
+  const _PinnedBar({required this.text, required this.onTap, required this.onClose});
+
+  final String text;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    final acc = context.accent;
+    return Pressable(
+      scale: 0.98,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 0, 0),
+        child: Row(
+          children: [
+            Container(
+              width: 3,
+              height: 32,
+              decoration: BoxDecoration(
+                gradient: acc.gradient,
+                borderRadius: BorderRadius.circular(2),
               ),
-            if (group == null)
-              IconButton(
-                onPressed: () => showVeilToast(
-                  context,
-                  'Видеозвонки — в следующей версии',
-                  icon: Icons.videocam_rounded,
-                ),
-                icon: Icon(Icons.videocam_outlined, color: vc.text),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Закреплено',
+                    style: TextStyle(color: acc.a, fontSize: 12.5, fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: vc.textDim, fontSize: 13.5),
+                  ),
+                ],
               ),
+            ),
+            IconButton(
+              tooltip: 'Открепить',
+              onPressed: onClose,
+              icon: Icon(Icons.close_rounded, size: 20, color: vc.textDim),
+            ),
           ],
         ),
       ),
@@ -997,6 +1378,8 @@ class _MessageTile extends StatefulWidget {
     required this.animate,
     required this.onAnimated,
     required this.onReply,
+    required this.onAction,
+    this.highlight = false,
   });
 
   final Message m;
@@ -1006,6 +1389,12 @@ class _MessageTile extends StatefulWidget {
   final bool animate;
   final VoidCallback onAnimated;
   final VoidCallback onReply;
+
+  /// Действие из меню сообщения (edit, forward, pin, star, deleteAll, jumpReply).
+  final ValueChanged<String> onAction;
+
+  /// Подсветить (нашли поиском / перешли из ответа).
+  final bool highlight;
 
   @override
   State<_MessageTile> createState() => _MessageTileState();
@@ -1066,8 +1455,13 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
       barrierLabel: 'menu',
       barrierColor: Colors.transparent,
       transitionDuration: const Duration(milliseconds: 260),
-      pageBuilder: (_, _, _) =>
-          _MessageMenu(m: widget.m, contact: widget.contact, rect: rect, onReply: widget.onReply),
+      pageBuilder: (_, _, _) => _MessageMenu(
+        m: widget.m,
+        contact: widget.contact,
+        rect: rect,
+        onReply: widget.onReply,
+        onAction: widget.onAction,
+      ),
       transitionBuilder: (_, a, _, child) => FadeTransition(opacity: a, child: child),
     );
   }
@@ -1077,6 +1471,7 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
     final m = widget.m;
     final mine = m.mine;
     final vc = context.vc;
+    final spoiler = m.kind == MsgKind.text && Fmt.hasSpoiler(m.text);
 
     Widget tile = Padding(
       padding: EdgeInsets.only(top: widget.first ? 8 : 2, bottom: m.reaction != null ? 14 : 0),
@@ -1088,9 +1483,9 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
             // Секретное: касание открывает/скрывает. Двойной тап для «❤️» тут
             // отключён — иначе одиночное касание ждёт, не будет ли второго, и
             // срабатывает через раз.
-            onTap: m.secret ? _toggleSecret : null,
+            onTap: m.secret || spoiler ? _toggleSecret : null,
             // У вложений, опросов и голосовых свои касания — без задержки.
-            onDoubleTap: m.secret || m.kind != MsgKind.text ? null : _doubleTap,
+            onDoubleTap: m.secret || spoiler || m.kind != MsgKind.text ? null : _doubleTap,
             onLongPress: () {
               context.appRead.tick(HapticKind.medium);
               _openMenu();
@@ -1105,6 +1500,7 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
                     contact: widget.contact,
                     tail: widget.last,
                     showName: widget.first,
+                    onQuoteTap: () => widget.onAction('jumpReply'),
                   ),
                 ),
                 if (m.reaction != null)
@@ -1162,6 +1558,16 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
       ),
     );
 
+    // Подсветка найденного сообщения.
+    tile = AnimatedContainer(
+      duration: const Duration(milliseconds: 300).by(context),
+      decoration: BoxDecoration(
+        color: widget.highlight ? context.accent.a.withValues(alpha: 0.18) : Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: tile,
+    );
+
     if (!widget.animate) return tile;
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
@@ -1192,6 +1598,7 @@ class BubbleBody extends StatelessWidget {
     required this.contact,
     this.tail = true,
     this.showName = false,
+    this.onQuoteTap,
   });
 
   final Message m;
@@ -1200,6 +1607,9 @@ class BubbleBody extends StatelessWidget {
 
   /// В группе — имя автора над первым сообщением подряд.
   final bool showName;
+
+  /// Касание цитаты — перейти к исходному сообщению.
+  final VoidCallback? onQuoteTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1217,6 +1627,11 @@ class BubbleBody extends StatelessWidget {
           Icon(Icons.visibility_off_rounded, size: 12, color: metaColor),
           const SizedBox(width: 3),
         ],
+        if (m.edited)
+          Text(
+            'изм. ',
+            style: TextStyle(color: metaColor, fontSize: 11, fontStyle: FontStyle.italic),
+          ),
         Text(fmtTime(m.time), style: TextStyle(color: metaColor, fontSize: 11)),
         if (mine) ...[
           const SizedBox(width: 3),
@@ -1325,6 +1740,7 @@ class BubbleBody extends StatelessWidget {
     Widget metaOn(Color color) => Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (m.edited) Text('изм. ', style: TextStyle(color: color, fontSize: 11)),
         Text(fmtTime(m.time), style: TextStyle(color: color, fontSize: 11)),
         if (mine) ...[
           const SizedBox(width: 3),
@@ -1334,7 +1750,13 @@ class BubbleBody extends StatelessWidget {
     );
 
     Widget textBlock(String t) {
-      Widget text = Text(t, style: TextStyle(color: fg, fontSize: 16, height: 1.32));
+      final style = TextStyle(color: fg, fontSize: 16, height: 1.32);
+      Widget text = Fmt.has(t)
+          ? Text.rich(
+              TextSpan(children: Fmt.spans(t, style, reveal: m.revealed)),
+              style: style,
+            )
+          : Text(t, style: style);
       // Размывается только текст — пузырь сохраняет свой естественный размер,
       // а время и галочки всегда видны.
       if (m.secret) text = _SecretText(revealed: m.revealed, fg: fg, child: text);
@@ -1354,8 +1776,10 @@ class BubbleBody extends StatelessWidget {
       children: [
         Text.rich(
           TextSpan(
-            text: t,
-            children: [WidgetSpan(child: SizedBox(width: mine ? 66 : 44, height: 12))],
+            children: [
+              ...Fmt.spans(t, TextStyle(color: fg, fontSize: 16), reveal: true),
+              WidgetSpan(child: SizedBox(width: mine ? 66 : 44, height: 12)),
+            ],
           ),
           style: TextStyle(color: fg, fontSize: 16, height: 1.32),
         ),
@@ -1457,12 +1881,40 @@ class BubbleBody extends StatelessWidget {
                   : const EdgeInsets.only(bottom: 2),
               child: author,
             ),
+          if (m.fwd != null)
+            Padding(
+              padding: edge
+                  ? const EdgeInsets.fromLTRB(8, 5, 8, 4)
+                  : const EdgeInsets.only(bottom: 3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.forward_rounded, size: 14, color: metaColor),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      'Переслано от ${m.fwd}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: metaColor,
+                        fontSize: 12.5,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (m.replyTo != null)
             Padding(
               padding: edge ? const EdgeInsets.fromLTRB(8, 6, 8, 0) : EdgeInsets.zero,
               child: SizedBox(
                 width: edge ? mediaW - 16 : null,
-                child: _QuotedReply(m: m.replyTo!, contact: contact, mine: mine),
+                child: GestureDetector(
+                  onTap: onQuoteTap,
+                  child: _QuotedReply(m: m.replyTo!, contact: contact, mine: mine),
+                ),
               ),
             ),
           content,
@@ -1500,11 +1952,16 @@ class _QuotedReply extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final vc = context.vc;
-    final acc = context.accent;
+    final app = context.app;
+    final vc = app.colors;
+    final acc = app.accent;
     final fg = mine ? acc.onAccent : vc.text;
-    final name = m.mine ? 'Вы' : contact.name;
-    final text = m.preview;
+    final name = m.mine
+        ? 'Вы'
+        : m.from != null
+        ? app.memberName(contact.id, m.from!)
+        : contact.name;
+    final text = Fmt.plain(m.preview);
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
@@ -1777,15 +2234,16 @@ class _MessageMenu extends StatelessWidget {
     required this.contact,
     required this.rect,
     required this.onReply,
+    required this.onAction,
   });
 
   final Message m;
   final Contact contact;
   final Rect rect;
   final VoidCallback onReply;
+  final ValueChanged<String> onAction;
 
   static const _barH = 56.0;
-  static const _menuH = 4 * 48.0 + 12;
 
   @override
   Widget build(BuildContext context) {
@@ -1793,11 +2251,12 @@ class _MessageMenu extends StatelessWidget {
     final vc = app.colors;
     final size = MediaQuery.sizeOf(context);
     final pad = MediaQuery.paddingOf(context);
+    final menuH = _ActionsMenu.actionsFor(app, m, contact).length * 48.0 + 12;
 
     // Сдвигаем пузырь, чтобы меню целиком поместилось на экране.
     final bubbleH = min(rect.height, size.height * 0.4);
     final wantTop = rect.top - _barH - 10;
-    final wantBottom = rect.top + bubbleH + 10 + _menuH;
+    final wantBottom = rect.top + bubbleH + 10 + menuH;
     var shift = 0.0;
     if (wantBottom > size.height - pad.bottom - 12) {
       shift = wantBottom - (size.height - pad.bottom - 12);
@@ -1855,7 +2314,13 @@ class _MessageMenu extends StatelessWidget {
                   const SizedBox(height: 10),
                   Padding(
                     padding: hPos,
-                    child: _ActionsMenu(m: m, contact: contact, onReply: onReply, close: close),
+                    child: _ActionsMenu(
+                      m: m,
+                      contact: contact,
+                      onReply: onReply,
+                      onAction: onAction,
+                      close: close,
+                    ),
                   ),
                 ],
               ),
@@ -1923,23 +2388,79 @@ class _ActionsMenu extends StatelessWidget {
     required this.m,
     required this.contact,
     required this.onReply,
+    required this.onAction,
     required this.close,
   });
 
   final Message m;
   final Contact contact;
   final VoidCallback onReply;
+  final ValueChanged<String> onAction;
   final VoidCallback close;
+
+  /// Какие действия доступны: (значок, подпись, код, опасное).
+  static List<(IconData, String, String, bool)> actionsFor(AppState app, Message m, Contact c) {
+    final canWrite = !(c.group?.left ?? false) && !c.blocked;
+    final editable =
+        m.mine &&
+        canWrite &&
+        !m.secret &&
+        (m.kind == MsgKind.text ||
+            (m.att != null && m.text.isNotEmpty && m.kind != MsgKind.note)) &&
+        DateTime.now().difference(m.time).inHours < 48;
+    return [
+      if (canWrite) (Icons.reply_rounded, 'Ответить', 'reply', false),
+      if (m.att?.local ?? false)
+        (Icons.ios_share_rounded, 'Поделиться', 'share', false)
+      else
+        (Icons.copy_rounded, 'Копировать', 'copy', false),
+      (Icons.forward_rounded, 'Переслать', 'forward', false),
+      if (editable) (Icons.edit_rounded, 'Изменить', 'edit', false),
+      if (canWrite)
+        c.pinnedMsg == m.id
+            ? (Icons.push_pin_outlined, 'Открепить', 'pin', false)
+            : (Icons.push_pin_rounded, 'Закрепить', 'pin', false),
+      app.isStarred(c.id, m)
+          ? (Icons.star_rounded, 'Убрать из избранного', 'star', false)
+          : (Icons.star_outline_rounded, 'В избранное', 'star', false),
+      if (m.mine && canWrite) (Icons.delete_forever_rounded, 'Удалить у всех', 'deleteAll', true),
+      (Icons.delete_outline_rounded, 'Удалить у себя', 'delete', true),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final app = context.appRead;
     final vc = app.colors;
 
-    Widget action(IconData icon, String label, VoidCallback onTap, {bool danger = false}) {
+    void run(String code) {
+      close();
+      switch (code) {
+        case 'reply':
+          onReply();
+        case 'share':
+          shareFile(m.att!.path!, text: m.text.isEmpty ? null : m.text);
+        case 'copy':
+          final g = m.geo, p = m.poll;
+          final text = g != null
+              ? '${g.lat}, ${g.lng}'
+              : p != null
+              ? [p.question, for (final o in p.options) '• $o'].join('\n')
+              : m.text;
+          Clipboard.setData(ClipboardData(text: text));
+          showVeilToast(context, 'Скопировано', icon: Icons.copy_rounded);
+        case 'delete':
+          app.deleteMessage(contact.id, m);
+        default:
+          onAction(code);
+      }
+    }
+
+    Widget action((IconData, String, String, bool) a) {
+      final (icon, label, code, danger) = a;
       final color = danger ? VeilColors.danger : vc.text;
       return InkWell(
-        onTap: onTap,
+        onTap: () => run(code),
         child: SizedBox(
           height: 48,
           child: Padding(
@@ -1976,44 +2497,10 @@ class _ActionsMenu extends StatelessWidget {
           color: vc.elevated.withValues(alpha: 0.94),
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: SizedBox(
-            width: 220,
+            width: 230,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [
-                action(Icons.reply_rounded, 'Ответить', () {
-                  close();
-                  onReply();
-                }),
-                if (m.att?.local ?? false)
-                  action(Icons.ios_share_rounded, 'Поделиться', () {
-                    close();
-                    shareFile(m.att!.path!, text: m.text.isEmpty ? null : m.text);
-                  })
-                else
-                  action(Icons.copy_rounded, 'Копировать', () {
-                    final g = m.geo, p = m.poll;
-                    final text = g != null
-                        ? '${g.lat}, ${g.lng}'
-                        : p != null
-                        ? [p.question, for (final o in p.options) '• $o'].join('\n')
-                        : m.text;
-                    Clipboard.setData(ClipboardData(text: text));
-                    close();
-                    showVeilToast(context, 'Скопировано', icon: Icons.copy_rounded);
-                  }),
-                action(Icons.push_pin_outlined, 'Закрепить', () {
-                  close();
-                  showVeilToast(
-                    context,
-                    'Закрепление сообщений — скоро',
-                    icon: Icons.push_pin_rounded,
-                  );
-                }),
-                action(Icons.delete_outline_rounded, 'Удалить у себя', () {
-                  app.deleteMessage(contact.id, m);
-                  close();
-                }, danger: true),
-              ],
+              children: [for (final a in actionsFor(app, m, contact)) action(a)],
             ),
           ),
         ),
@@ -2030,6 +2517,7 @@ class _SendMicButton extends StatelessWidget {
     required this.recording,
     required this.note,
     required this.onSend,
+    this.onSendMenu,
     required this.onToggleMode,
     required this.onRecordStart,
     required this.onRecordEnd,
@@ -2042,6 +2530,9 @@ class _SendMicButton extends StatelessWidget {
   /// Режим видеосообщения (камера) вместо голосового (микрофон).
   final bool note;
   final VoidCallback onSend;
+
+  /// Долгое нажатие на «отправить» — варианты (без звука).
+  final VoidCallback? onSendMenu;
 
   /// Короткое нажатие — переключить микрофон ↔ камеру (как в Telegram).
   final VoidCallback onToggleMode;
@@ -2085,7 +2576,15 @@ class _SendMicButton extends StatelessWidget {
       ),
     );
 
-    if (hasText) return Pressable(scale: 0.85, onTap: onSend, haptic: false, child: button);
+    if (hasText) {
+      return Pressable(
+        scale: 0.85,
+        onTap: onSend,
+        onLongPress: onSendMenu,
+        haptic: false,
+        child: button,
+      );
+    }
     // Отпускание пальца ловим и «сырыми» событиями: если жест прервался
     // (например, всплыл системный запрос), запись всё равно остановится.
     return Listener(
@@ -2192,17 +2691,31 @@ class _PulsingDotState extends State<_PulsingDot> with SingleTickerProviderState
 }
 
 class _ReplyPreview extends StatelessWidget {
-  const _ReplyPreview({required this.m, required this.contact, required this.onClose});
+  const _ReplyPreview({
+    required this.m,
+    required this.contact,
+    required this.onClose,
+    this.editing = false,
+  });
 
   final Message m;
   final Contact contact;
   final VoidCallback onClose;
 
+  /// Это не ответ, а редактирование своего сообщения.
+  final bool editing;
+
   @override
   Widget build(BuildContext context) {
-    final vc = context.vc;
-    final acc = context.accent;
-    final text = m.preview;
+    final app = context.app;
+    final vc = app.colors;
+    final acc = app.accent;
+    final text = Fmt.plain(m.preview);
+    final title = editing
+        ? 'Редактирование'
+        : m.mine
+        ? 'Ответ себе'
+        : 'Ответ: ${m.from != null ? app.memberName(contact.id, m.from!) : contact.name}';
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Glass(
@@ -2219,14 +2732,14 @@ class _ReplyPreview extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            const GradientIcon(Icons.reply_rounded, size: 20),
+            GradientIcon(editing ? Icons.edit_rounded : Icons.reply_rounded, size: 20),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    m.mine ? 'Ответ себе' : 'Ответ: ${contact.name}',
+                    title,
                     style: TextStyle(color: acc.a, fontWeight: FontWeight.w700, fontSize: 13),
                   ),
                   Text(

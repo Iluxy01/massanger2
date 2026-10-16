@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import '../core/relay_pool.dart';
 import '../models/models.dart';
 import '../theme/palette.dart';
 import '../utils.dart';
+import '../widgets/rich_text.dart';
 import 'live.dart';
 import 'mock_data.dart';
 
@@ -86,6 +88,12 @@ class AppState extends ChangeNotifier {
   final Map<String, List<Message>> _messages = {};
   final Set<String> pinned = {};
   final Set<String> muted = {};
+
+  /// Чаты в архиве (не показываются в общем списке).
+  final Set<String> archived = {};
+
+  /// Избранные сообщения: «чат|id».
+  final Set<String> starred = {};
   final Set<String> typing = {};
 
   /// Кто именно печатает в группе (id группы → ключ участника).
@@ -137,8 +145,15 @@ class AppState extends ChangeNotifier {
   }
 
   /// Чаты: закреплённые сверху, остальные по времени последнего сообщения.
-  List<Contact> get chatList {
-    final list = contacts.where((c) => lastMessage(c.id) != null).toList();
+  /// Архивные — отдельно ([archivedChats]).
+  List<Contact> get chatList => _chats(archived: false);
+
+  List<Contact> get archivedChats => _chats(archived: true);
+
+  List<Contact> _chats({required bool archived}) {
+    final list = contacts
+        .where((c) => lastMessage(c.id) != null && this.archived.contains(c.id) == archived)
+        .toList();
     list.sort((a, b) {
       final pa = pinned.contains(a.id), pb = pinned.contains(b.id);
       if (pa != pb) return pa ? -1 : 1;
@@ -253,6 +268,8 @@ class AppState extends ChangeNotifier {
     if (wifiHintShown) 'wifiHint': true,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
+    if (archived.isNotEmpty) 'archived': archived.toList(),
+    if (starred.isNotEmpty) 'starred': starred.toList(),
   };
 
   @visibleForTesting
@@ -279,6 +296,12 @@ class AppState extends ChangeNotifier {
     muted
       ..clear()
       ..addAll((s['muted'] as List? ?? []).cast<String>());
+    archived
+      ..clear()
+      ..addAll((s['archived'] as List? ?? []).cast<String>());
+    starred
+      ..clear()
+      ..addAll((s['starred'] as List? ?? []).cast<String>());
     applyScreenshotProtection();
   }
 
@@ -498,6 +521,130 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// Изменить текст своего сообщения (подпись к вложению — тоже).
+  void editMessage(String chatId, Message m, String text) {
+    if (!m.mine || text.trim().isEmpty || text == m.text) return;
+    m
+      ..text = text
+      ..edited = true;
+    live?.editMessage(chatId, m);
+    notifyChanged();
+  }
+
+  /// Удалить своё сообщение у всех (у собеседника или у всей группы).
+  void deleteForAll(String chatId, Message m) {
+    if (!m.mine) return;
+    live?.deleteForAll(chatId, m);
+    final c = contact(chatId);
+    if (c?.pinnedMsg == m.id) pinMessage(chatId, null);
+    deleteMessage(chatId, m);
+  }
+
+  /// Закрепить сообщение вверху чата (null — открепить) — у всех.
+  void pinMessage(String chatId, Message? m) {
+    final c = contact(chatId);
+    if (c == null) return;
+    c.pinnedMsg = m?.id;
+    live?.pinMessage(c);
+    notifyChanged();
+  }
+
+  /// Закреплённое сообщение чата.
+  Message? pinnedOf(String chatId) {
+    final id = contact(chatId)?.pinnedMsg;
+    if (id == null) return null;
+    for (final m in messagesOf(chatId)) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  bool isStarred(String chatId, Message m) => starred.contains('$chatId|${m.id}');
+
+  void toggleStar(String chatId, Message m) {
+    final k = '$chatId|${m.id}';
+    starred.contains(k) ? starred.remove(k) : starred.add(k);
+    _saveSettings();
+  }
+
+  /// Избранное: (чат, сообщение), новые сверху.
+  List<(Contact, Message)> get starredMessages {
+    final out = <(Contact, Message)>[];
+    for (final k in starred) {
+      final i = k.indexOf('|');
+      if (i < 0) continue;
+      final c = contact(k.substring(0, i));
+      if (c == null) continue;
+      final id = k.substring(i + 1);
+      for (final m in messagesOf(c.id)) {
+        if (m.id == id) out.add((c, m));
+      }
+    }
+    out.sort((a, b) => b.$2.time.compareTo(a.$2.time));
+    return out;
+  }
+
+  void toggleArchive(String id) {
+    archived.contains(id) ? archived.remove(id) : archived.add(id);
+    pinned.remove(id);
+    _saveSettings();
+  }
+
+  /// Пометить чат непрочитанным (напоминание себе).
+  void markUnread(String id) {
+    if ((unread[id] ?? 0) > 0) return;
+    unread[id] = 1;
+    notifyChanged();
+  }
+
+  /// Переслать сообщение в другой чат. Файл отправляется заново (свежая копия
+  /// на ретрансляторах). null — файла на телефоне нет (сначала скачать).
+  Future<Message?> forward(String fromChat, Message m, String toChat) async {
+    final origin = m.fwd ?? (m.mine ? (profile?.name ?? 'Я') : _authorName(fromChat, m));
+    final att = m.att;
+    if (att != null) {
+      final path = att.path;
+      if (path != null && (demo || File(path).existsSync())) {
+        final copy = await sendFile(
+          toChat,
+          kind: m.kind,
+          path: path,
+          name: att.name,
+          mime: att.mime,
+          size: att.size,
+          caption: m.text,
+          width: att.width,
+          height: att.height,
+          duration: att.duration,
+          thumb: att.thumb,
+          wave: att.wave,
+          fwd: origin,
+        );
+        return copy;
+      }
+      // Файла на телефоне нет (ещё не скачан) — пересылать нечего.
+      return null;
+    }
+    final poll = m.poll;
+    return send(
+      toChat,
+      m.text,
+      kind: m.kind,
+      geo: m.geo,
+      poll: poll == null
+          ? null
+          : Poll(question: poll.question, options: [...poll.options], multi: poll.multi),
+      voiceSeconds: m.voiceSeconds,
+      fwd: origin,
+    );
+  }
+
+  String _authorName(String chatId, Message m) {
+    final from = m.from;
+    if (from != null) return memberName(chatId, from);
+    return contact(chatId)?.name ?? 'Кто-то';
+  }
+
   void react(String chatId, Message m, String? emoji) {
     m.reaction = m.reaction == emoji ? null : emoji;
     live?.react(chatId, m);
@@ -665,8 +812,9 @@ class AppState extends ChangeNotifier {
   /// Строка для списка чатов: в группе — с именем автора.
   String previewOf(String chatId, Message m) {
     if (m.kind == MsgKind.event) return eventText(chatId, m);
-    if (!m.mine && m.from != null) return '${memberName(chatId, m.from!)}: ${m.preview}';
-    return m.preview;
+    final text = Fmt.plain(m.preview);
+    if (!m.mine && m.from != null) return '${memberName(chatId, m.from!)}: $text';
+    return text;
   }
 
   GroupMember _meAsMember() => GroupMember(
@@ -809,6 +957,7 @@ class AppState extends ChangeNotifier {
     String? thumb,
     List<int>? wave,
     Message? replyTo,
+    String? fwd,
   }) async {
     final id = newMessageId();
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
@@ -821,6 +970,7 @@ class AppState extends ChangeNotifier {
       id: id,
       kind: kind,
       replyTo: replyTo,
+      fwd: fwd,
       att: Attachment(
         name: name,
         mime: mime,

@@ -788,6 +788,37 @@ class Live {
       case Payload.ttl:
         c.disappearing = (p.integer('m') ?? 0).clamp(0, 60 * 24 * 30);
         await saveContact(c);
+      case Payload.edit:
+        // Править можно только своё: в группе — автор, в личном — собеседник.
+        final id = p.str('id'), text = p.str('text');
+        if (id == null || text == null) return;
+        for (final m in app.messagesOf(chat)) {
+          if (m.id == id && !m.mine && (!group || m.from == sender)) {
+            m
+              ..text = text.length > 20000 ? text.substring(0, 20000) : text
+              ..edited = true;
+            await saveMessage(chat, m);
+          }
+        }
+      case Payload.delete:
+        final id = p.str('id');
+        final list = app.messagesOf(chat);
+        for (final m in [...list]) {
+          if (m.id == id && !m.mine && (!group || m.from == sender)) {
+            list.remove(m);
+            await store.deleteMessage(m.id);
+            await media.deleteFile(m);
+            if (c.pinnedMsg == m.id) {
+              c.pinnedMsg = null;
+              await saveContact(c);
+            }
+          }
+        }
+      case Payload.pin:
+        final id = p.str('id');
+        if (id != null && !app.messagesOf(chat).any((m) => m.id == id)) return;
+        c.pinnedMsg = id;
+        await saveContact(c);
       case Payload.typing:
         app.typing.add(chat);
         if (group) app.typingBy[chat] = sender;
@@ -1107,6 +1138,29 @@ class Live {
     // В большой группе «печатает» не рассылаем — лишняя работа для батареи.
     if (targets(chat).length > 8) return;
     _toChat(chat, Payload(Payload.typing), ephemeral: true);
+  }
+
+  /// Изменить своё сообщение. Ещё не доставленное — перезаписываем в очереди,
+  /// чтобы друг сразу получил новый текст.
+  Future<void> editMessage(String chat, Message m) async {
+    await saveMessage(chat, m);
+    if (m.status.index < MsgStatus.delivered.index && (m.att == null || m.att!.uploaded)) {
+      await store.dequeueMessages([m.id, for (final to in targets(chat)) '${m.id}@$to']);
+      await queueMessage(chat, m);
+    }
+    _toChat(chat, Payload(Payload.edit, {'id': m.id, 'text': m.text}));
+  }
+
+  /// Удалить своё сообщение у всех.
+  Future<void> deleteForAll(String chat, Message m) async {
+    await store.dequeueMessages([m.id, for (final to in targets(chat)) '${m.id}@$to']);
+    _toChat(chat, Payload(Payload.delete, {'id': m.id}));
+  }
+
+  /// Закрепить сообщение в чате (null — открепить) — у всех.
+  Future<void> pinMessage(Contact c) async {
+    await saveContact(c);
+    _toChat(c.id, Payload(Payload.pin, {if (c.pinnedMsg != null) 'id': c.pinnedMsg}));
   }
 
   Future<void> react(String chat, Message m) async {

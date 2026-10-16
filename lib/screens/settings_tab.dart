@@ -8,6 +8,7 @@ import '../theme/palette.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
+import 'favorites_screen.dart';
 import 'lock_screen.dart';
 import '../widgets/visual.dart';
 import 'backup_screens.dart';
@@ -101,6 +102,14 @@ class SettingsTab extends StatelessWidget {
                   title: 'Мой QR-код',
                   subtitle: 'Чтобы друг добавил тебя',
                   onTap: () => Navigator.of(context).push(AddFriendScreen.route()),
+                ),
+                _Tile(
+                  icon: Icons.star_rounded,
+                  title: 'Избранное',
+                  subtitle: app.starred.isEmpty
+                      ? 'Важные сообщения из всех чатов'
+                      : 'Сообщений: ${app.starredMessages.length}',
+                  onTap: () => Navigator.of(context).push(FavoritesScreen.route()),
                 ),
               ],
             ),

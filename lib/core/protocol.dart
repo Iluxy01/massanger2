@@ -12,6 +12,10 @@ import 'dart:convert';
 /// t = hello  «я тебя добавил»   {p}
 /// t = prof   обновился профиль  {p}
 /// t = ttl    исчезающие сообщ.  {m}
+/// t = edit   правка своего     {id, text}
+/// t = del    удалить у всех    {id}
+/// t = pin    закрепить в чате  {id?} (без id — открепить)
+/// В группе у любого сигнала есть g (id группы), у сообщения — ещё gi (состав).
 /// t = typ    печатает (эфемерно)
 /// t = ping   я в сети (эфемерно)
 class Payload {
@@ -31,6 +35,9 @@ class Payload {
   static const vote = 'vote';
   static const need = 'need';
   static const have = 'have';
+  static const edit = 'edit';
+  static const delete = 'del';
+  static const pin = 'pin';
 
   Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
 

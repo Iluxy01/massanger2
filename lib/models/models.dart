@@ -106,6 +106,9 @@ class Contact {
   /// часть ретрансляторов бывает недоступна.
   List<String> reach = [];
 
+  /// Закреплённое сообщение чата (id).
+  String? pinnedMsg;
+
   /// Группа (а не человек): участники, администратор. id группы — `g_…`.
   GroupInfo? group;
   bool get isGroup => group != null;
@@ -136,6 +139,7 @@ class Contact {
     if (reach.isNotEmpty) 'rl': reach,
     if (lastSeen != null) 'seen': lastSeen!.millisecondsSinceEpoch,
     if (group != null) 'grp': group!.toJson(),
+    if (pinnedMsg != null) 'pm': pinnedMsg,
   };
 
   static Contact fromJson(Map<String, dynamic> j) =>
@@ -154,7 +158,8 @@ class Contact {
         ..blocked = j['blocked'] == true
         ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0
         ..reach = cleanRelays(j['rl'])
-        ..group = GroupInfo.fromJson(j['grp']);
+        ..group = GroupInfo.fromJson(j['grp'])
+        ..pinnedMsg = j['pm'] as String?;
 }
 
 /// Участник группы — как его видят остальные.

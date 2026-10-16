@@ -124,6 +124,8 @@ class _ChatsTabState extends State<ChatsTab> {
             ),
             if (!_searching && online.isNotEmpty)
               SliverToBoxAdapter(child: _OnlineRow(contacts: online)),
+            if (!_searching && app.archivedChats.isNotEmpty)
+              SliverToBoxAdapter(child: _ArchiveRow(count: app.archivedChats.length)),
             if (chats.isEmpty)
               SliverFillRemaining(hasScrollBody: false, child: _EmptyState(searching: q.isNotEmpty))
             else
@@ -584,11 +586,31 @@ class _ChatTile extends StatelessWidget {
                   Navigator.pop(ctx);
                 },
               ),
+              if ((app.unread[contact.id] ?? 0) > 0)
+                _SheetAction(
+                  icon: Icons.mark_chat_read_rounded,
+                  label: 'Отметить прочитанным',
+                  onTap: () {
+                    app.markRead(contact.id);
+                    Navigator.pop(ctx);
+                  },
+                )
+              else
+                _SheetAction(
+                  icon: Icons.mark_chat_unread_rounded,
+                  label: 'Пометить непрочитанным',
+                  onTap: () {
+                    app.markUnread(contact.id);
+                    Navigator.pop(ctx);
+                  },
+                ),
               _SheetAction(
-                icon: Icons.mark_chat_read_rounded,
-                label: 'Отметить прочитанным',
+                icon: app.archived.contains(contact.id)
+                    ? Icons.unarchive_rounded
+                    : Icons.archive_rounded,
+                label: app.archived.contains(contact.id) ? 'Вернуть из архива' : 'В архив',
                 onTap: () {
-                  app.markRead(contact.id);
+                  app.toggleArchive(contact.id);
                   Navigator.pop(ctx);
                 },
               ),
@@ -868,6 +890,84 @@ class _EmptyState extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Строка «Архив (3)» над списком чатов.
+class _ArchiveRow extends StatelessWidget {
+  const _ArchiveRow({required this.count});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    return Pressable(
+      scale: 0.98,
+      onTap: () => Navigator.of(context).push(ArchiveScreen.route()),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 2),
+        child: Row(
+          children: [
+            Container(
+              width: 58,
+              height: 58,
+              decoration: BoxDecoration(color: vc.surface, shape: BoxShape.circle),
+              child: Icon(Icons.archive_rounded, color: vc.textDim),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                'Архив',
+                style: TextStyle(color: vc.text, fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+            Text('$count', style: TextStyle(color: vc.textDim)),
+            const SizedBox(width: 6),
+            Icon(Icons.chevron_right_rounded, color: vc.textDim),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Архивные чаты.
+class ArchiveScreen extends StatelessWidget {
+  const ArchiveScreen({super.key});
+
+  static Route<void> route() => MaterialPageRoute(builder: (_) => const ArchiveScreen());
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final chats = app.archivedChats;
+    return Scaffold(
+      backgroundColor: vc.bg,
+      appBar: AppBar(
+        backgroundColor: vc.bg,
+        foregroundColor: vc.text,
+        elevation: 0,
+        title: const Text('Архив'),
+      ),
+      body: chats.isEmpty
+          ? Center(
+              child: Text('Архив пуст', style: TextStyle(color: vc.textDim)),
+            )
+          : ListView(
+              padding: const EdgeInsets.only(bottom: 40),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Text(
+                    'Чаты в архиве не мешают в общем списке. Вернуть — долгое нажатие.',
+                    style: TextStyle(color: vc.textDim, fontSize: 13),
+                  ),
+                ),
+                for (final c in chats) _ChatTile(contact: c),
+              ],
+            ),
     );
   }
 }
