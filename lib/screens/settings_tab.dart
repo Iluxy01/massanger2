@@ -112,6 +112,31 @@ class SettingsTab extends StatelessWidget {
                       : 'Сообщений: ${app.starredMessages.length}',
                   onTap: () => Navigator.of(context).push(FavoritesScreen.route()),
                 ),
+                _Tile(
+                  icon: Icons.switch_account_rounded,
+                  title: 'Несколько профилей',
+                  subtitle: 'Работа и личное на одном телефоне',
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      gradient: context.accent.gradient,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      'Veil+ · скоро',
+                      style: TextStyle(
+                        color: context.accent.onAccent,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  onTap: () => showVeilToast(
+                    context,
+                    'Несколько профилей появятся в Veil+ — следи за обновлениями',
+                    icon: Icons.switch_account_rounded,
+                  ),
+                ),
               ],
             ),
 

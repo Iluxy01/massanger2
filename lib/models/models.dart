@@ -21,6 +21,9 @@ enum MsgKind {
 
   /// Событие в группе («создал группу», «добавил Катю», «вышел»).
   event,
+
+  /// Общий список дел: пункты отмечают все участники чата.
+  todo,
 }
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
@@ -415,6 +418,77 @@ class GeoPoint {
 }
 
 /// Опрос. Голоса: кто → какие варианты (индексы).
+/// Пункт общего списка.
+class TodoItem {
+  TodoItem({required this.id, required this.text, this.done = false, this.by});
+
+  /// Свой id у пункта — чтобы добавления с разных телефонов не путались.
+  final String id;
+  final String text;
+  bool done;
+
+  /// Кто отметил (ключ).
+  String? by;
+
+  Map<String, dynamic> toJson() => {
+    'i': id,
+    't': text,
+    if (done) 'd': true,
+    if (by != null) 'b': by,
+  };
+
+  static TodoItem? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final i = o['i'], t = o['t'];
+    if (i is! String || t is! String || i.isEmpty || i.length > 16 || t.trim().isEmpty) return null;
+    return TodoItem(
+      id: i,
+      text: t.length > 200 ? t.substring(0, 200) : t,
+      done: o['d'] == true,
+      by: o['b'] as String?,
+    );
+  }
+}
+
+/// Общий список дел (покупки, сборы в поход…).
+class Todo {
+  Todo({required this.title, required this.items});
+
+  static const maxItems = 50;
+
+  final String title;
+  final List<TodoItem> items;
+
+  int get done => items.where((i) => i.done).length;
+
+  TodoItem? item(String id) {
+    for (final i in items) {
+      if (i.id == id) return i;
+    }
+    return null;
+  }
+
+  /// [wire] — для отправки: без отметок «кто».
+  Map<String, dynamic> toJson({bool wire = false}) => {
+    't': title,
+    'i': [
+      for (final i in items) wire ? {'i': i.id, 't': i.text, if (i.done) 'd': true} : i.toJson(),
+    ],
+  };
+
+  static Todo? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final t = o['t'], raw = o['i'];
+    if (t is! String || raw is! List) return null;
+    final seen = <String>{};
+    final items = [
+      for (final x in raw.take(maxItems))
+        if (TodoItem.fromJson(x) case final i? when seen.add(i.id)) i,
+    ];
+    return Todo(title: t.length > 120 ? t.substring(0, 120) : t, items: items);
+  }
+}
+
 class Poll {
   Poll({
     required this.question,
@@ -498,6 +572,9 @@ class Message {
     this.ev,
     this.once = false,
     this.opened = false,
+    this.openAt,
+    this.sendAt,
+    this.todo,
   });
 
   final String id;
@@ -524,6 +601,18 @@ class Message {
   /// Одноразовое уже открыли (у получателя — файл стёрт; у отправителя —
   /// друг посмотрел).
   bool opened;
+
+  /// Капсула времени: у получателя откроется не раньше этого момента.
+  final DateTime? openAt;
+
+  /// Капсула ещё закрыта.
+  bool get sealed => openAt != null && DateTime.now().isBefore(openAt!);
+
+  /// Отложенная отправка: уйдёт в это время (пока не ушло).
+  DateTime? sendAt;
+
+  /// Общий список дел.
+  final Todo? todo;
   final DateTime time;
   MsgStatus status;
   final Message? replyTo;
@@ -553,6 +642,7 @@ class Message {
   String get preview {
     final caption = text.trim();
     String with_(String label) => caption.isEmpty ? label : '$label · $caption';
+    if (sealed && !mine) return '⏳ Капсула времени';
     if (once) {
       return switch (kind) {
         MsgKind.video => '🔥 Одноразовое видео',
@@ -571,6 +661,7 @@ class Message {
       MsgKind.geo => '📍 Геопозиция',
       MsgKind.poll => '📊 ${poll?.question ?? 'Опрос'}',
       MsgKind.event => text,
+      MsgKind.todo => '☑️ ${todo?.title ?? 'Список'}',
     };
   }
 
@@ -596,6 +687,9 @@ class Message {
     if (ev != null) 'ev': ev,
     if (once) 'once': true,
     if (opened) 'op': true,
+    if (openAt != null) 'oa': openAt!.millisecondsSinceEpoch,
+    if (sendAt != null) 'sa': sendAt!.millisecondsSinceEpoch,
+    if (todo != null) 'todo': todo!.toJson(),
   };
 
   static MsgKind kindOf(Object? name) =>
@@ -622,5 +716,8 @@ class Message {
     ev: j['ev'] as String?,
     once: j['once'] == true,
     opened: j['op'] == true,
+    openAt: j['oa'] is num ? DateTime.fromMillisecondsSinceEpoch((j['oa'] as num).toInt()) : null,
+    sendAt: j['sa'] is num ? DateTime.fromMillisecondsSinceEpoch((j['sa'] as num).toInt()) : null,
+    todo: Todo.fromJson(j['todo']),
   );
 }

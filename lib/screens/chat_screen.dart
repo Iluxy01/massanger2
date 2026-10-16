@@ -17,6 +17,7 @@ import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
 import '../widgets/once_media.dart';
+import '../widgets/todo_list.dart';
 import '../widgets/rich_text.dart';
 import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
@@ -236,6 +237,8 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       case 'deleteAll':
         _app.deleteForAll(c.id, m);
+      case 'sendNow':
+        _app.sendNow(c.id, m);
       case 'jumpReply':
         final r = m.replyTo;
         if (r != null) _jumpTo(r.id);
@@ -387,7 +390,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _sendMenu() async {
     _app.tick(HapticKind.medium);
     final vc = _app.colors;
-    final silent = await showModalBottomSheet<bool>(
+    Widget option(BuildContext ctx, IconData icon, String title, String sub, String code) =>
+        ListTile(
+          leading: GradientIcon(icon, size: 24),
+          title: Text(title, style: TextStyle(color: vc.text)),
+          subtitle: Text(sub, style: TextStyle(color: vc.textDim, fontSize: 12.5)),
+          onTap: () => Navigator.pop(ctx, code),
+        );
+    final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (ctx) => SafeArea(
@@ -397,20 +407,62 @@ class _ChatScreenState extends State<ChatScreen> {
             radius: 24,
             color: vc.elevated,
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: ListTile(
-              leading: const GradientIcon(Icons.notifications_off_rounded, size: 24),
-              title: Text('Отправить без звука', style: TextStyle(color: vc.text)),
-              subtitle: Text(
-                'Придёт тихо, без уведомления',
-                style: TextStyle(color: vc.textDim, fontSize: 12.5),
-              ),
-              onTap: () => Navigator.pop(ctx, true),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                option(
+                  ctx,
+                  Icons.notifications_off_rounded,
+                  'Отправить без звука',
+                  'Придёт тихо, без уведомления',
+                  'silent',
+                ),
+                option(
+                  ctx,
+                  Icons.schedule_send_rounded,
+                  'Отправить позже',
+                  'Уйдёт само в выбранное время — даже если Veil закрыт',
+                  'later',
+                ),
+                option(
+                  ctx,
+                  Icons.hourglass_top_rounded,
+                  'Капсула времени',
+                  'Придёт сейчас, но откроется у друга только в выбранный день',
+                  'capsule',
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
-    if (silent == true && mounted) _send(silent: true);
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case 'silent':
+        _send(silent: true);
+      case 'later':
+        final at = await pickWhen(context, title: 'Когда отправить?');
+        if (at != null && mounted) _sendSpecial(sendAt: at);
+      case 'capsule':
+        final at = await pickWhen(context, title: 'Когда открыть?', far: true);
+        if (at != null && mounted) _sendSpecial(openAt: at);
+    }
+  }
+
+  /// Отложенная отправка или капсула времени.
+  void _sendSpecial({DateTime? sendAt, DateTime? openAt}) {
+    final text = _input.text.trim();
+    if (text.isEmpty) return;
+    _app.send(c.id, text, replyTo: _replyTo, sendAt: sendAt, openAt: openAt);
+    _input.clear();
+    setState(() => _replyTo = null);
+    showVeilToast(
+      context,
+      sendAt != null ? 'Отправится ${fmtWhen(sendAt)}' : 'Откроется у друга ${fmtWhen(openAt!)}',
+      icon: sendAt != null ? Icons.schedule_send_rounded : Icons.hourglass_top_rounded,
+    );
+    _toBottom();
   }
 
   Future<void> _startNote() async {
@@ -606,6 +658,8 @@ class _ChatScreenState extends State<ChatScreen> {
         await flows.location();
       case 'poll':
         await flows.poll();
+      case 'todo':
+        await flows.todo();
     }
     if (!mounted) return;
     if (_replyTo != null && _app.lastMessage(c.id)?.replyTo == _replyTo) {
@@ -1685,6 +1739,14 @@ class BubbleBody extends StatelessWidget {
           Icon(Icons.visibility_off_rounded, size: 12, color: metaColor),
           const SizedBox(width: 3),
         ],
+        if (m.sendAt != null) ...[
+          Icon(Icons.schedule_rounded, size: 12, color: metaColor),
+          const SizedBox(width: 3),
+          Text('${fmtWhen(m.sendAt!)} · ', style: TextStyle(color: metaColor, fontSize: 11)),
+        ],
+        if (m.openAt != null && mine) ...[
+          Text('⏳ ', style: TextStyle(color: metaColor, fontSize: 11)),
+        ],
         if (m.edited)
           Text(
             'изм. ',
@@ -1744,7 +1806,7 @@ class BubbleBody extends StatelessWidget {
         : null;
 
     // Видеосообщение — «квадратик» без пузыря.
-    if (m.kind == MsgKind.note && m.att != null && !m.once) {
+    if (m.kind == MsgKind.note && m.att != null && !m.once && !(m.sealed && !mine)) {
       return Column(
         crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1854,6 +1916,10 @@ class BubbleBody extends StatelessWidget {
     final hasCaption = m.text.trim().isNotEmpty;
     Widget content;
     switch (m.kind) {
+      case _ when m.sealed && !mine:
+        content = CapsuleSealed(m: m, fg: fg, meta: meta);
+      case MsgKind.todo when m.todo != null:
+        content = TodoContent(m: m, chatId: contact.id, fg: fg, meta: meta);
       case _ when m.once && m.att != null:
         content = OnceContent(m: m, chatId: contact.id, fg: fg, meta: meta);
       case MsgKind.voice:
@@ -2475,15 +2541,18 @@ class _ActionsMenu extends StatelessWidget {
         (m.kind == MsgKind.text ||
             (m.att != null && m.text.isNotEmpty && m.kind != MsgKind.note)) &&
         DateTime.now().difference(m.time).inHours < 48;
+    final sealed = m.sealed && !m.mine;
     return [
+      if (m.mine && m.sendAt != null) (Icons.send_rounded, 'Отправить сейчас', 'sendNow', false),
       if (canWrite) (Icons.reply_rounded, 'Ответить', 'reply', false),
-      if (m.once)
+      if (m.once || sealed)
         ...[]
       else if (m.att?.local ?? false)
         (Icons.ios_share_rounded, 'Поделиться', 'share', false)
       else
         (Icons.copy_rounded, 'Копировать', 'copy', false),
-      if (!m.once) (Icons.forward_rounded, 'Переслать', 'forward', false),
+      if (!m.once && !sealed && m.kind != MsgKind.todo)
+        (Icons.forward_rounded, 'Переслать', 'forward', false),
       if (editable) (Icons.edit_rounded, 'Изменить', 'edit', false),
       if (canWrite)
         c.pinnedMsg == m.id
@@ -2876,6 +2945,7 @@ class _AttachMenu extends StatelessWidget {
     (Icons.insert_drive_file_rounded, 'Файл', 'file', [Color(0xFF00C896), Color(0xFF0098E6)]),
     (Icons.location_on_rounded, 'Место', 'geo', [Color(0xFFFFC145), Color(0xFFFF7A45)]),
     (Icons.poll_rounded, 'Опрос', 'poll', [Color(0xFFB06AB3), Color(0xFF4568DC)]),
+    (Icons.checklist_rounded, 'Список', 'todo', [Color(0xFF11998E), Color(0xFF38EF7D)]),
   ];
 
   @override
@@ -2894,7 +2964,7 @@ class _AttachMenu extends StatelessWidget {
         child: Pressable(
           onTap: () => onPick(key),
           child: SizedBox(
-            width: 72,
+            width: 70,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -2928,12 +2998,12 @@ class _AttachMenu extends StatelessWidget {
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [for (var i = 0; i < 3; i++) item(i)],
+              children: [for (var i = 0; i < 4; i++) item(i)],
             ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [for (var i = 3; i < 6; i++) item(i)],
+              children: [for (var i = 4; i < _items.length; i++) item(i)],
             ),
             const SizedBox(height: 8),
             Padding(

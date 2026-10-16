@@ -687,6 +687,8 @@ class Live {
         final att = Attachment.fromJson(p.data['att'])?..path = null;
         final geo = GeoPoint.fromJson(p.data['geo']);
         final poll = Poll.fromJson(p.data['poll'])?..votes.clear();
+        final todo = Todo.fromJson(p.data['todo']);
+        final oa = p.integer('oa');
         final valid = switch (kind) {
           MsgKind.text => true,
           MsgKind.voice ||
@@ -697,6 +699,7 @@ class Live {
           MsgKind.geo => geo != null,
           MsgKind.poll => poll != null,
           MsgKind.event => group,
+          MsgKind.todo => todo != null && todo.items.isNotEmpty,
         };
         if (!valid) {
           log('  непонятное сообщение ${short(id)} (${p.data['k']}) — пропущено');
@@ -752,6 +755,11 @@ class Live {
           fwd: fwd == null ? null : _clip(fwd, 'Кто-то', 60),
           ev: ev,
           once: p.flag('once') && att != null,
+          todo: todo,
+          // Капсула времени — не дальше, чем на 10 лет вперёд.
+          openAt: oa == null || oa > DateTime.now().millisecondsSinceEpoch + 315360000000
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(oa),
         );
         var at = list.length;
         while (at > 0 && list[at - 1].time.isAfter(m.time)) {
@@ -822,6 +830,7 @@ class Live {
         for (final m in app.messagesOf(chat)) {
           if (m.mine && ids.contains(m.id) && m.status.index < st.index) {
             m.status = st;
+            m.sendAt = null;
             await saveMessage(chat, m);
           }
         }
@@ -861,6 +870,29 @@ class Live {
               await saveContact(c);
             }
           }
+        }
+      case Payload.todo:
+        // Общий список: отметить пункт или добавить новый — может любой в чате.
+        final id = p.str('id'), op = p.str('op'), item = p.str('i');
+        if (id == null || item == null || item.length > 16) return;
+        for (final m in app.messagesOf(chat)) {
+          final todo = m.todo;
+          if (m.id != id || todo == null) continue;
+          if (op == 't') {
+            final it = todo.item(item);
+            if (it == null) continue;
+            it
+              ..done = p.flag('on')
+              ..by = p.flag('on') ? sender : null;
+          } else if (op == 'a') {
+            final text = p.str('tx')?.trim() ?? '';
+            if (text.isEmpty || todo.item(item) != null) continue;
+            if (todo.items.length >= Todo.maxItems) continue;
+            todo.items.add(
+              TodoItem(id: item, text: text.length > 200 ? text.substring(0, 200) : text),
+            );
+          }
+          await saveMessage(chat, m);
         }
       case Payload.opened:
         // Друг открыл наше одноразовое — отмечаем «просмотрено».
@@ -975,6 +1007,8 @@ class Live {
     if (m.edited) 'ed': true,
     if (_silent.contains(m.id)) 'sl': true,
     if (m.once) 'once': true,
+    if (m.openAt != null) 'oa': m.openAt!.millisecondsSinceEpoch,
+    if (m.todo != null) 'todo': m.todo!.toJson(wire: true),
     'id': m.id,
     'ts': m.time.millisecondsSinceEpoch,
     'text': m.text,
@@ -1012,6 +1046,8 @@ class Live {
   /// В группе — отдельная запись для каждого участника (`id@ключ`).
   /// [extra] — ещё кому (например, удалённому из группы — чтобы он узнал).
   Future<void> queueMessage(String chat, Message m, {List<String> extra = const []}) async {
+    // Успели удалить (например, запланированное) — не отправляем.
+    if (!app.messagesOf(chat).any((x) => x.id == m.id)) return;
     final payload = _msgPayload(chat, m);
     // Одноразовое: куски уже на ретрансляторах — своя копия больше не нужна.
     if (m.once && m.mine && (m.att?.local ?? false)) {
@@ -1019,10 +1055,12 @@ class Live {
       m.att!.path = null;
       await saveMessage(chat, m);
     }
+    // Отложенная отправка: в очереди, но не раньше назначенного времени.
+    final next = m.sendAt == null ? 0 : m.sendAt!.millisecondsSinceEpoch ~/ 1000;
     if (Contact.isGroupId(chat)) {
       final to = {...targets(chat), ...extra};
       for (final pub in to) {
-        await store.queue('${m.id}@$pub', pub, payload);
+        await store.queue('${m.id}@$pub', pub, payload, next: next);
       }
       if (to.isEmpty && m.status == MsgStatus.sending) {
         // В группе больше никого — отправлять некому.
@@ -1030,9 +1068,32 @@ class Live {
         await saveMessage(chat, m);
       }
     } else {
-      await store.queue(m.id, chat, payload);
+      await store.queue(m.id, chat, payload, next: next);
     }
     await _flushOutbox();
+  }
+
+  /// Ключи очереди сообщения (в группе — по каждому участнику).
+  List<String> _queueKeys(String chat, Message m) => [
+    m.id,
+    for (final to in targets(chat)) '${m.id}@$to',
+  ];
+
+  /// Запланированное — отправить прямо сейчас.
+  Future<void> sendNow(String chat, Message m) async {
+    m.sendAt = null;
+    await saveMessage(chat, m);
+    await store.dequeueMessages(_queueKeys(chat, m));
+    await queueMessage(chat, m);
+  }
+
+  /// Убрать из очереди (удалили неотправленное).
+  Future<void> cancelQueued(String chat, Message m) => store.dequeueMessages(_queueKeys(chat, m));
+
+  /// Общий список: отметить пункт / добавить — у всех в чате.
+  void todoOp(String chat, Message m, Map<String, dynamic> op) {
+    saveMessage(chat, m);
+    _toChat(chat, Payload(Payload.todo, {'id': m.id, ...op}));
   }
 
   /// Продолжить прерванное: незалитые файлы и недокачанные фото/голосовые.
@@ -1090,14 +1151,15 @@ class Live {
             (m.att != null && !m.att!.uploaded)) {
           continue;
         }
+        final next = m.sendAt == null ? 0 : m.sendAt!.millisecondsSinceEpoch ~/ 1000;
         if (c.isGroup) {
           for (final pub in targets(c.id)) {
             if (!queued.contains('${m.id}@$pub')) {
-              await store.queue('${m.id}@$pub', pub, _msgPayload(c.id, m));
+              await store.queue('${m.id}@$pub', pub, _msgPayload(c.id, m), next: next);
             }
           }
         } else if (!queued.contains(m.id)) {
-          await store.queue(m.id, c.id, _msgPayload(c.id, m));
+          await store.queue(m.id, c.id, _msgPayload(c.id, m), next: next);
         }
       }
     }
@@ -1164,8 +1226,12 @@ class Live {
 
   Future<void> _sent(String chat, String msgId) async {
     for (final m in app.messagesOf(chat)) {
-      if (m.id == msgId && m.status == MsgStatus.sending) {
-        m.status = MsgStatus.sent;
+      if (m.id != msgId) continue;
+      // Отложенное ушло (отчёт о доставке мог прийти даже раньше этой отметки).
+      final wasScheduled = m.sendAt != null;
+      m.sendAt = null;
+      if (m.status == MsgStatus.sending) m.status = MsgStatus.sent;
+      if (wasScheduled || m.status == MsgStatus.sent) {
         await saveMessage(chat, m);
         app.notifyChanged();
       }

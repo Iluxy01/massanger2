@@ -791,6 +791,8 @@ class AppState extends ChangeNotifier {
   }
 
   void deleteMessage(String chatId, Message m) {
+    // Ещё не ушло (например, запланированное) — убрать и из очереди.
+    if (m.mine && m.status == MsgStatus.sending) live?.cancelQueued(chatId, m);
     messagesOf(chatId).remove(m);
     live?.store.deleteMessage(m.id);
     live?.media.deleteFile(m);
@@ -1011,6 +1013,9 @@ class AppState extends ChangeNotifier {
     String? fwd,
     bool silent = false,
     bool once = false,
+    DateTime? openAt,
+    DateTime? sendAt,
+    Todo? todo,
   }) {
     final m = compose(
       chatId,
@@ -1025,7 +1030,10 @@ class AppState extends ChangeNotifier {
       id: id,
       fwd: fwd,
       once: once,
+      openAt: openAt,
+      todo: todo,
     );
+    if (sendAt != null && sendAt.isAfter(DateTime.now())) m.sendAt = sendAt;
     drafts.remove(chatId);
     final c = contact(chatId);
     if (c != null && c.request) {
@@ -1037,10 +1045,47 @@ class AppState extends ChangeNotifier {
     notifyChanged();
     if (live != null) {
       live!.sendMessage(chatId, m, silent: silent).then((_) => notifyChanged());
-    } else {
+    } else if (m.sendAt == null) {
       _simulateReply(chatId, m);
     }
     return m;
+  }
+
+  /// Создать общий список дел.
+  Message sendTodo(String chatId, Todo todo) => send(chatId, '', kind: MsgKind.todo, todo: todo);
+
+  /// Отметить / снять пункт общего списка — у всех в чате.
+  void todoToggle(String chatId, Message m, String itemId) {
+    final it = m.todo?.item(itemId);
+    if (it == null) return;
+    it
+      ..done = !it.done
+      ..by = it.done ? me : null;
+    live?.todoOp(chatId, m, {'op': 't', 'i': itemId, 'on': it.done});
+    notifyChanged();
+  }
+
+  /// Добавить пункт в общий список.
+  void todoAdd(String chatId, Message m, String text) {
+    final todo = m.todo;
+    final t = text.trim();
+    if (todo == null || t.isEmpty || todo.items.length >= Todo.maxItems) return;
+    final id = randomHex(8).toLowerCase();
+    todo.items.add(TodoItem(id: id, text: t.length > 200 ? t.substring(0, 200) : t));
+    live?.todoOp(chatId, m, {'op': 'a', 'i': id, 'tx': t});
+    notifyChanged();
+  }
+
+  /// Запланированное — отправить сейчас.
+  void sendNow(String chatId, Message m) {
+    if (m.sendAt == null) return;
+    if (live != null) {
+      live!.sendNow(chatId, m).then((_) => notifyChanged());
+    } else {
+      m.sendAt = null;
+      _simulateReply(chatId, m);
+    }
+    notifyChanged();
   }
 
   /// Новое исходящее сообщение в ленте чата (ещё не отправлено).
@@ -1058,6 +1103,8 @@ class AppState extends ChangeNotifier {
     String? fwd,
     String? ev,
     bool once = false,
+    DateTime? openAt,
+    Todo? todo,
   }) {
     // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
     // (в базе время хранится с точностью до миллисекунды).
@@ -1082,6 +1129,8 @@ class AppState extends ChangeNotifier {
       fwd: fwd,
       ev: ev,
       once: once,
+      openAt: openAt,
+      todo: todo,
     );
     messagesOf(chatId).add(m);
     return m;

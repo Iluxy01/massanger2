@@ -15,6 +15,7 @@ import '../state/app_state.dart';
 import '../state/media_engine.dart';
 import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
+import '../utils.dart';
 import '../widgets/visual.dart';
 import 'video_recorder.dart';
 import 'wifi_hint.dart';
@@ -225,6 +226,14 @@ class AttachFlows {
     final p = await Navigator.of(context).push<Poll>(PollComposer.route());
     if (p == null) return;
     app.sendPoll(chatId, p);
+  }
+
+  // ── Общий список ──
+
+  Future<void> todo() async {
+    final t = await Navigator.of(context).push<Todo>(TodoComposer.route());
+    if (t == null) return;
+    app.sendTodo(chatId, t);
   }
 }
 
@@ -789,6 +798,149 @@ class _PollComposerState extends State<PollComposer> {
                   ? () => Navigator.of(
                       context,
                     ).pop(Poll(question: _question.text.trim(), options: _filled, multi: _multi))
+                  : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── Общий список ─────────────────────────────
+
+/// Новый общий список: название и пункты (отмечать будут все в чате).
+class TodoComposer extends StatefulWidget {
+  const TodoComposer({super.key});
+
+  static Route<Todo> route() => MaterialPageRoute(builder: (_) => const TodoComposer());
+
+  @override
+  State<TodoComposer> createState() => _TodoComposerState();
+}
+
+class _TodoComposerState extends State<TodoComposer> {
+  final _title = TextEditingController();
+  final List<TextEditingController> _items = [TextEditingController(), TextEditingController()];
+
+  @override
+  void initState() {
+    super.initState();
+    _title.addListener(() => setState(() {}));
+    for (final o in _items) {
+      o.addListener(() => setState(() {}));
+    }
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    for (final o in _items) {
+      o.dispose();
+    }
+    super.dispose();
+  }
+
+  List<String> get _filled => [
+    for (final o in _items)
+      if (o.text.trim().isNotEmpty) o.text.trim(),
+  ];
+
+  bool get _ready => _title.text.trim().isNotEmpty && _filled.isNotEmpty;
+
+  void _add() {
+    if (_items.length >= 30) return;
+    final c = TextEditingController()..addListener(() => setState(() {}));
+    setState(() => _items.add(c));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    InputDecoration deco(String hint) => InputDecoration(
+      hintText: hint,
+      hintStyle: TextStyle(color: vc.textFaint),
+      filled: true,
+      fillColor: vc.surface,
+      counterText: '',
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide.none,
+      ),
+    );
+    return Scaffold(
+      backgroundColor: vc.bg,
+      appBar: AppBar(
+        backgroundColor: vc.bg,
+        surfaceTintColor: Colors.transparent,
+        title: Text(
+          'Общий список',
+          style: TextStyle(color: vc.text, fontWeight: FontWeight.w700),
+        ),
+        iconTheme: IconThemeData(color: vc.text),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        children: [
+          TextField(
+            controller: _title,
+            maxLength: 120,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            style: TextStyle(color: vc.text, fontSize: 17, fontWeight: FontWeight.w600),
+            decoration: deco('Название, например «Купить в поход»'),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Пункты — отмечать сможет любой в чате',
+            style: TextStyle(color: vc.textDim, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          for (final (i, o) in _items.indexed)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: o,
+                      maxLength: 200,
+                      textCapitalization: TextCapitalization.sentences,
+                      style: TextStyle(color: vc.text, fontSize: 15.5),
+                      decoration: deco('Пункт ${i + 1}'),
+                    ),
+                  ),
+                  if (_items.length > 1)
+                    IconButton(
+                      onPressed: () => setState(() => _items.removeAt(i).dispose()),
+                      icon: Icon(Icons.remove_circle_outline_rounded, color: vc.textFaint),
+                    ),
+                ],
+              ),
+            ),
+          TextButton.icon(
+            onPressed: _add,
+            icon: const GradientIcon(Icons.add_rounded, size: 22),
+            label: Text('Добавить пункт', style: TextStyle(color: context.accent.a)),
+          ),
+          const SizedBox(height: 16),
+          AnimatedOpacity(
+            opacity: _ready ? 1 : 0.4,
+            duration: const Duration(milliseconds: 200).by(context),
+            child: AccentButton(
+              label: 'Отправить список',
+              icon: Icons.checklist_rounded,
+              onTap: _ready
+                  ? () => Navigator.of(context).pop(
+                      Todo(
+                        title: _title.text.trim(),
+                        items: [
+                          for (final t in _filled)
+                            TodoItem(id: randomHex(8).toLowerCase(), text: t),
+                        ],
+                      ),
+                    )
                   : null,
             ),
           ),

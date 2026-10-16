@@ -16,6 +16,9 @@ import 'dart:convert';
 /// t = del    удалить у всех    {id}
 /// t = pin    закрепить в чате  {id?} (без id — открепить)
 /// t = seen1  одноразовое открыли {id} (у msg — once: true)
+/// t = todo   общий список: {id, op: t|a, i, on?|tx?} — отметить / добавить пункт
+/// (ключи «t» и «v» заняты: тип и версия конверта — в данных их не использовать)
+/// У msg: oa — капсула времени (откроется не раньше, мс).
 /// В группе у любого сигнала есть g (id группы), у сообщения — ещё gi (состав).
 /// t = typ    печатает (эфемерно)
 /// t = ping   я в сети (эфемерно)
@@ -40,8 +43,9 @@ class Payload {
   static const delete = 'del';
   static const pin = 'pin';
   static const opened = 'seen1';
+  static const todo = 'todo';
 
-  Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
+  Map<String, dynamic> toMap() => {...data, 'v': 1, 't': type};
 
   static Payload fromMap(Map<String, dynamic> m) {
     final d = Map<String, dynamic>.of(m)..remove('v');

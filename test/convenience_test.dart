@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:veil/core/protocol.dart';
 import 'package:veil/core/store.dart';
+import 'package:veil/models/models.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/state/live.dart';
 import 'package:veil/widgets/rich_text.dart';
@@ -131,6 +132,97 @@ void main() {
     // Без звука: непрочитанное есть, уведомления нет (проверяем сам флаг).
     alice.send(bobId, 'тихо 🤫', silent: true);
     await until(() => bob.messagesOf(aliceId).any((x) => x.text == 'тихо 🤫'), what: 'тихое');
+
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
+  test('отложенная отправка, капсула времени, общий список', () async {
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount > 0 && bobLive.pool!.onlineCount > 0);
+    final bobId = bobLive.keys!.pub, aliceId = aliceLive.keys!.pub;
+    await alice.addContact(Invite.parse(bob.inviteLink)!);
+    await until(() => bob.contact(aliceId) != null, what: 'hello');
+    bob.acceptRequest(aliceId);
+
+    // Отложенное: пока не пришло время — не уходит.
+    final later = alice.send(
+      bobId,
+      'с днём рождения! 🎂',
+      sendAt: DateTime.now().add(const Duration(seconds: 2)),
+    );
+    expect(later.sendAt, isNotNull);
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    expect(bob.messagesOf(aliceId).any((m) => m.id == later.id), isFalse);
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    await aliceLive.resumed(); // как плановая переотправка
+    await until(
+      () => bob.messagesOf(aliceId).any((m) => m.id == later.id),
+      what: 'отложенное ушло',
+    );
+    // (после «возврата в приложение» переписка перечитана — ищем заново)
+    await until(
+      () => alice.messagesOf(bobId).firstWhere((m) => m.id == later.id).sendAt == null,
+      what: 'отметка снята',
+    );
+
+    // «Отправить сейчас».
+    final tomorrow = alice.send(
+      bobId,
+      'завтрашнее',
+      sendAt: DateTime.now().add(const Duration(days: 1)),
+    );
+    alice.sendNow(bobId, tomorrow);
+    await until(() => bob.messagesOf(aliceId).any((m) => m.id == tomorrow.id), what: 'сразу');
+
+    // Удалённое запланированное не уйдёт.
+    final gone = alice.send(
+      bobId,
+      'передумал',
+      sendAt: DateTime.now().add(const Duration(seconds: 1)),
+    );
+    alice.deleteMessage(bobId, gone);
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    await aliceLive.resumed();
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(bob.messagesOf(aliceId).any((m) => m.id == gone.id), isFalse);
+
+    // Капсула: пришла, но закрыта.
+    final capsule = alice.send(
+      bobId,
+      'тайна до лета',
+      openAt: DateTime.now().add(const Duration(days: 30)),
+    );
+    await until(() => bob.messagesOf(aliceId).any((m) => m.id == capsule.id), what: 'капсула');
+    final atBob = bob.messagesOf(aliceId).firstWhere((m) => m.id == capsule.id);
+    expect(atBob.sealed, isTrue);
+    expect(atBob.preview, '⏳ Капсула времени');
+    expect(bob.previewOf(aliceId, atBob), '⏳ Капсула времени');
+    expect(capsule.preview, 'тайна до лета', reason: 'отправитель видит своё');
+
+    // Общий список: Боб отмечает и добавляет — Алиса видит.
+    final list = alice.sendTodo(
+      bobId,
+      Todo(
+        title: 'В поход',
+        items: [
+          TodoItem(id: 'a1', text: 'Палатка'),
+          TodoItem(id: 'a2', text: 'Котелок'),
+        ],
+      ),
+    );
+    await until(() => bob.messagesOf(aliceId).any((m) => m.id == list.id), what: 'список');
+    final bobList = bob.messagesOf(aliceId).firstWhere((m) => m.id == list.id);
+    bob.todoToggle(aliceId, bobList, 'a2');
+    bob.todoAdd(aliceId, bobList, 'Фонарик');
+    await until(
+      () => list.todo!.item('a2')!.done && list.todo!.items.length == 3,
+      what: 'отметка и новый пункт у Алисы',
+    );
+    expect(list.todo!.item('a2')!.by, bobId);
+    expect(list.todo!.items.last.text, 'Фонарик');
+    expect(list.preview, '☑️ В поход');
 
     await aliceLive.close();
     await bobLive.close();

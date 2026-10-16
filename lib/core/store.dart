@@ -268,15 +268,21 @@ class Store {
 
   // ── очередь отправки: сообщения, которые друг ещё не подтвердил ──
 
-  Future<void> queue(String msgId, String chat, Map<String, dynamic> payload) async =>
-      (await _c()).insert('outbox', {
-        'msg': msgId,
-        'chat': chat,
-        'payload': _seal(payload),
-        'ts': nowSec(),
-        'attempts': 0,
-        'next': 0,
-      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  /// [next] — не раньше этого момента (сек): отложенная отправка.
+  Future<void> queue(
+    String msgId,
+    String chat,
+    Map<String, dynamic> payload, {
+    int next = 0,
+  }) async => (await _c()).insert('outbox', {
+    'msg': msgId,
+    'chat': chat,
+    'payload': _seal(payload),
+    // Запланированное не должно «протухнуть» раньше, чем уйдёт.
+    'ts': next > nowSec() ? next : nowSec(),
+    'attempts': 0,
+    'next': next,
+  }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
   /// Сообщения, которые пора (пере)отправить.
   Future<List<OutboxItem>> outboxDue({bool all = false}) async {

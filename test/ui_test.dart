@@ -491,6 +491,47 @@ void main() {
     await close(tester, state);
   });
 
+  testWidgets('капсула времени закрыта; общий список отмечается касанием', (tester) async {
+    final state = await launch(tester, banner: false);
+    state.messagesOf('dima').addAll([
+      Message(
+        id: 'cap1',
+        mine: false,
+        text: 'секрет до лета',
+        time: DateTime.now(),
+        openAt: DateTime.now().add(const Duration(days: 3)),
+      ),
+      Message(
+        id: 'todo1',
+        mine: false,
+        text: '',
+        time: DateTime.now(),
+        kind: MsgKind.todo,
+        todo: Todo(
+          title: 'Купить',
+          items: [
+            TodoItem(id: 'x1', text: 'Хлеб'),
+            TodoItem(id: 'x2', text: 'Сыр'),
+          ],
+        ),
+      ),
+    ]);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-dima').first);
+    await settle(tester);
+    expect(find.text('Капсула времени'), findsOneWidget);
+    expect(find.text('секрет до лета'), findsNothing, reason: 'текст закрыт');
+    expect(find.textContaining('через 2 дн.'), findsOneWidget);
+    expect(find.text('Список · готово 0 из 2'), findsOneWidget);
+    await tester.tap(find.text('Сыр'));
+    await settle(tester);
+    expect(find.text('Список · готово 1 из 2'), findsOneWidget);
+    // Меню вложений: есть «Список».
+    await tester.tap(find.byIcon(Icons.add_rounded).last);
+    await settle(tester);
+    expect(find.text('Список'), findsOneWidget);
+    await close(tester, state);
+  });
+
   testWidgets('подсказка про Wi-Fi: причина по кнопке «Подробнее»', (tester) async {
     final state = await launch(tester, banner: false);
     final ctx = tester.element(find.byType(Scaffold).first);
