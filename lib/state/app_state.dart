@@ -80,6 +80,46 @@ class AppState extends ChangeNotifier {
   /// Подсказку «отправляй файлы через мобильный интернет» уже показывали.
   bool wifiHintShown = false;
 
+  // ── Тонкие настройки ──
+
+  /// Размер текста сообщений: 0 мелкий · 1 обычный · 2 крупный.
+  int msgFont = 1;
+  double get msgFontSize => const [14.0, 16.0, 18.5][msgFont.clamp(0, 2)];
+
+  /// Enter на клавиатуре отправляет (иначе — новая строка).
+  bool enterSends = false;
+
+  /// Сообщение из одних эмодзи — крупно и без пузыря.
+  bool bigEmoji = true;
+
+  /// Реакция на двойное касание ('' — выключено).
+  String quickReaction = '❤️';
+
+  /// Свайп по сообщению вправо — ответить.
+  bool swipeReply = true;
+
+  /// Видеосообщения сами крутятся без звука.
+  bool notesAutoplay = true;
+
+  /// Что скачивать само.
+  bool autoPhoto = true;
+  bool autoVideo = true;
+  bool autoVoice = true;
+
+  /// Не показывать текст сообщений в списке чатов (от посторонних глаз).
+  bool hidePreviews = false;
+
+  /// Спрашивать перед удалением сообщения.
+  bool confirmDelete = false;
+
+  /// Скачивать ли файл из сообщения сам (по тонким настройкам).
+  bool autoDownload(Message m) => switch (m.kind) {
+    MsgKind.photo => autoPhoto,
+    MsgKind.video => autoVideo,
+    MsgKind.voice || MsgKind.note => autoVoice,
+    _ => false,
+  };
+
   /// Меняется только при смене темы/акцента — от него перестраивается всё
   /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
   final themeTick = ValueNotifier<int>(0);
@@ -265,6 +305,17 @@ class AppState extends ChangeNotifier {
     'motion': motion,
     'instant': instantNotify,
     'noteCam': noteCamera,
+    'font': msgFont,
+    'enter': enterSends,
+    'bigEmoji': bigEmoji,
+    'qr': quickReaction,
+    'swipe': swipeReply,
+    'notesAuto': notesAutoplay,
+    'autoPh': autoPhoto,
+    'autoVid': autoVideo,
+    'autoVo': autoVoice,
+    'hidePrev': hidePreviews,
+    'confirmDel': confirmDelete,
     if (wifiHintShown) 'wifiHint': true,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
@@ -289,6 +340,17 @@ class AppState extends ChangeNotifier {
     instantNotify = s['instant'] == true;
     wifiHintShown = s['wifiHint'] == true;
     noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
+    msgFont = ((s['font'] as num?)?.toInt() ?? 1).clamp(0, 2);
+    enterSends = s['enter'] == true;
+    bigEmoji = s['bigEmoji'] as bool? ?? true;
+    quickReaction = s['qr'] is String ? s['qr'] as String : '❤️';
+    swipeReply = s['swipe'] as bool? ?? true;
+    notesAutoplay = s['notesAuto'] as bool? ?? true;
+    autoPhoto = s['autoPh'] as bool? ?? true;
+    autoVideo = s['autoVid'] as bool? ?? true;
+    autoVoice = s['autoVo'] as bool? ?? true;
+    hidePreviews = s['hidePrev'] == true;
+    confirmDelete = s['confirmDel'] == true;
     themeTick.value++;
     pinned
       ..clear()

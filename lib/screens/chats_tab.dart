@@ -406,7 +406,10 @@ class _ChatTile extends StatelessWidget {
       if (draft != null) {
         body = draft;
       } else {
-        body = app.previewOf(c.id, last);
+        // «Скрывать текст в списке» — только что сообщение есть.
+        body = app.hidePreviews && last.kind != MsgKind.event
+            ? (unread > 0 ? 'Новое сообщение' : 'Сообщение')
+            : app.previewOf(c.id, last);
       }
       preview = Text.rich(
         key: ValueKey('text${last.id}$draft'),

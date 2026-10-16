@@ -837,6 +837,14 @@ class _ChatScreenState extends State<ChatScreen> {
                               focusNode: _focus,
                               minLines: 1,
                               maxLines: 5,
+                              // «Enter отправляет» — из тонких настроек.
+                              keyboardType: app.enterSends
+                                  ? TextInputType.text
+                                  : TextInputType.multiline,
+                              textInputAction: app.enterSends
+                                  ? TextInputAction.send
+                                  : TextInputAction.newline,
+                              onSubmitted: app.enterSends ? (_) => _send() : null,
                               textCapitalization: TextCapitalization.sentences,
                               style: TextStyle(color: vc.text, fontSize: 16, height: 1.3),
                               decoration: InputDecoration(
@@ -1441,7 +1449,8 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
   void _doubleTap() {
     final app = context.appRead;
     app.tick(HapticKind.medium);
-    if (widget.m.reaction != '❤️') app.react(widget.contact.id, widget.m, '❤️');
+    final r = app.quickReaction;
+    if (widget.m.reaction != r) app.react(widget.contact.id, widget.m, r);
     setState(() => _burst++);
   }
 
@@ -1485,7 +1494,10 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
             // срабатывает через раз.
             onTap: m.secret || spoiler ? _toggleSecret : null,
             // У вложений, опросов и голосовых свои касания — без задержки.
-            onDoubleTap: m.secret || spoiler || m.kind != MsgKind.text ? null : _doubleTap,
+            onDoubleTap:
+                m.secret || spoiler || m.kind != MsgKind.text || context.app.quickReaction.isEmpty
+                ? null
+                : _doubleTap,
             onLongPress: () {
               context.appRead.tick(HapticKind.medium);
               _openMenu();
@@ -1516,11 +1528,12 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
       ),
     );
 
-    // Свайп вправо — ответить.
+    // Свайп вправо — ответить (можно выключить в тонких настройках).
+    final swipe = context.app.swipeReply;
     tile = GestureDetector(
-      onHorizontalDragUpdate: _onDragUpdate,
-      onHorizontalDragEnd: _onDragEnd,
-      onHorizontalDragCancel: _onDragEnd,
+      onHorizontalDragUpdate: swipe ? _onDragUpdate : null,
+      onHorizontalDragEnd: swipe ? _onDragEnd : null,
+      onHorizontalDragCancel: swipe ? _onDragEnd : null,
       child: AnimatedBuilder(
         animation: _drag,
         builder: (_, child) {
@@ -1641,7 +1654,12 @@ class BubbleBody extends StatelessWidget {
     );
 
     // Только эмодзи — крупно и без пузыря.
-    if (m.kind == MsgKind.text && !m.secret && m.replyTo == null && isEmojiOnly(m.text)) {
+    if (app.bigEmoji &&
+        m.kind == MsgKind.text &&
+        !m.secret &&
+        m.replyTo == null &&
+        m.fwd == null &&
+        isEmojiOnly(m.text)) {
       return Column(
         crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1750,7 +1768,7 @@ class BubbleBody extends StatelessWidget {
     );
 
     Widget textBlock(String t) {
-      final style = TextStyle(color: fg, fontSize: 16, height: 1.32);
+      final style = TextStyle(color: fg, fontSize: app.msgFontSize, height: 1.32);
       Widget text = Fmt.has(t)
           ? Text.rich(
               TextSpan(children: Fmt.spans(t, style, reveal: m.revealed)),
@@ -1777,11 +1795,11 @@ class BubbleBody extends StatelessWidget {
         Text.rich(
           TextSpan(
             children: [
-              ...Fmt.spans(t, TextStyle(color: fg, fontSize: 16), reveal: true),
+              ...Fmt.spans(t, TextStyle(color: fg, fontSize: app.msgFontSize), reveal: true),
               WidgetSpan(child: SizedBox(width: mine ? 66 : 44, height: 12)),
             ],
           ),
-          style: TextStyle(color: fg, fontSize: 16, height: 1.32),
+          style: TextStyle(color: fg, fontSize: app.msgFontSize, height: 1.32),
         ),
         Positioned(right: 0, bottom: 0, child: meta),
       ],
@@ -2433,7 +2451,36 @@ class _ActionsMenu extends StatelessWidget {
     final app = context.appRead;
     final vc = app.colors;
 
-    void run(String code) {
+    Future<bool> sure(String title) async {
+      if (!app.confirmDelete) return true;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: vc.elevated,
+          title: Text(title, style: TextStyle(color: vc.text)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('Отмена', style: TextStyle(color: vc.textDim)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Удалить', style: TextStyle(color: VeilColors.danger)),
+            ),
+          ],
+        ),
+      );
+      return ok ?? false;
+    }
+
+    Future<void> run(String code) async {
+      if (code == 'delete' || code == 'deleteAll') {
+        final ok = await sure(code == 'delete' ? 'Удалить у себя?' : 'Удалить у всех?');
+        close();
+        if (!ok) return;
+        code == 'delete' ? app.deleteMessage(contact.id, m) : onAction(code);
+        return;
+      }
       close();
       switch (code) {
         case 'reply':

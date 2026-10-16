@@ -358,7 +358,7 @@ class _NoteBubbleState extends State<NoteBubble> {
     );
     _c = c;
     // При «без анимаций» сами не крутим — только по нажатию.
-    final auto = context.appRead.motion > 0;
+    final auto = context.appRead.motion > 0 && context.appRead.notesAutoplay;
     try {
       await c.initialize();
       if (!mounted || _c != c) return;
@@ -383,7 +383,7 @@ class _NoteBubbleState extends State<NoteBubble> {
   Future<void> _quiet() async {
     final c = _c;
     if (c == null) return;
-    final auto = !mounted || context.appRead.motion > 0;
+    final auto = !mounted || (context.appRead.motion > 0 && context.appRead.notesAutoplay);
     if (mounted) setState(() => _sound = false);
     if (_loud == this) _loud = null;
     await c.setVolume(0);

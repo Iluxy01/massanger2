@@ -224,12 +224,16 @@ void main() {
     await tester.tap(find.byWidgetPredicate((w) => w is Avatar && w.size == 26).last);
     await settle(tester);
     await tester.scrollUntilVisible(
-      find.text('Камера в начале записи'),
+      find.text('Тонкие настройки'),
       300,
       scrollable: find
           .descendant(of: find.byType(SettingsTab), matching: find.byType(Scrollable))
           .first,
     );
+    await settle(tester);
+    await tester.tap(find.text('Тонкие настройки'));
+    await settle(tester);
+    await tester.scrollUntilVisible(find.text('Камера в начале записи'), 300);
     await settle(tester);
     await tester.tap(find.text('Основная'));
     await settle(tester);
@@ -344,6 +348,56 @@ void main() {
     await tester.enterText(find.widgetWithText(TextField, 'Поиск в чате'), 'термос');
     await settle(tester);
     expect(find.text('1 из 1'), findsOneWidget);
+    await close(tester, state);
+  });
+
+  testWidgets('тонкие настройки: сохраняются и работают', (tester) async {
+    final state = await launch(tester, banner: false);
+    expect(find.textContaining('Го в субботу'), findsNothing);
+    expect(find.text('🔥🔥'), findsWidgets, reason: 'последнее у Алисы — видно в списке');
+    state.setFlag(() {
+      state.hidePreviews = true;
+      state.msgFont = 2;
+      state.enterSends = true;
+      state.quickReaction = '';
+      state.swipeReply = false;
+      state.autoVideo = false;
+      state.confirmDelete = true;
+      state.notesAutoplay = false;
+    });
+    await settle(tester);
+    expect(find.text('🔥🔥'), findsNothing, reason: 'текст в списке скрыт');
+    expect(find.text('Новое сообщение'), findsWidgets);
+    final copy = AppState.demo()..applySettings(state.settingsForTest);
+    expect(
+      (
+        copy.hidePreviews,
+        copy.msgFont,
+        copy.msgFontSize,
+        copy.enterSends,
+        copy.quickReaction,
+        copy.swipeReply,
+        copy.autoVideo,
+        copy.confirmDelete,
+        copy.notesAutoplay,
+      ),
+      (true, 2, 18.5, true, '', false, false, true, false),
+    );
+    final video = Message(
+      id: 'v',
+      mine: false,
+      text: '',
+      time: DateTime.now(),
+      kind: MsgKind.video,
+    );
+    expect(copy.autoDownload(video), isFalse);
+    expect(
+      state.autoDownload(
+        Message(id: 'p', mine: false, text: '', time: DateTime.now(), kind: MsgKind.photo),
+      ),
+      isTrue,
+    );
+    copy.dispose();
     await close(tester, state);
   });
 

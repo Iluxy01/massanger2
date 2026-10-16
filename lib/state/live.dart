@@ -722,7 +722,7 @@ class Live {
         );
         // События группы — тихо, без уведомления.
         if (kind != MsgKind.event) await app.onIncoming(c, m, silent: p.flag('sl'));
-        if (!background && !c.request && MediaEngine.autoKind(m)) {
+        if (!background && !c.request && app.autoDownload(m)) {
           unawaited(media.download(chat, m));
         }
       case Payload.vote:
@@ -982,7 +982,7 @@ class Live {
         } else if (!m.mine &&
             !att.local &&
             !c.request &&
-            MediaEngine.autoKind(m) &&
+            app.autoDownload(m) &&
             media.retryDue(m.id)) {
           unawaited(media.download(c.id, m));
         }

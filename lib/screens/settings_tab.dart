@@ -178,20 +178,15 @@ class SettingsTab extends StatelessWidget {
               ],
             ),
 
-            // ── Видеосообщения ──
-            const _Section('Видеосообщения'),
+            // ── Тонкие настройки ──
+            const _Section('Чаты'),
             _Group(
               children: [
-                _LevelPicker(
-                  icon: Icons.cameraswitch_rounded,
-                  title: 'Камера в начале записи',
-                  labels: const ['Фронтальная', 'Основная'],
-                  hints: const [
-                    'Сначала снимает тебя; перевернуть можно во время записи',
-                    'Сначала снимает то, что перед тобой; перевернуть можно во время записи',
-                  ],
-                  value: app.noteCamera,
-                  onChanged: app.setNoteCamera,
+                _Tile(
+                  icon: Icons.tune_rounded,
+                  title: 'Тонкие настройки',
+                  subtitle: 'Текст, клавиатура, реакции, автозагрузка, камера',
+                  onTap: () => Navigator.of(context).push(FineSettingsScreen.route()),
                 ),
               ],
             ),
@@ -1203,5 +1198,216 @@ class _NetworkCard extends StatelessWidget {
         ],
       ),
     ).whenComplete(ctrl.dispose);
+  }
+}
+
+// ───────────────────────────── Тонкие настройки ─────────────────────────────
+
+/// Мелкие настройки — отдельным экраном, чтобы не загромождать «Профиль».
+class FineSettingsScreen extends StatelessWidget {
+  const FineSettingsScreen({super.key});
+
+  static Route<void> route() => MaterialPageRoute(builder: (_) => const FineSettingsScreen());
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+
+    Widget toggle(
+      IconData icon,
+      String title,
+      String? subtitle,
+      bool value,
+      void Function(bool) set,
+    ) => _Tile(
+      icon: icon,
+      title: title,
+      subtitle: subtitle,
+      trailing: VeilSwitch(value: value, onChanged: (v) => app.setFlag(() => set(v))),
+    );
+
+    return Scaffold(
+      backgroundColor: vc.bg,
+      appBar: AppBar(
+        backgroundColor: vc.bg,
+        foregroundColor: vc.text,
+        elevation: 0,
+        title: const Text('Тонкие настройки'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
+        children: [
+          const _Section('Сообщения'),
+          _Group(
+            children: [
+              _LevelPicker(
+                icon: Icons.format_size_rounded,
+                title: 'Размер текста',
+                labels: const ['Мелкий', 'Обычный', 'Крупный'],
+                hints: const ['Больше сообщений на экране', 'Как задумано', 'Легче читать'],
+                value: app.msgFont,
+                onChanged: (v) => app.setFlag(() => app.msgFont = v),
+              ),
+              toggle(
+                Icons.keyboard_return_rounded,
+                'Enter отправляет',
+                'Иначе Enter — новая строка',
+                app.enterSends,
+                (v) => app.enterSends = v,
+              ),
+              toggle(
+                Icons.emoji_emotions_rounded,
+                'Крупные эмодзи',
+                'Сообщение из одних эмодзи — крупно, без пузыря',
+                app.bigEmoji,
+                (v) => app.bigEmoji = v,
+              ),
+              toggle(
+                Icons.swipe_right_rounded,
+                'Свайп — ответить',
+                'Потяни сообщение вправо, чтобы ответить',
+                app.swipeReply,
+                (v) => app.swipeReply = v,
+              ),
+              _Tile(
+                icon: Icons.touch_app_rounded,
+                title: 'Двойное касание',
+                subtitle: app.quickReaction.isEmpty
+                    ? 'Ничего не делает'
+                    : 'Реакция ${app.quickReaction}',
+                trailing: _ReactionChoice(
+                  value: app.quickReaction,
+                  onChanged: (v) => app.setFlag(() => app.quickReaction = v),
+                ),
+              ),
+              toggle(
+                Icons.delete_sweep_rounded,
+                'Спрашивать перед удалением',
+                null,
+                app.confirmDelete,
+                (v) => app.confirmDelete = v,
+              ),
+            ],
+          ),
+          const _Section('Фото, видео, голосовые'),
+          _Group(
+            children: [
+              toggle(
+                Icons.photo_rounded,
+                'Скачивать фото сами',
+                null,
+                app.autoPhoto,
+                (v) => app.autoPhoto = v,
+              ),
+              toggle(
+                Icons.videocam_rounded,
+                'Скачивать видео сами',
+                null,
+                app.autoVideo,
+                (v) => app.autoVideo = v,
+              ),
+              toggle(
+                Icons.mic_rounded,
+                'Скачивать голосовые и видеосообщения сами',
+                null,
+                app.autoVoice,
+                (v) => app.autoVoice = v,
+              ),
+              toggle(
+                Icons.play_circle_outline_rounded,
+                'Видеосообщения крутятся сами',
+                'Без звука; выключи — играют только по нажатию',
+                app.notesAutoplay,
+                (v) => app.notesAutoplay = v,
+              ),
+              _LevelPicker(
+                icon: Icons.cameraswitch_rounded,
+                title: 'Камера в начале записи',
+                labels: const ['Фронтальная', 'Основная'],
+                hints: const [
+                  'Сначала снимает тебя; перевернуть можно во время записи',
+                  'Сначала снимает то, что перед тобой; перевернуть можно во время записи',
+                ],
+                value: app.noteCamera,
+                onChanged: app.setNoteCamera,
+              ),
+            ],
+          ),
+          const _Section('Список чатов'),
+          _Group(
+            children: [
+              toggle(
+                Icons.visibility_off_rounded,
+                'Скрывать текст сообщений',
+                'В списке чатов — только «Новое сообщение»',
+                app.hidePreviews,
+                (v) => app.hidePreviews = v,
+              ),
+            ],
+          ),
+          const _Section('Подсказки'),
+          _Group(
+            children: [
+              _Tile(
+                icon: Icons.text_format_rounded,
+                title: 'Оформление текста',
+                subtitle: '*жирный*  _курсив_  ~зачёркнутый~  `код`  ||скрытый||',
+              ),
+              _Tile(
+                icon: Icons.wifi_rounded,
+                title: 'Подсказка про Wi-Fi',
+                subtitle: app.wifiHintShown
+                    ? 'Уже показана — нажми, чтобы показать снова'
+                    : 'Покажется при первой отправке файла с Wi-Fi',
+                onTap: app.wifiHintShown
+                    ? () {
+                        app.setFlag(() => app.wifiHintShown = false);
+                        showVeilToast(
+                          context,
+                          'Подсказка покажется при следующей отправке файла',
+                          icon: Icons.wifi_rounded,
+                        );
+                      }
+                    : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Выбор реакции на двойное касание (или «выкл»).
+class _ReactionChoice extends StatelessWidget {
+  const _ReactionChoice({required this.value, required this.onChanged});
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  static const _options = ['❤️', '👍', '🔥', '😂', ''];
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    return PopupMenuButton<String>(
+      initialValue: value,
+      color: vc.elevated,
+      onSelected: onChanged,
+      itemBuilder: (_) => [
+        for (final o in _options)
+          PopupMenuItem(
+            value: o,
+            child: Text(
+              o.isEmpty ? 'Выключено' : o,
+              style: TextStyle(color: vc.text, fontSize: 18),
+            ),
+          ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Text(value.isEmpty ? '—' : value, style: TextStyle(color: vc.text, fontSize: 22)),
+      ),
+    );
   }
 }
