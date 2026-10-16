@@ -7,6 +7,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'chat_screen.dart';
+import 'group_screens.dart';
 import '../widgets/visual.dart';
 
 class ChatsTab extends StatefulWidget {
@@ -60,7 +61,7 @@ class _ChatsTabState extends State<ChatsTab> {
           )
           .toList();
     }
-    final online = app.contacts.where((c) => c.online).toList();
+    final online = app.friends.where((c) => c.online).toList();
     final top = MediaQuery.paddingOf(context).top;
 
     return Stack(
@@ -380,6 +381,7 @@ class _ChatTile extends StatelessWidget {
     final unread = app.unread[c.id] ?? 0;
     final pinned = app.pinned.contains(c.id);
     final typing = app.typingIndicators && app.typing.contains(c.id);
+    final typer = app.typingBy[c.id];
     final draft = app.drafts[c.id];
 
     Widget preview;
@@ -387,9 +389,11 @@ class _ChatTile extends StatelessWidget {
       preview = Row(
         key: const ValueKey('typing'),
         children: [
-          GradientText(
-            'печатает',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          Flexible(
+            child: GradientText(
+              typer == null ? 'печатает' : '${app.memberName(c.id, typer)} печатает',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
           ),
           const SizedBox(width: 6),
           const TypingDots(size: 5),
@@ -400,7 +404,7 @@ class _ChatTile extends StatelessWidget {
       if (draft != null) {
         body = draft;
       } else {
-        body = last.preview;
+        body = app.previewOf(c.id, last);
       }
       preview = Text.rich(
         key: ValueKey('text${last.id}$draft'),
@@ -411,7 +415,7 @@ class _ChatTile extends StatelessWidget {
                 text: 'Черновик: ',
                 style: TextStyle(color: VeilColors.danger),
               )
-            else if (last.mine)
+            else if (last.mine && last.kind != MsgKind.event)
               TextSpan(
                 text: 'Вы: ',
                 style: TextStyle(color: vc.text.withValues(alpha: 0.8)),
@@ -749,11 +753,10 @@ class _NewChatButton extends StatelessWidget {
         maxChildSize: 0.92,
         minChildSize: 0.4,
         expand: false,
-        builder: (_, scroll) => Container(
-          decoration: BoxDecoration(
-            color: vc.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-          ),
+        builder: (_, scroll) => Material(
+          color: vc.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          clipBehavior: Clip.antiAlias,
           child: ListView(
             controller: scroll,
             children: [
@@ -775,7 +778,31 @@ class _NewChatButton extends StatelessWidget {
                   style: TextStyle(color: vc.text, fontSize: 22, fontWeight: FontWeight.w800),
                 ),
               ),
-              for (final (i, c) in app.contacts.indexed)
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                leading: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: context.accent.gradient,
+                  ),
+                  child: Icon(Icons.group_add_rounded, color: context.accent.onAccent),
+                ),
+                title: Text(
+                  'Новая группа',
+                  style: TextStyle(color: vc.text, fontWeight: FontWeight.w700),
+                ),
+                subtitle: Text(
+                  'до ${GroupInfo.maxMembers} человек',
+                  style: TextStyle(color: vc.textDim, fontSize: 13),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(CreateGroupScreen.route());
+                },
+              ),
+              for (final (i, c) in app.friends.indexed)
                 Reveal(
                   index: i,
                   child: ListTile(

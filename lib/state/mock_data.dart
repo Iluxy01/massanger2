@@ -71,8 +71,22 @@ List<Contact> demoContacts() {
       fingerprint: randomHex(64),
       lastSeen: now.subtract(const Duration(days: 5)),
     ),
+    Contact(id: demoGroupId, name: 'Поход на выходных', emoji: '🏕️', colorIndex: 2)
+      ..group = GroupInfo(
+        members: [
+          GroupMember(pub: 'me', name: 'Я', emoji: '🐼', color: 1),
+          GroupMember(pub: 'alice', name: 'Алиса', emoji: '🦊', color: 0),
+          GroupMember(pub: 'max', name: 'Макс', emoji: '🐺', color: 1),
+          GroupMember(pub: 'kate', name: 'Катя', emoji: '🌸', color: 6),
+        ],
+        admin: 'alice',
+        ver: 1,
+      ),
   ];
 }
+
+/// Демо-группа.
+const demoGroupId = 'g_demo_trip';
 
 Map<String, List<Message>> demoMessages() {
   final now = DateTime.now();
@@ -90,8 +104,12 @@ Map<String, List<Message>> demoMessages() {
     Attachment? att,
     GeoPoint? geo,
     Poll? poll,
+    String? from,
+    String? ev,
   }) {
     return Message(
+      from: from,
+      ev: ev,
       att: att,
       geo: geo,
       poll: poll,
@@ -208,7 +226,29 @@ Map<String, List<Message>> demoMessages() {
     m(true, 'Конечно нет 😅', day * 4 + hour),
   ];
 
-  return {'alice': alice, 'max': max, 'kate': kate, 'dima': dima, 'sonya': sonya};
+  final trip = [
+    m(
+      false,
+      'создал(а) группу «Поход на выходных»',
+      hour * 6,
+      kind: MsgKind.event,
+      from: 'alice',
+      ev: 'create',
+    ),
+    m(false, 'Кто берёт палатку? ⛺', hour * 5, from: 'alice'),
+    m(false, 'У меня есть двухместная', hour * 5 - min * 4, from: 'max'),
+    m(true, 'Я возьму горелку и котелок 🔥', hour * 4),
+    m(false, 'А я — фотоаппарат 📸', hour * 3, from: 'kate', reaction: '❤️'),
+  ];
+
+  return {
+    'alice': alice,
+    'max': max,
+    'kate': kate,
+    'dima': dima,
+    'sonya': sonya,
+    demoGroupId: trip,
+  };
 }
 
 const replyPhrases = [

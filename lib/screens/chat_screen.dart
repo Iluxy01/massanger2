@@ -20,6 +20,7 @@ import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
 import 'attach_flows.dart';
 import 'contact_screen.dart';
+import 'group_screens.dart';
 import 'wifi_hint.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -412,6 +413,9 @@ class _ChatScreenState extends State<ChatScreen> {
       bool joined(Message? a, Message b) =>
           a != null &&
           a.mine == b.mine &&
+          a.from == b.from &&
+          a.kind != MsgKind.event &&
+          b.kind != MsgKind.event &&
           sameDay(a.time, b.time) &&
           a.time.difference(b.time).inMinutes.abs() < 3;
       items.add(_MsgItem(m, first: !joined(prev, m), last: !joined(next, m)));
@@ -456,6 +460,8 @@ class _ChatScreenState extends State<ChatScreen> {
               if (c.request && !c.blocked) _RequestBar(contact: c),
               if (c.blocked)
                 _BlockedBar(onUnblock: () => app.toggleBlocked(c.id))
+              else if (c.group?.left ?? false)
+                const _LeftGroupBar()
               else
                 _composer(context),
             ],
@@ -496,6 +502,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _DateItem(:final time) => _DateChip(time: time),
         _BannerItem() => _EncryptionBanner(contact: c),
         _TypingItem() => const _TypingBubble(),
+        _MsgItem(:final m) when m.kind == MsgKind.event => _EventChip(m: m, chatId: c.id),
         _MsgItem(:final m, :final first, :final last) => _MessageTile(
           key: ValueKey(m.id),
           m: m,
@@ -685,19 +692,28 @@ class _TopBar extends StatelessWidget {
     final c = contact;
     final top = MediaQuery.paddingOf(context).top;
 
+    final app = context.app;
+    final group = c.group;
     final Widget status;
     if (typing) {
+      final who = group == null ? null : app.typingBy[c.id];
       status = Row(
         key: const ValueKey('t'),
         mainAxisSize: MainAxisSize.min,
         children: [
           GradientText(
-            'печатает',
+            who == null ? 'печатает' : '${app.memberName(c.id, who)} печатает',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
           ),
           const SizedBox(width: 5),
           const TypingDots(size: 4),
         ],
+      );
+    } else if (group != null) {
+      status = Text(
+        group.left ? 'ты больше не участник' : membersLabel(group.members.length),
+        key: const ValueKey('g'),
+        style: TextStyle(color: vc.textDim, fontSize: 13),
       );
     } else if (c.online) {
       status = const Text(
@@ -713,7 +729,9 @@ class _TopBar extends StatelessWidget {
       );
     }
 
-    void openProfile() => Navigator.of(context).push(ContactScreen.route(c));
+    void openProfile() => Navigator.of(
+      context,
+    ).push(group != null ? GroupInfoScreen.route(c) : ContactScreen.route(c));
 
     return Glass(
       blur: 20,
@@ -784,22 +802,24 @@ class _TopBar extends StatelessWidget {
                 ),
               ),
             ),
-            IconButton(
-              onPressed: () => showVeilToast(
-                context,
-                'Зашифрованные звонки — в следующей версии',
-                icon: Icons.call_rounded,
+            if (group == null)
+              IconButton(
+                onPressed: () => showVeilToast(
+                  context,
+                  'Зашифрованные звонки — в следующей версии',
+                  icon: Icons.call_rounded,
+                ),
+                icon: Icon(Icons.call_outlined, color: vc.text),
               ),
-              icon: Icon(Icons.call_outlined, color: vc.text),
-            ),
-            IconButton(
-              onPressed: () => showVeilToast(
-                context,
-                'Видеозвонки — в следующей версии',
-                icon: Icons.videocam_rounded,
+            if (group == null)
+              IconButton(
+                onPressed: () => showVeilToast(
+                  context,
+                  'Видеозвонки — в следующей версии',
+                  icon: Icons.videocam_rounded,
+                ),
+                icon: Icon(Icons.videocam_outlined, color: vc.text),
               ),
-              icon: Icon(Icons.videocam_outlined, color: vc.text),
-            ),
           ],
         ),
       ),
@@ -902,7 +922,9 @@ class _EncryptionBanner extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 8, 28, 8),
       child: Pressable(
-        onTap: () => Navigator.of(context).push(ContactScreen.route(contact)),
+        onTap: () => Navigator.of(
+          context,
+        ).push(contact.isGroup ? GroupInfoScreen.route(contact) : ContactScreen.route(contact)),
         child: Glass(
           radius: 18,
           padding: const EdgeInsets.all(14),
@@ -911,7 +933,10 @@ class _EncryptionBanner extends StatelessWidget {
               const GradientIcon(Icons.lock_rounded, size: 22),
               const SizedBox(height: 8),
               Text(
-                'Сообщения защищены сквозным шифрованием и хранятся только на ваших с ${contact.name} телефонах. Нажми, чтобы сверить код безопасности.',
+                contact.isGroup
+                    ? 'Сообщения группы шифруются для каждого участника отдельно и хранятся '
+                          'только на ваших телефонах. Нажми, чтобы увидеть участников.'
+                    : 'Сообщения защищены сквозным шифрованием и хранятся только на ваших с ${contact.name} телефонах. Нажми, чтобы сверить код безопасности.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.4),
               ),
@@ -1075,7 +1100,12 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
               children: [
                 KeyedSubtree(
                   key: _bubbleKey,
-                  child: BubbleBody(m: m, contact: widget.contact, tail: widget.last),
+                  child: BubbleBody(
+                    m: m,
+                    contact: widget.contact,
+                    tail: widget.last,
+                    showName: widget.first,
+                  ),
                 ),
                 if (m.reaction != null)
                   Positioned(bottom: -16, left: 12, child: _ReactionChip(emoji: m.reaction!)),
@@ -1156,11 +1186,20 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
 
 /// Сам «пузырь» сообщения. Используется и в ленте, и в контекстном меню.
 class BubbleBody extends StatelessWidget {
-  const BubbleBody({super.key, required this.m, required this.contact, this.tail = true});
+  const BubbleBody({
+    super.key,
+    required this.m,
+    required this.contact,
+    this.tail = true,
+    this.showName = false,
+  });
 
   final Message m;
   final Contact contact;
   final bool tail;
+
+  /// В группе — имя автора над первым сообщением подряд.
+  final bool showName;
 
   @override
   Widget build(BuildContext context) {
@@ -1211,12 +1250,28 @@ class BubbleBody extends StatelessWidget {
       );
     }
 
+    // В группе — имя автора (цветом его аватарки).
+    final from = m.from;
+    final Widget? author = showName && !mine && from != null && contact.isGroup
+        ? Text(
+            app.memberName(contact.id, from),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: (contact.group!.member(from)?.colors ?? acc.gradient.colors).first,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          )
+        : null;
+
     // Видеосообщение — «квадратик» без пузыря.
     if (m.kind == MsgKind.note && m.att != null) {
       return Column(
         crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          ?author,
           if (m.replyTo != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 4),
@@ -1395,6 +1450,13 @@ class BubbleBody extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (author != null)
+            Padding(
+              padding: edge
+                  ? const EdgeInsets.fromLTRB(8, 5, 8, 4)
+                  : const EdgeInsets.only(bottom: 2),
+              child: author,
+            ),
           if (m.replyTo != null)
             Padding(
               padding: edge ? const EdgeInsets.fromLTRB(8, 6, 8, 0) : EdgeInsets.zero,
@@ -2352,17 +2414,30 @@ class _RequestBar extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '${contact.name} добавил(а) тебя по твоему коду. '
-              'Если не знаешь этого человека — заблокируй.',
+              contact.isGroup
+                  ? 'Тебя позвали в группу «${contact.name}». '
+                        'Если не знаешь этих людей — просто удали её.'
+                  : '${contact.name} добавил(а) тебя по твоему коду. '
+                        'Если не знаешь этого человека — заблокируй.',
               style: TextStyle(color: vc.textDim, fontSize: 13.5, height: 1.35),
             ),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(
-                  onPressed: () => app.toggleBlocked(contact.id),
-                  child: const Text('Заблокировать', style: TextStyle(color: VeilColors.danger)),
-                ),
+                if (contact.isGroup)
+                  TextButton(
+                    onPressed: () async {
+                      final nav = Navigator.of(context);
+                      await app.deleteContact(contact.id);
+                      nav.maybePop();
+                    },
+                    child: const Text('Удалить', style: TextStyle(color: VeilColors.danger)),
+                  )
+                else
+                  TextButton(
+                    onPressed: () => app.toggleBlocked(contact.id),
+                    child: const Text('Заблокировать', style: TextStyle(color: VeilColors.danger)),
+                  ),
                 TextButton(
                   onPressed: () => app.acceptRequest(contact.id),
                   child: const Text('Принять'),
@@ -2374,4 +2449,57 @@ class _RequestBar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Событие группы по центру ленты: «Алиса создал(а) группу», «Боб вышел(а)».
+class _EventChip extends StatelessWidget {
+  const _EventChip({required this.m, required this.chatId});
+  final Message m;
+  final String chatId;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Center(
+        child: Glass(
+          radius: 14,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            app.eventText(chatId, m),
+            textAlign: TextAlign.center,
+            style: TextStyle(color: vc.textDim, fontSize: 12.5),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Вышли из группы (или удалили) — писать нельзя.
+class _LeftGroupBar extends StatelessWidget {
+  const _LeftGroupBar();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.fromLTRB(12, 0, 12, MediaQuery.paddingOf(context).bottom + 10),
+    child: Glass(
+      radius: 22,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Icon(Icons.group_off_rounded, color: context.vc.textDim, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Ты больше не участник этой группы',
+              style: TextStyle(color: context.vc.textDim),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }

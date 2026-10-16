@@ -658,6 +658,17 @@ class AppState extends ChangeNotifier {
     return contact(chatId)?.group?.member(pub)?.name ?? 'Участник';
   }
 
+  /// Текст события группы с именем того, кто его сделал.
+  String eventText(String chatId, Message m) =>
+      '${m.mine ? 'Ты' : memberName(chatId, m.from ?? '')} ${m.text}';
+
+  /// Строка для списка чатов: в группе — с именем автора.
+  String previewOf(String chatId, Message m) {
+    if (m.kind == MsgKind.event) return eventText(chatId, m);
+    if (!m.mine && m.from != null) return '${memberName(chatId, m.from!)}: ${m.preview}';
+    return m.preview;
+  }
+
   GroupMember _meAsMember() => GroupMember(
     pub: me,
     name: profile?.name ?? 'Я',

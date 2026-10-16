@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veil/app.dart';
 import 'package:veil/models/models.dart';
+import 'package:veil/screens/chats_tab.dart';
 import 'package:veil/screens/settings_tab.dart';
 import 'package:veil/screens/wifi_hint.dart';
 import 'package:veil/state/app_state.dart';
@@ -237,6 +238,63 @@ void main() {
     final copy = AppState.demo()..applySettings(state.settingsForTest);
     expect(copy.noteCamera, 1, reason: 'сохраняется');
     copy.dispose();
+    await close(tester, state);
+  });
+
+  testWidgets('группа: события, имена авторов, участники', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.scrollUntilVisible(
+      find.text('Поход на выходных'),
+      200,
+      scrollable: find
+          .descendant(of: find.byType(ChatsTab), matching: find.byType(Scrollable))
+          .first,
+    );
+    await tester.tap(find.text('Поход на выходных'));
+    await settle(tester);
+    expect(find.text('4 участника'), findsOneWidget);
+    expect(find.text('Алиса создал(а) группу «Поход на выходных»'), findsOneWidget);
+    // Имя автора над его сообщениями (у своих — нет).
+    expect(find.text('Макс'), findsOneWidget);
+    expect(find.text('Катя'), findsOneWidget);
+    // Сообщение в группу.
+    await tester.enterText(find.byType(TextField).last, 'Выезжаем в 8');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await settle(tester);
+    expect(find.text('Выезжаем в 8'), findsOneWidget);
+    // Экран группы: участники и администратор.
+    await tester.tap(find.text('4 участника'));
+    await settle(tester);
+    expect(find.text('Участники'), findsOneWidget);
+    expect(find.text('администратор'), findsOneWidget);
+    expect(find.text('Ты'), findsOneWidget);
+    expect(find.text('Выйти из группы'), findsOneWidget);
+    expect(find.byIcon(Icons.remove_circle_outline_rounded), findsNothing, reason: 'не админ');
+    await close(tester, state);
+  });
+
+  testWidgets('новая группа: название, участники, создание', (tester) async {
+    final state = await launch(tester, banner: false);
+    await tester.tap(
+      find.descendant(of: find.byType(ChatsTab), matching: find.byIcon(Icons.edit_rounded)),
+    );
+    await settle(tester);
+    await tester.tap(find.text('Новая группа'));
+    await settle(tester);
+    expect(find.text('Создать группу'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).first, 'Кино');
+    await tester.tap(find.text('Соня'));
+    await tester.tap(find.text('Дима'));
+    await tester.pump();
+    await tester.tap(find.text('Создать группу'));
+    await settle(tester);
+    final g = state.contacts.lastWhere((c) => c.isGroup);
+    expect(g.name, 'Кино');
+    expect(g.group!.members.map((m) => m.pub), ['me', 'sonya', 'dima']);
+    expect(g.group!.admin, 'me');
+    expect(find.text('3 участника'), findsOneWidget, reason: 'открылся чат группы');
+    expect(find.text('Ты создал(а) группу «Кино»'), findsOneWidget);
     await close(tester, state);
   });
 

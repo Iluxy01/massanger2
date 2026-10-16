@@ -18,7 +18,7 @@ class ContactsTab extends StatelessWidget {
     final app = context.app;
     final vc = app.colors;
     final top = MediaQuery.paddingOf(context).top;
-    final sorted = [...app.contacts]..sort((a, b) => a.name.compareTo(b.name));
+    final sorted = [...app.friends]..sort((a, b) => a.name.compareTo(b.name));
     final online = sorted.where((c) => c.online).length;
 
     // Группировка по первой букве.
