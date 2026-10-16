@@ -6,10 +6,13 @@ import '../widgets/rich_text.dart';
 
 /// Системные уведомления Android. Работают и в фоновой проверке.
 class SystemNotify implements Notify {
-  SystemNotify(this.showText);
+  SystemNotify(this.showText, [this.disguise]);
 
   /// Показывать ли текст сообщения (можно выключить в настройках).
   final bool Function() showText;
+
+  /// Маскировка значка (0 — нет): уведомление тоже «под прикрытием».
+  final int Function()? disguise;
 
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _ready = false;
@@ -39,14 +42,38 @@ class SystemNotify implements Notify {
     final who = from.group?.member(m.from ?? '');
     final preview = Fmt.plain(m.preview);
     final text = who == null ? preview : '${who.name}: $preview';
-    final body = m.secret
+    // Чат в тайнике: ни имени, ни текста — просто «Новое сообщение».
+    final hidden = from.hidden;
+    final body = hidden
+        ? 'Новое сообщение'
+        : m.secret
         ? '🔒 Секретное сообщение'
         : showText()
         ? text
         : 'Новое сообщение';
+    // Маскировка: ни имени, ни текста, ни слова «Veil».
+    final cover = disguise?.call() ?? 0;
+    if (cover > 0) {
+      await _plugin.show(
+        id: 7,
+        title: cover == 2 ? 'Заметки' : 'Калькулятор',
+        body: 'Новое уведомление',
+        notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+            'messages',
+            'Сообщения',
+            icon: cover == 2 ? 'ic_notes_fg' : 'ic_calc_fg',
+            importance: Importance.high,
+            priority: Priority.high,
+            visibility: NotificationVisibility.private,
+          ),
+        ),
+      );
+      return;
+    }
     await _plugin.show(
       id: from.id.hashCode & 0x7fffffff,
-      title: '${from.emoji} ${from.name}',
+      title: hidden ? 'Veil' : '${from.emoji} ${from.name}',
       body: body,
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(

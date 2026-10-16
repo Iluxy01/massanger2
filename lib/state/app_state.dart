@@ -53,6 +53,33 @@ class AppState extends ChangeNotifier {
   String? _demoPin;
   bool locked = false;
 
+  // ── Тайник ──
+
+  /// Задан PIN тайника (скрытые чаты).
+  bool vaultSet = false;
+
+  /// Тайник открыт (вошли PIN-ом тайника) — скрытые чаты видны до блокировки.
+  bool vaultOpen = false;
+
+  /// Задан PIN «под принуждением»; [duressWipe] — он стирает всё, а не прячет.
+  bool duressSet = false;
+  bool duressWipe = false;
+
+  /// Вошли PIN-ом «под принуждением»: тайника как будто нет.
+  bool decoy = false;
+
+  /// Маскировка значка: 0 — нет, 1 — «Калькулятор», 2 — «Заметки».
+  int disguise = 0;
+
+  /// Сейчас показана «обложка» (калькулятор / заметки) вместо Veil.
+  bool covered = false;
+
+  /// Заметки-обложка (в маскировке «Заметки»).
+  final List<String> coverNotes = [];
+
+  /// Демо: секреты в памяти.
+  final Map<String, String> _demoSecrets = {};
+
   int accentIndex = 0;
   bool dark = true;
   bool haptics = true;
@@ -202,6 +229,21 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  /// Виден ли чат сейчас (скрытые — только при открытом тайнике).
+  bool visible(Contact c) => !c.hidden || (vaultOpen && !decoy);
+
+  /// Чаты в тайнике (при входе «под принуждением» — пусто).
+  List<Contact> get hiddenChats {
+    if (decoy) return const [];
+    final list = contacts.where((c) => c.hidden).toList();
+    list.sort((a, b) {
+      final ta = lastMessage(a.id)?.time ?? DateTime(2000);
+      final tb = lastMessage(b.id)?.time ?? DateTime(2000);
+      return tb.compareTo(ta);
+    });
+    return list;
+  }
+
   /// Чаты: закреплённые сверху, остальные по времени последнего сообщения.
   /// Архивные — отдельно ([archivedChats]).
   List<Contact> get chatList => _chats(archived: false);
@@ -210,7 +252,10 @@ class AppState extends ChangeNotifier {
 
   List<Contact> _chats({required bool archived}) {
     final list = contacts
-        .where((c) => lastMessage(c.id) != null && this.archived.contains(c.id) == archived)
+        .where(
+          (c) =>
+              lastMessage(c.id) != null && visible(c) && this.archived.contains(c.id) == archived,
+        )
         .toList();
     list.sort((a, b) {
       final pa = pinned.contains(a.id), pb = pinned.contains(b.id);
@@ -220,7 +265,9 @@ class AppState extends ChangeNotifier {
     return list;
   }
 
-  int get totalUnread => unread.values.fold(0, (a, b) => a + b);
+  int get totalUnread => unread.entries
+      .where((e) => contact(e.key) == null || visible(contact(e.key)!))
+      .fold(0, (a, e) => a + e.value);
 
   int get totalMessages => _messages.values.fold(0, (a, b) => a + b.length);
 
@@ -326,6 +373,8 @@ class AppState extends ChangeNotifier {
     'motion': motion,
     'instant': instantNotify,
     if (ultra) 'ultra': true,
+    if (disguise > 0) 'disguise': disguise,
+    if (coverNotes.isNotEmpty) 'notes': coverNotes,
     'noteCam': noteCamera,
     'font': msgFont,
     'enter': enterSends,
@@ -361,6 +410,10 @@ class AppState extends ChangeNotifier {
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     instantNotify = s['instant'] == true;
     ultra = s['ultra'] == true;
+    disguise = ((s['disguise'] as num?)?.toInt() ?? 0).clamp(0, 2);
+    coverNotes
+      ..clear()
+      ..addAll((s['notes'] as List? ?? const []).whereType<String>());
     wifiHintShown = s['wifiHint'] == true;
     noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
     msgFont = ((s['font'] as num?)?.toInt() ?? 1).clamp(0, 2);
@@ -443,7 +496,10 @@ class AppState extends ChangeNotifier {
     if (demo || live == null) return;
     try {
       // В «Ультра» постоянную связь в фоне не держим — проверка по расписанию.
-      await _service.invokeMethod<bool>(instantNotify && !ultra ? 'start' : 'stop');
+      // При маскировке тоже: значок «Veil на связи» в шторке выдал бы приложение.
+      await _service.invokeMethod<bool>(
+        instantNotify && !ultra && disguise == 0 ? 'start' : 'stop',
+      );
     } catch (e) {
       debugPrint('service: $e');
     }
@@ -473,6 +529,127 @@ class AppState extends ChangeNotifier {
     _secure.invokeMethod('setSecure', screenshotProtection).catchError((_) => null);
   }
 
+  // ───────────────────────── Тайник ─────────────────────────
+
+  Future<void> _setSecret(String key, String? pin) async {
+    if (live != null) {
+      await live!.setSecret(key, pin);
+    } else {
+      pin == null ? _demoSecrets.remove(key) : _demoSecrets[key] = pin;
+    }
+  }
+
+  Future<bool> _checkSecret(String key, String pin) async =>
+      live != null ? live!.checkSecret(key, pin) : _demoSecrets[key] == pin;
+
+  /// Такой PIN уже занят (основной, тайника или «под принуждением») — нельзя.
+  Future<bool> pinTaken(String pin) async =>
+      (hasPin && await checkPin(pin)) ||
+      (vaultSet && await _checkSecret('vault', pin)) ||
+      (duressSet && await _checkSecret('duress', pin));
+
+  /// Задать / убрать PIN тайника. Без PIN скрытые чаты возвращаются в список.
+  Future<void> setVaultPin(String? pin) async {
+    if (decoy) return; // «под принуждением» — делаем вид, что всё получилось
+    await _setSecret('vault', pin);
+    vaultSet = pin != null;
+    if (pin == null) {
+      for (final c in contacts.where((c) => c.hidden).toList()) {
+        c.hidden = false;
+        await live?.saveContact(c);
+      }
+    }
+    notifyChanged();
+  }
+
+  /// Открыть тайник по PIN (для экрана скрытых чатов).
+  Future<bool> checkVault(String pin) async =>
+      !decoy && vaultSet && await _checkSecret('vault', pin);
+
+  /// Спрятать чат в тайник / вернуть.
+  void setHidden(String id, bool hidden) {
+    final c = contact(id);
+    if (c == null || (hidden && !vaultSet) || decoy) return;
+    c.hidden = hidden;
+    if (hidden) pinned.remove(id);
+    live?.saveContact(c);
+    _saveSettings();
+  }
+
+  /// PIN «под принуждением»: [wipe] — стирает всё, иначе открывает Veil без тайника.
+  Future<void> setDuressPin(String? pin, {bool wipe = false}) async {
+    if (decoy) return;
+    await _setSecret('duress', pin);
+    duressSet = pin != null;
+    duressWipe = pin != null && wipe;
+    if (live != null) await live!.secrets.write('duress_mode', duressWipe ? 'wipe' : 'hide');
+    notifyChanged();
+  }
+
+  Future<void> setDuressWipe(bool wipe) async {
+    if (decoy || !duressSet) return;
+    duressWipe = wipe;
+    if (live != null) await live!.secrets.write('duress_mode', wipe ? 'wipe' : 'hide');
+    notifyChanged();
+  }
+
+  static const _disguiseChannel = MethodChannel('veil/disguise');
+
+  /// Маскировка значка: 0 — Veil, 1 — «Калькулятор», 2 — «Заметки». [code] —
+  /// код входа (вводится в калькуляторе перед «=» или в поиске заметок).
+  Future<void> setDisguise(int mode, {String? code}) async {
+    if (decoy) return;
+    if (mode > 0 && code != null) await _setSecret('cover', code);
+    if (mode == 0) await _setSecret('cover', null);
+    disguise = mode;
+    _saveSettings();
+    await syncInstantService();
+    if (!demo) {
+      try {
+        await _disguiseChannel.invokeMethod('set', mode);
+      } catch (_) {}
+    }
+  }
+
+  /// Ввели код на «обложке». Верный — открываем Veil (это же и разблокировка).
+  Future<bool> tryCover(String code) async {
+    if (code.length < 4 || !await _checkSecret('cover', code)) return false;
+    covered = false;
+    // Код маскировки — тоже вход: PIN после него не спрашиваем.
+    locked = false;
+    decoy = false;
+    notifyChanged();
+    return true;
+  }
+
+  /// Ввод PIN на экране блокировки: основной, тайника или «под принуждением».
+  Future<bool> unlockWith(String pin) async {
+    if (await checkPin(pin)) {
+      decoy = false;
+      unlocked();
+      return true;
+    }
+    if (vaultSet && await _checkSecret('vault', pin)) {
+      decoy = false;
+      vaultOpen = true;
+      unlocked();
+      return true;
+    }
+    if (duressSet && await _checkSecret('duress', pin)) {
+      if (duressWipe) {
+        await wipeEverything();
+      } else {
+        decoy = true;
+        vaultOpen = false;
+        unlocked();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void saveCoverNotes() => _saveSettings();
+
   Future<void> setPin(String? value) async {
     if (live != null) {
       await live!.setPin(value);
@@ -486,9 +663,12 @@ class AppState extends ChangeNotifier {
   Future<bool> checkPin(String attempt) async =>
       live != null ? live!.checkPin(attempt) : attempt == _demoPin;
 
+  /// Свернули приложение (или «Заблокировать сейчас»): тайник закрывается,
+  /// включается обложка-маскировка и PIN.
   void lock() {
-    if (!hasPin) return;
-    locked = true;
+    vaultOpen = false;
+    if (disguise > 0) covered = true;
+    if (hasPin) locked = true;
     notifyChanged();
   }
 
@@ -670,7 +850,7 @@ class AppState extends ChangeNotifier {
       final i = k.indexOf('|');
       if (i < 0) continue;
       final c = contact(k.substring(0, i));
-      if (c == null) continue;
+      if (c == null || !visible(c)) continue;
       final id = k.substring(i + 1);
       for (final m in messagesOf(c.id)) {
         if (m.id == id) out.add((c, m));
@@ -890,7 +1070,7 @@ class AppState extends ChangeNotifier {
   /// Друзья (без групп).
   List<Contact> get friends => [
     for (final c in contacts)
-      if (!c.isGroup) c,
+      if (!c.isGroup && visible(c)) c,
   ];
 
   /// Имя участника группы: как он записан у меня в друзьях, иначе — как назвался.
@@ -1110,13 +1290,18 @@ class AppState extends ChangeNotifier {
 
   /// Новое входящее сообщение (из сети). [silent] — отправитель попросил без звука.
   Future<void> onIncoming(Contact c, Message m, {bool silent = false}) async {
-    final visible = foreground && openChat == c.id && !locked;
-    if (visible) {
+    final onScreen = foreground && openChat == c.id && !locked;
+    if (onScreen) {
       await live?.markRead(c.id, sendReceipt: readReceipts);
       return;
     }
     unread[c.id] = (unread[c.id] ?? 0) + 1;
     if (muted.contains(c.id) || silent) return;
+    // Скрытый чат: никаких всплывашек; системное уведомление — без имени и текста.
+    if (!visible(c)) {
+      if (!foreground || locked) await live?.notify?.message(c, m);
+      return;
+    }
     if (foreground && !locked) {
       _incoming.add(Incoming(c, m));
     } else {
@@ -1141,13 +1326,26 @@ class AppState extends ChangeNotifier {
     hasPin = false;
     _demoPin = null;
     locked = false;
+    vaultSet = false;
+    vaultOpen = false;
+    duressSet = false;
+    duressWipe = false;
+    decoy = false;
+    covered = false;
+    coverNotes.clear();
+    _demoSecrets.clear();
+    if (disguise > 0) {
+      disguise = 0;
+      if (!demo) _disguiseChannel.invokeMethod('set', 0).catchError((_) => null);
+    }
     final l = live;
     if (l != null) {
       final n = l.notify;
+      final restart = l.restart;
       await l.wipe();
       live = null;
       // Начинаем с чистого листа: новая пустая база.
-      await Live.boot(this);
+      await (restart?.call() ?? Live.boot(this));
       live?.notify = n;
     } else if (demo) {
       _seed();

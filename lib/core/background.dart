@@ -27,7 +27,7 @@ void backgroundDispatcher() {
       // оно само всё получает; не мешаем ему писать в базу.
       final alive = int.tryParse(await live.store.get('alive') ?? '') ?? 0;
       if (nowSec() - alive < 75) return true;
-      live.notify = SystemNotify(() => app.notificationText);
+      live.notify = SystemNotify(() => app.notificationText, () => app.disguise);
       final got = await live.syncOnce();
       final t = DateTime.now();
       await live.store.set(

@@ -109,6 +109,9 @@ class Contact {
   /// Закреплённое сообщение чата (id).
   String? pinnedMsg;
 
+  /// Спрятан в «Тайник»: не виден в списках, пока тайник закрыт.
+  bool hidden = false;
+
   /// Группа (а не человек): участники, администратор. id группы — `g_…`.
   GroupInfo? group;
   bool get isGroup => group != null;
@@ -140,6 +143,7 @@ class Contact {
     if (lastSeen != null) 'seen': lastSeen!.millisecondsSinceEpoch,
     if (group != null) 'grp': group!.toJson(),
     if (pinnedMsg != null) 'pm': pinnedMsg,
+    if (hidden) 'hid': true,
   };
 
   static Contact fromJson(Map<String, dynamic> j) =>
@@ -159,7 +163,8 @@ class Contact {
         ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0
         ..reach = cleanRelays(j['rl'])
         ..group = GroupInfo.fromJson(j['grp'])
-        ..pinnedMsg = j['pm'] as String?;
+        ..pinnedMsg = j['pm'] as String?
+        ..hidden = j['hid'] == true;
 }
 
 /// Участник группы — как его видят остальные.

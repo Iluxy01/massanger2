@@ -8,6 +8,7 @@ import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'chat_screen.dart';
 import 'group_screens.dart';
+import 'settings_tab.dart' show openVault;
 import '../widgets/visual.dart';
 
 class ChatsTab extends StatefulWidget {
@@ -76,16 +77,27 @@ class _ChatsTabState extends State<ChatsTab> {
                 padding: EdgeInsets.fromLTRB(20, top + 12, 12, 0),
                 child: Row(
                   children: [
-                    GradientText(
-                      'Veil',
-                      style: const TextStyle(
-                        fontSize: 38,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -1.5,
+                    GestureDetector(
+                      // Долгое нажатие на «Veil» — тайник (если он есть).
+                      onLongPress: app.vaultSet && !app.decoy ? () => openVault(context) : null,
+                      child: GradientText(
+                        'Veil',
+                        style: const TextStyle(
+                          fontSize: 38,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -1.5,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 10),
                     const _E2EChip(),
+                    if (app.vaultOpen && !app.decoy) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'Тайник открыт до блокировки',
+                        child: Icon(Icons.lock_open_rounded, color: app.accent.mid, size: 20),
+                      ),
+                    ],
                     if (app.ultra) ...[
                       const SizedBox(width: 6),
                       Tooltip(
@@ -614,6 +626,15 @@ class _ChatTile extends StatelessWidget {
                     Navigator.pop(ctx);
                   },
                 ),
+              if (app.vaultSet && !app.decoy)
+                _SheetAction(
+                  icon: contact.hidden ? Icons.lock_open_rounded : Icons.lock_rounded,
+                  label: contact.hidden ? 'Вернуть из тайника' : 'Спрятать в тайник',
+                  onTap: () {
+                    app.setHidden(contact.id, !contact.hidden);
+                    Navigator.pop(ctx);
+                  },
+                ),
               _SheetAction(
                 icon: app.archived.contains(contact.id)
                     ? Icons.unarchive_rounded
@@ -976,6 +997,57 @@ class ArchiveScreen extends StatelessWidget {
                   ),
                 ),
                 for (final c in chats) _ChatTile(contact: c),
+              ],
+            ),
+    );
+  }
+}
+
+/// Тайник: скрытые чаты. Открывается по PIN тайника.
+class VaultScreen extends StatelessWidget {
+  const VaultScreen({super.key});
+
+  static Route<void> route() => MaterialPageRoute(builder: (_) => const VaultScreen());
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final chats = app.hiddenChats;
+    return Scaffold(
+      backgroundColor: vc.bg,
+      appBar: AppBar(
+        backgroundColor: vc.bg,
+        foregroundColor: vc.text,
+        elevation: 0,
+        title: const Text('Тайник'),
+      ),
+      body: chats.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Text(
+                  'Здесь пусто. Спрятать чат — долгое нажатие на него в списке → '
+                  '«Спрятать в тайник».',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: vc.textDim, height: 1.4),
+                ),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.only(bottom: 40),
+              children: [
+                for (final c in chats)
+                  app.lastMessage(c.id) == null
+                      ? ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                          leading: Avatar.contact(c, size: 52),
+                          title: Text(c.name, style: TextStyle(color: vc.text)),
+                          subtitle: Text('Нет сообщений', style: TextStyle(color: vc.textDim)),
+                          onTap: () => Navigator.of(context).push(ChatScreen.route(c)),
+                          onLongPress: () => app.setHidden(c.id, false),
+                        )
+                      : _ChatTile(contact: c),
               ],
             ),
     );

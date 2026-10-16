@@ -38,11 +38,45 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+        </activity>
+        <!-- Значок на рабочем столе. Один из трёх включён: обычный Veil или
+             маскировка («Калькулятор», «Заметки») — см. «Тайник» в настройках. -->
+        <activity-alias
+            android:name=".LauncherVeil"
+            android:targetActivity=".MainActivity"
+            android:label="Veil"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="true"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-        </activity>
+        </activity-alias>
+        <activity-alias
+            android:name=".LauncherCalc"
+            android:targetActivity=".MainActivity"
+            android:label="Калькулятор"
+            android:icon="@mipmap/ic_calc"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".LauncherNotes"
+            android:targetActivity=".MainActivity"
+            android:label="Заметки"
+            android:icon="@mipmap/ic_notes"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
         <service
             android:name=".VeilService"
             android:exported="false"

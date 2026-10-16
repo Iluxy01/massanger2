@@ -41,6 +41,9 @@ class Live {
   /// Запущены фоновой проверкой (без интерфейса): файлы не качаем.
   bool background = false;
 
+  /// Запустить заново с теми же параметрами (после «стереть всё»).
+  Future<Live> Function()? restart;
+
   final AppState app;
   final Store store;
   final SecretBox secrets;
@@ -112,6 +115,17 @@ class Live {
     final s = secrets ?? DeviceSecrets();
     final store = await Store.open(s, factory: dbFactory, path: dbPath);
     final live = Live._(app, store!, s, connector, mediaDir, tempDir);
+    // После «стереть всё» — начать заново с теми же параметрами.
+    live.restart = () => boot(
+      app,
+      secrets: s,
+      dbFactory: dbFactory,
+      dbPath: dbPath,
+      connector: connector,
+      network: network,
+      mediaDir: mediaDir,
+      tempDir: tempDir,
+    );
     app.live = live;
     await live._load(network: network);
     return live;
@@ -134,6 +148,11 @@ class Live {
     }
     app.hasPin = (await secrets.read('pin') ?? '').isNotEmpty;
     app.locked = app.hasPin;
+    app.vaultSet = await hasSecret('vault');
+    app.duressSet = await hasSecret('duress');
+    app.duressWipe = await secrets.read('duress_mode') == 'wipe';
+    // Маскировка: при запуске — сначала «калькулятор» / «заметки».
+    app.covered = app.disguise > 0 && await hasSecret('cover');
 
     final synced = int.tryParse(await store.get('synced') ?? '');
     final legacy = int.tryParse(await store.get('since') ?? '');
@@ -1278,6 +1297,27 @@ class Live {
     final [salt, hash] = v.split(':');
     return _hash(salt, pin) == hash;
   }
+
+  // ── Тайник: PIN тайника, PIN «под принуждением», код входа маскировки ──
+  // Ключи: 'vault', 'duress', 'cover'. Тоже только соль и хэш, в Keystore.
+
+  Future<void> setSecret(String key, String? pin) async {
+    if (pin == null) {
+      await secrets.write(key, '');
+      return;
+    }
+    final salt = hexEncode(randomBytes(16));
+    await secrets.write(key, '$salt:${_hash(salt, pin)}');
+  }
+
+  Future<bool> checkSecret(String key, String pin) async {
+    final v = await secrets.read(key);
+    if (v == null || !v.contains(':')) return false;
+    final [salt, hash] = v.split(':');
+    return _hash(salt, pin) == hash;
+  }
+
+  Future<bool> hasSecret(String key) async => (await secrets.read(key) ?? '').contains(':');
 
   static String _hash(String salt, String pin) {
     List<int> h = utf8.encode('$salt$pin');

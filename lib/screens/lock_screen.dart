@@ -7,14 +7,45 @@ import '../widgets/visual.dart';
 
 /// PIN-код: разблокировка приложения или установка нового кода.
 class LockScreen extends StatefulWidget {
-  const LockScreen({super.key, this.setup = false});
+  const LockScreen({
+    super.key,
+    this.setup = false,
+    this.title,
+    this.subtitle,
+    this.onCreate,
+    this.verify,
+  });
 
   /// true — создаём новый PIN (ввод + подтверждение).
   final bool setup;
 
-  static Route<bool> setupRoute() => PageRouteBuilder(
+  /// Свои заголовок и подпись (PIN тайника, «под принуждением»…).
+  final String? title;
+  final String? subtitle;
+
+  /// Создание своего PIN: вернуть текст ошибки или null, если всё хорошо.
+  /// Без него — задаётся основной PIN приложения.
+  final Future<String?> Function(String pin)? onCreate;
+
+  /// Своя проверка (например, открыть тайник). Без неё — разблокировка приложения.
+  final Future<bool> Function(String pin)? verify;
+
+  static Route<bool> setupRoute({
+    String? title,
+    String? subtitle,
+    Future<String?> Function(String pin)? onCreate,
+  }) => _route(LockScreen(setup: true, title: title, subtitle: subtitle, onCreate: onCreate));
+
+  /// Спросить PIN (например, тайника). true — верный.
+  static Route<bool> verifyRoute({
+    required String title,
+    String? subtitle,
+    required Future<bool> Function(String pin) verify,
+  }) => _route(LockScreen(title: title, subtitle: subtitle, verify: verify));
+
+  static Route<bool> _route(LockScreen screen) => PageRouteBuilder(
     transitionDuration: const Duration(milliseconds: 450),
-    pageBuilder: (_, _, _) => const LockScreen(setup: true),
+    pageBuilder: (_, _, _) => screen,
     transitionsBuilder: (_, a, _, c) => FadeTransition(
       opacity: a,
       child: ScaleTransition(scale: Tween(begin: 1.06, end: 1.0).animate(a), child: c),
@@ -31,11 +62,13 @@ class _LockScreenState extends State<LockScreen> {
   String? _first;
   int _shake = 0;
   bool _error = false;
+  String? _errorText;
   bool _success = false;
 
   String get _title {
-    if (!widget.setup) return 'Введите PIN';
-    return _first == null ? 'Придумайте PIN' : 'Повторите PIN';
+    if (!widget.setup) return widget.title ?? 'Введите PIN';
+    if (_first != null) return 'Повторите PIN';
+    return widget.title ?? 'Придумайте PIN';
   }
 
   void _press(String d) {
@@ -65,8 +98,26 @@ class _LockScreenState extends State<LockScreen> {
           _input = '';
         });
       } else if (_first == _input) {
+        final create = widget.onCreate;
+        final pin = _input;
+        if (create != null) {
+          final err = await create(pin);
+          if (!mounted) return;
+          if (err != null) {
+            _fail(resetFirst: true, text: err);
+            return;
+          }
+          _ok(() => Navigator.of(context).pop(true));
+          return;
+        }
+        // Основной PIN не должен совпадать с PIN тайника или «под принуждением».
+        if (await app.pinTaken(pin)) {
+          if (mounted) _fail(resetFirst: true, text: 'Этот PIN уже занят');
+          return;
+        }
+        if (!mounted) return;
         _ok(() {
-          app.setPin(_input);
+          app.setPin(pin);
           Navigator.of(context).pop(true);
         });
       } else {
@@ -74,9 +125,19 @@ class _LockScreenState extends State<LockScreen> {
       }
       return;
     }
-    if (await app.checkPin(_input)) {
-      _ok(app.unlocked);
-    } else {
+    final verify = widget.verify;
+    if (verify != null) {
+      if (await verify(_input)) {
+        if (mounted) _ok(() => Navigator.of(context).pop(true));
+      } else if (mounted) {
+        _fail();
+      }
+      return;
+    }
+    // Экран блокировки: основной PIN, PIN тайника или «под принуждением».
+    if (await app.unlockWith(_input)) {
+      if (mounted) setState(() => _success = true);
+    } else if (mounted) {
       _fail();
     }
   }
@@ -89,10 +150,11 @@ class _LockScreenState extends State<LockScreen> {
     });
   }
 
-  void _fail({bool resetFirst = false}) {
+  void _fail({bool resetFirst = false, String? text}) {
     context.appRead.tick(HapticKind.heavy);
     setState(() {
       _error = true;
+      _errorText = text;
       _shake++;
       _input = '';
       if (resetFirst) _first = null;
@@ -110,7 +172,7 @@ class _LockScreenState extends State<LockScreen> {
         child: SafeArea(
           child: Column(
             children: [
-              if (widget.setup)
+              if (widget.setup || widget.verify != null)
                 Align(
                   alignment: Alignment.centerLeft,
                   child: IconButton(
@@ -129,7 +191,9 @@ class _LockScreenState extends State<LockScreen> {
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 250).by(context),
                 child: Text(
-                  _error ? (widget.setup ? 'Не совпадает, ещё раз' : 'Неверный PIN') : _title,
+                  _error
+                      ? (_errorText ?? (widget.setup ? 'Не совпадает, ещё раз' : 'Неверный PIN'))
+                      : _title,
                   key: ValueKey('$_title$_error'),
                   style: TextStyle(
                     color: _error ? VeilColors.danger : vc.text,
@@ -140,7 +204,11 @@ class _LockScreenState extends State<LockScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                widget.setup ? 'Код защищает переписку на этом устройстве' : 'Veil заблокирован',
+                widget.subtitle ??
+                    (widget.setup
+                        ? 'Код защищает переписку на этом устройстве'
+                        : 'Veil заблокирован'),
+                textAlign: TextAlign.center,
                 style: TextStyle(color: vc.textDim, fontSize: 14),
               ),
               const SizedBox(height: 32),

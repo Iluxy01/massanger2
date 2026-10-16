@@ -1,6 +1,9 @@
 package app.veil.veil
 
+import android.app.ActivityManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -75,6 +78,30 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        // Маскировка значка: включить один из трёх «входов» (Veil / Калькулятор / Заметки).
+        showDisguiseLabel()
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "veil/disguise")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "set") {
+                    val mode = ((call.arguments as? Int) ?: 0).coerceIn(0, 2)
+                    try {
+                        LAUNCHERS.forEachIndexed { i, name ->
+                            packageManager.setComponentEnabledSetting(
+                                ComponentName(this, "$PKG.$name"),
+                                if (i == mode) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                                else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                                PackageManager.DONT_KILL_APP,
+                            )
+                        }
+                        showDisguiseLabel()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                } else {
+                    result.notImplemented()
+                }
+            }
         // Какая сеть сейчас: Wi-Fi или нет (для подсказки об отправке файлов).
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "veil/net")
             .setMethodCallHandler { call, result ->
@@ -123,7 +150,23 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    /** В списке недавних приложений — то же имя, что и на значке. */
+    private fun showDisguiseLabel() {
+        try {
+            val mode = LAUNCHERS.indexOfFirst {
+                packageManager.getComponentEnabledSetting(ComponentName(this, "$PKG.$it")) ==
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            }
+            if (mode > 0) setTaskDescription(ActivityManager.TaskDescription(LABELS[mode]))
+            else setTaskDescription(ActivityManager.TaskDescription("Veil"))
+        } catch (_: Exception) {
+        }
+    }
+
     companion object {
+        private const val PKG = "app.veil.veil"
+        private val LAUNCHERS = listOf("LauncherVeil", "LauncherCalc", "LauncherNotes")
+        private val LABELS = listOf("Veil", "Калькулятор", "Заметки")
         const val ENGINE = "veil_main"
         const val PREFS = "veil_native"
         const val INSTANT = "instant"

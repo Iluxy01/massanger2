@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Маскировка «Калькулятор»: корпус, экран и кнопки (в безопасной зоне 66dp) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFECEFF1"
+        android:pathData="M38,28h32a4,4 0,0 1,4 4v44a4,4 0,0 1,-4 4h-32a4,4 0,0 1,-4 -4v-44a4,4 0,0 1,4 -4z"/>
+    <path android:fillColor="#FF80CBC4"
+        android:pathData="M40,33h28v11h-28z"/>
+    <path android:fillColor="#FF546E7A"
+        android:pathData="M40,49h7v6h-7zM50.5,49h7v6h-7zM61,49h7v6h-7zM40,59h7v6h-7zM50.5,59h7v6h-7zM40,69h7v6h-7zM50.5,69h7v6h-7z"/>
+    <path android:fillColor="#FFFF7043"
+        android:pathData="M61,59h7v16h-7z"/>
+</vector>

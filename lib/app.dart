@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/chat_screen.dart';
+import 'screens/cover_screens.dart';
 import 'screens/home_screen.dart';
 import 'screens/lock_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -84,6 +85,8 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
                     const _InAppBanner(),
                     // Экран блокировки — поверх всего, включая открытые чаты.
                     const _LockLayer(),
+                    // Маскировка («Калькулятор» / «Заметки») — ещё выше.
+                    const _CoverLayer(),
                   ],
                 ),
               ),
@@ -151,6 +154,14 @@ class _NoTransitions extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) => child;
+}
+
+class _CoverLayer extends StatelessWidget {
+  const _CoverLayer();
+
+  @override
+  Widget build(BuildContext context) =>
+      context.app.covered ? const CoverScreen() : const SizedBox.shrink();
 }
 
 class _LockLayer extends StatelessWidget {
@@ -227,7 +238,7 @@ class _InAppBannerState extends State<_InAppBanner> {
     _sub ??= context.appRead.incoming.listen((e) {
       if (!mounted) return;
       final app = context.appRead;
-      if (app.locked || !app.inAppBanner) return;
+      if (app.locked || app.covered || !app.inAppBanner) return;
       app.tick(HapticKind.light);
       setState(() {
         _current = e;

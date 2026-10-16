@@ -12,6 +12,7 @@ import 'favorites_screen.dart';
 import 'lock_screen.dart';
 import '../widgets/visual.dart';
 import 'backup_screens.dart';
+import 'chats_tab.dart' show VaultScreen;
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
@@ -214,6 +215,12 @@ class SettingsTab extends StatelessWidget {
             const _Section('Приватность'),
             _Group(
               children: [
+                _Tile(
+                  icon: Icons.shield_moon_rounded,
+                  title: 'Тайник',
+                  subtitle: 'Скрытые чаты, PIN «под принуждением», маскировка значка',
+                  onTap: () => Navigator.of(context).push(VaultSettingsScreen.route()),
+                ),
                 _Tile(
                   icon: Icons.pin_rounded,
                   title: 'PIN-код',
@@ -1506,4 +1513,229 @@ class _UltraCard extends StatelessWidget {
       ),
     );
   }
+}
+
+// ───────────────────────────── Тайник ─────────────────────────────
+
+/// «Тайник»: скрытые чаты, PIN «под принуждением», маскировка значка.
+/// При входе «под принуждением» всё здесь выглядит выключенным.
+class VaultSettingsScreen extends StatelessWidget {
+  const VaultSettingsScreen({super.key});
+
+  static Route<void> route() => MaterialPageRoute(builder: (_) => const VaultSettingsScreen());
+
+  /// Новый PIN для тайника / «под принуждением»: 4 цифры, не совпадает с другими.
+  static Future<String?> _newPin(BuildContext context, String title, String subtitle) async {
+    String? picked;
+    final ok = await Navigator.of(context).push(
+      LockScreen.setupRoute(
+        title: title,
+        subtitle: subtitle,
+        onCreate: (pin) async {
+          if (await context.appRead.pinTaken(pin)) return 'Этот PIN уже занят';
+          picked = pin;
+          return null;
+        },
+      ),
+    );
+    return ok == true ? picked : null;
+  }
+
+  Future<void> _toggleVault(BuildContext context, bool on) async {
+    final app = context.appRead;
+    if (!on) {
+      await app.setVaultPin(null);
+      if (context.mounted) {
+        showVeilToast(context, 'Тайник выключен — скрытые чаты вернулись', icon: Icons.lock_open);
+      }
+      return;
+    }
+    final pin = await _newPin(
+      context,
+      'PIN тайника',
+      'Отдельный код для скрытых чатов. Не совпадает с обычным PIN',
+    );
+    if (pin == null || !context.mounted) return;
+    await app.setVaultPin(pin);
+    if (context.mounted) {
+      showVeilToast(
+        context,
+        'Тайник готов. Спрятать чат — долгое нажатие на чат',
+        icon: Icons.lock,
+      );
+    }
+  }
+
+  Future<void> _toggleDuress(BuildContext context, bool on) async {
+    final app = context.appRead;
+    if (!on) {
+      await app.setDuressPin(null);
+      return;
+    }
+    if (!app.hasPin && !app.decoy) {
+      showVeilToast(context, 'Сначала включи обычный PIN-код', icon: Icons.pin_rounded);
+      return;
+    }
+    final pin = await _newPin(
+      context,
+      'PIN «под принуждением»',
+      'Введёшь его вместо обычного — Veil откроется без тайника',
+    );
+    if (pin == null || !context.mounted) return;
+    await app.setDuressPin(pin, wipe: app.duressWipe);
+  }
+
+  Future<void> _setDisguise(BuildContext context, int mode) async {
+    final app = context.appRead;
+    if (mode == app.disguise) return;
+    if (mode == 0) {
+      await app.setDisguise(0);
+      if (context.mounted) {
+        showVeilToast(context, 'Значок Veil вернётся через несколько секунд', icon: Icons.apps);
+      }
+      return;
+    }
+    final code = await _newPin(
+      context,
+      'Код входа',
+      mode == 1
+          ? 'Чтобы открыть Veil: набери код в калькуляторе и нажми «=»'
+          : 'Чтобы открыть Veil: введи код в поиске заметок',
+    );
+    if (code == null || !context.mounted) return;
+    await app.setDisguise(mode, code: code);
+    if (context.mounted) {
+      showVeilToast(
+        context,
+        'Значок сменится через несколько секунд. Вход — код ${mode == 1 ? 'и «=»' : 'в поиске'}',
+        icon: mode == 1 ? Icons.calculate_rounded : Icons.sticky_note_2_rounded,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    // «Под принуждением» — как будто ничего не настроено.
+    final vaultOn = app.vaultSet && !app.decoy;
+    final duressOn = app.duressSet && !app.decoy;
+    final disguise = app.decoy ? 0 : app.disguise;
+    final hint = TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.4);
+
+    return Scaffold(
+      backgroundColor: vc.bg,
+      appBar: AppBar(
+        backgroundColor: vc.bg,
+        foregroundColor: vc.text,
+        elevation: 0,
+        title: const Text('Тайник'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
+        children: [
+          const _Section('Скрытые чаты'),
+          _Group(
+            children: [
+              _Tile(
+                icon: Icons.lock_rounded,
+                title: 'PIN тайника',
+                subtitle: vaultOn ? 'Включён' : 'Выключен',
+                trailing: VeilSwitch(value: vaultOn, onChanged: (v) => _toggleVault(context, v)),
+              ),
+              if (vaultOn)
+                _Tile(
+                  icon: Icons.folder_special_rounded,
+                  title: 'Открыть тайник',
+                  subtitle: 'Чатов: ${app.hiddenChats.length}',
+                  onTap: () => openVault(context),
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
+            child: Text(
+              'Скрытые чаты не видны в списке, в друзьях, в поиске и в уведомлениях '
+              '(придёт просто «Новое сообщение»). Спрятать — долгое нажатие на чат → '
+              '«Спрятать в тайник». Открыть — долгое нажатие на надпись Veil вверху '
+              'списка чатов или ввести PIN тайника вместо обычного на экране блокировки.',
+              style: hint,
+            ),
+          ),
+          const _Section('PIN «под принуждением»'),
+          _Group(
+            children: [
+              _Tile(
+                icon: Icons.masks_rounded,
+                title: 'PIN «под принуждением»',
+                subtitle: duressOn
+                    ? 'Включён'
+                    : app.hasPin
+                    ? 'Выключен'
+                    : 'Нужен обычный PIN-код',
+                trailing: VeilSwitch(value: duressOn, onChanged: (v) => _toggleDuress(context, v)),
+              ),
+              if (duressOn)
+                _LevelPicker(
+                  icon: Icons.warning_amber_rounded,
+                  title: 'Что он делает',
+                  labels: const ['Прячет тайник', 'Стирает всё'],
+                  hints: const [
+                    'Veil откроется как обычно, но без скрытых чатов и без тайника',
+                    'Всё будет стёрто с телефона без вопросов — как новое приложение',
+                  ],
+                  value: app.duressWipe ? 1 : 0,
+                  onChanged: (v) => app.setDuressWipe(v == 1),
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
+            child: Text(
+              'Если тебя заставят открыть Veil — введи этот PIN вместо обычного. '
+              'Снаружи это выглядит как обычный вход.',
+              style: hint,
+            ),
+          ),
+          const _Section('Маскировка значка'),
+          _Group(
+            children: [
+              _LevelPicker(
+                icon: Icons.theater_comedy_rounded,
+                title: 'Значок на рабочем столе',
+                labels: const ['Veil', 'Калькулятор', 'Заметки'],
+                hints: const [
+                  'Обычный значок',
+                  'Открывается рабочий калькулятор; Veil — код и «=»',
+                  'Открываются заметки; Veil — код в поиске',
+                ],
+                value: disguise,
+                onChanged: (v) => _setDisguise(context, v),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
+            child: Text(
+              'В маскировке уведомления приходят как «Новое уведомление» от '
+              'калькулятора или заметок, а «мгновенные уведомления» выключаются — '
+              'значок «Veil на связи» в шторке выдал бы приложение. При смене значка '
+              'Android может закрыть приложение и переложить значок на рабочем столе.',
+              style: hint,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Открыть список скрытых чатов (по PIN тайника).
+Future<void> openVault(BuildContext context) async {
+  final app = context.appRead;
+  final nav = Navigator.of(context);
+  final ok = await nav.push(
+    LockScreen.verifyRoute(title: 'PIN тайника', subtitle: 'Скрытые чаты', verify: app.checkVault),
+  );
+  if (ok == true) await nav.push(VaultScreen.route());
 }
