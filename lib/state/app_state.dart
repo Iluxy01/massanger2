@@ -87,6 +87,9 @@ class AppState extends ChangeNotifier {
   final Set<String> pinned = {};
   final Set<String> muted = {};
   final Set<String> typing = {};
+
+  /// Кто именно печатает в группе (id группы → ключ участника).
+  final Map<String, String> typingBy = {};
   final Map<String, int> unread = {};
   final Map<String, String> drafts = {};
 
@@ -454,8 +457,12 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
-  /// Удалить друга полностью — вместе с перепиской.
+  /// Удалить друга (или группу) полностью — вместе с перепиской.
   Future<void> deleteContact(String id) async {
+    // Из группы сначала выходим — чтобы остальные знали.
+    if (contact(id)?.group case final g? when !g.left && !(contact(id)?.request ?? false)) {
+      await leaveGroup(id);
+    }
     pinned.remove(id);
     muted.remove(id);
     unread.remove(id);
@@ -560,21 +567,12 @@ class AppState extends ChangeNotifier {
     GeoPoint? geo,
     Poll? poll,
     String? id,
+    String? fwd,
+    bool silent = false,
   }) {
-    // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
-    // (в базе время хранится с точностью до миллисекунды).
-    var ms = DateTime.now().millisecondsSinceEpoch;
-    final last = lastMessage(chatId);
-    if (last != null && ms <= last.time.millisecondsSinceEpoch) {
-      ms = last.time.millisecondsSinceEpoch + 1;
-    }
-    final time = DateTime.fromMillisecondsSinceEpoch(ms);
-    final m = Message(
-      id: id ?? newMessageId(),
-      mine: true,
-      text: text,
-      time: time,
-      status: MsgStatus.sending,
+    final m = compose(
+      chatId,
+      text,
       replyTo: replyTo,
       secret: secret,
       kind: kind,
@@ -582,8 +580,9 @@ class AppState extends ChangeNotifier {
       att: att,
       geo: geo,
       poll: poll,
+      id: id,
+      fwd: fwd,
     );
-    messagesOf(chatId).add(m);
     drafts.remove(chatId);
     final c = contact(chatId);
     if (c != null && c.request) {
@@ -594,11 +593,181 @@ class AppState extends ChangeNotifier {
     }
     notifyChanged();
     if (live != null) {
-      live!.sendMessage(chatId, m).then((_) => notifyChanged());
+      live!.sendMessage(chatId, m, silent: silent).then((_) => notifyChanged());
     } else {
       _simulateReply(chatId, m);
     }
     return m;
+  }
+
+  /// Новое исходящее сообщение в ленте чата (ещё не отправлено).
+  Message compose(
+    String chatId,
+    String text, {
+    Message? replyTo,
+    bool secret = false,
+    MsgKind kind = MsgKind.text,
+    int voiceSeconds = 0,
+    Attachment? att,
+    GeoPoint? geo,
+    Poll? poll,
+    String? id,
+    String? fwd,
+    String? ev,
+  }) {
+    // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
+    // (в базе время хранится с точностью до миллисекунды).
+    var ms = DateTime.now().millisecondsSinceEpoch;
+    final last = lastMessage(chatId);
+    if (last != null && ms <= last.time.millisecondsSinceEpoch) {
+      ms = last.time.millisecondsSinceEpoch + 1;
+    }
+    final m = Message(
+      id: id ?? newMessageId(),
+      mine: true,
+      text: text,
+      time: DateTime.fromMillisecondsSinceEpoch(ms),
+      status: kind == MsgKind.event && live == null ? MsgStatus.read : MsgStatus.sending,
+      replyTo: replyTo,
+      secret: secret,
+      kind: kind,
+      voiceSeconds: voiceSeconds,
+      att: att,
+      geo: geo,
+      poll: poll,
+      fwd: fwd,
+      ev: ev,
+    );
+    messagesOf(chatId).add(m);
+    return m;
+  }
+
+  // ───────────────────────── Группы ─────────────────────────
+
+  /// Друзья (без групп).
+  List<Contact> get friends => [
+    for (final c in contacts)
+      if (!c.isGroup) c,
+  ];
+
+  /// Имя участника группы: как он записан у меня в друзьях, иначе — как назвался.
+  String memberName(String chatId, String pub) {
+    if (pub == me) return profile?.name ?? 'Я';
+    final c = contact(pub);
+    if (c != null && !c.isGroup) return c.name;
+    return contact(chatId)?.group?.member(pub)?.name ?? 'Участник';
+  }
+
+  GroupMember _meAsMember() => GroupMember(
+    pub: me,
+    name: profile?.name ?? 'Я',
+    emoji: profile?.emoji ?? '🙂',
+    color: profile?.colorIndex ?? 0,
+  );
+
+  static GroupMember _asMember(Contact c) =>
+      GroupMember(pub: c.id, name: c.name, emoji: c.emoji, color: c.colorIndex);
+
+  /// Создать группу из друзей [pubs].
+  Future<Contact> createGroup({
+    required String name,
+    required String emoji,
+    required int colorIndex,
+    required List<String> pubs,
+  }) async {
+    final members = [
+      _meAsMember(),
+      for (final pub in pubs.take(GroupInfo.maxMembers - 1))
+        if (contact(pub) case final c? when !c.isGroup) _asMember(c),
+    ];
+    final g = Contact(
+      id: 'g_${randomHex(32).toLowerCase()}',
+      name: name,
+      emoji: emoji,
+      colorIndex: colorIndex,
+    )..group = GroupInfo(members: members, admin: me, ver: DateTime.now().millisecondsSinceEpoch);
+    contacts.add(g);
+    await live?.saveContact(g);
+    await _groupEvent(g, 'create', 'создал(а) группу «$name»');
+    return g;
+  }
+
+  /// Добавить друзей в группу (только администратор).
+  Future<void> addMembers(String groupId, List<String> pubs) async {
+    final g = contact(groupId);
+    final info = g?.group;
+    if (g == null || info == null || info.admin != me) return;
+    final added = <GroupMember>[];
+    for (final pub in pubs) {
+      final c = contact(pub);
+      if (c == null || c.isGroup || info.has(pub)) continue;
+      if (info.members.length >= GroupInfo.maxMembers) break;
+      added.add(_asMember(c));
+    }
+    if (added.isEmpty) return;
+    info.members.addAll(added);
+    info.ver = DateTime.now().millisecondsSinceEpoch;
+    await live?.saveContact(g);
+    await _groupEvent(g, 'add', 'добавил(а): ${added.map((m) => m.name).join(', ')}');
+  }
+
+  /// Удалить участника (только администратор). Он узнает об этом последним сообщением.
+  Future<void> removeMember(String groupId, String pub) async {
+    final g = contact(groupId);
+    final info = g?.group;
+    if (g == null || info == null || info.admin != me || pub == me) return;
+    final m = info.member(pub);
+    if (m == null) return;
+    info.members.remove(m);
+    info.ver = DateTime.now().millisecondsSinceEpoch;
+    await live?.saveContact(g);
+    await _groupEvent(g, 'remove', 'удалил(а): ${memberName(groupId, pub)}', extra: [pub]);
+  }
+
+  /// Переименовать группу / сменить значок (только администратор).
+  Future<void> editGroup(String groupId, {required String name, required String emoji}) async {
+    final g = contact(groupId);
+    final info = g?.group;
+    if (g == null || info == null || info.admin != me) return;
+    if (g.name == name && g.emoji == emoji) return;
+    g
+      ..name = name
+      ..emoji = emoji;
+    info.ver = DateTime.now().millisecondsSinceEpoch;
+    await live?.saveContact(g);
+    await _groupEvent(g, 'rename', 'изменил(а) группу: $emoji $name');
+  }
+
+  /// Выйти из группы. Администратор передаёт права следующему участнику.
+  Future<void> leaveGroup(String groupId) async {
+    final g = contact(groupId);
+    final info = g?.group;
+    if (g == null || info == null || info.left) return;
+    if (info.admin == me) {
+      final next = info.members.where((m) => m.pub != me).firstOrNull;
+      if (next != null) {
+        info.admin = next.pub;
+        info.ver = DateTime.now().millisecondsSinceEpoch;
+      }
+    }
+    // Сначала отправить «вышел» всем, потом отметить выход.
+    await _groupEvent(g, 'leave', 'вышел(а) из группы');
+    info.left = true;
+    info.members.removeWhere((m) => m.pub == me);
+    await live?.saveContact(g);
+    notifyChanged();
+  }
+
+  Future<void> _groupEvent(
+    Contact g,
+    String ev,
+    String text, {
+    List<String> extra = const [],
+  }) async {
+    final m = compose(g.id, text, kind: MsgKind.event, ev: ev);
+    notifyChanged();
+    await live?.sendMessage(g.id, m, extra: extra);
+    notifyChanged();
   }
 
   String newMessageId() => randomHex(16).toLowerCase();
@@ -682,15 +851,15 @@ class AppState extends ChangeNotifier {
   /// Повторить отправку файла после ошибки.
   void retrySend(String chatId, Message m) => live?.media.send(chatId, m);
 
-  /// Новое входящее сообщение (из сети).
-  Future<void> onIncoming(Contact c, Message m) async {
+  /// Новое входящее сообщение (из сети). [silent] — отправитель попросил без звука.
+  Future<void> onIncoming(Contact c, Message m, {bool silent = false}) async {
     final visible = foreground && openChat == c.id && !locked;
     if (visible) {
       await live?.markRead(c.id, sendReceipt: readReceipts);
       return;
     }
     unread[c.id] = (unread[c.id] ?? 0) + 1;
-    if (muted.contains(c.id)) return;
+    if (muted.contains(c.id) || silent) return;
     if (foreground && !locked) {
       _incoming.add(Incoming(c, m));
     } else {

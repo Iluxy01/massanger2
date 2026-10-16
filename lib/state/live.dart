@@ -326,7 +326,9 @@ class Live {
     await store.setJson('profile', app.profile!.toJson());
     if (!broadcast) return;
     for (final c in app.contacts) {
-      if (!c.blocked) _control(c.id, Payload(Payload.profile, {'p': myCard.toJson()}));
+      if (!c.blocked && !c.isGroup) {
+        _control(c.id, Payload(Payload.profile, {'p': myCard.toJson()}));
+      }
     }
   }
 
@@ -492,6 +494,8 @@ class Live {
   }
 
   Future<void> _handle(String sender, Payload p, DateTime sentAt) async {
+    final gid = p.str('g');
+    if (gid != null) return _handleGroup(sender, gid, p, sentAt);
     var c = app.contact(sender);
     if (c != null && c.blocked) return;
     final card = VeilCard.fromJson(p.data['p']);
@@ -533,7 +537,101 @@ class Live {
     } else if (fresh && (p.type == Payload.typing || p.type == Payload.msg)) {
       _seenOnline(c);
     }
+    await _apply(sender, sender, c, p, sentAt);
+  }
 
+  static String _clip(Object? v, String fallback, [int max = 40]) {
+    if (v is! String || v.trim().isEmpty) return fallback;
+    final t = v.trim();
+    return t.length > max ? t.substring(0, max) : t;
+  }
+
+  /// Сведения о группе для сообщения: название, значок, состав.
+  Map<String, dynamic> _groupWire(Contact g) => {
+    'n': g.name,
+    'e': g.emoji,
+    'c': g.colorIndex,
+    ...g.group!.toJson()..remove('left'),
+  };
+
+  /// Сообщение или служебный сигнал внутри группы.
+  Future<void> _handleGroup(String sender, String gid, Payload p, DateTime sentAt) async {
+    final me = keys!.pub;
+    if (!Contact.isGroupId(gid) || gid.length > 40) return;
+    final sc = app.contact(sender);
+    if (sc != null && sc.blocked) return;
+    var g = app.contact(gid);
+    final wire = p.data['gi'] is Map ? p.data['gi'] as Map : null;
+    final info = GroupInfo.fromJson(wire);
+    if (g == null) {
+      // О группе узнаём из её сообщения — если в составе и мы, и отправитель.
+      if (p.type != Payload.msg || info == null || !info.has(me) || !info.has(sender)) return;
+      g = Contact(
+        id: gid,
+        name: _clip(wire!['n'], 'Группа'),
+        emoji: _clip(wire['e'], '👥', 16),
+        colorIndex: wire['c'] is num ? (wire['c'] as num).toInt() : 0,
+        // Позвал не друг — сначала спросим, хочешь ли в эту группу.
+        request: sc == null || sc.request,
+      )..group = info;
+      app.contacts.add(g);
+      await saveContact(g);
+      log('новая группа «${g.name}» от ${who(sender)}');
+    } else if (g.group == null) {
+      return;
+    } else if (info != null && sender == g.group!.admin && info.ver > g.group!.ver) {
+      // Администратор изменил группу: состав, название, значок.
+      final was = g.group!.left;
+      g
+        ..name = _clip(wire!['n'], g.name)
+        ..emoji = _clip(wire['e'], g.emoji, 16)
+        ..colorIndex = wire['c'] is num ? (wire['c'] as num).toInt() : g.colorIndex
+        ..group = (info..left = !info.has(me));
+      if (was != info.left) {
+        log('группа «${g.name}»: ${info.left ? 'меня удалили' : 'я снова в ней'}');
+      }
+      await saveContact(g);
+    }
+    final group = g.group!;
+    final member = group.member(sender);
+    if (member == null) return; // не участник (или уже вышел)
+    // Свежая визитка отправителя — имя в группе обновится.
+    final card = VeilCard.fromJson(p.data['p']);
+    if (card != null &&
+        (card.name != member.name || card.emoji != member.emoji || card.color != member.color)) {
+      member
+        ..name = card.name
+        ..emoji = card.emoji
+        ..color = card.color;
+      await saveContact(g);
+    }
+    final fresh = DateTime.now().difference(sentAt).inSeconds.abs() < 120;
+    if (sc != null && fresh && (p.type == Payload.typing || p.type == Payload.msg)) {
+      _seenOnline(sc);
+    }
+    if (group.left && p.type != Payload.msg) return;
+    await _apply(gid, sender, g, p, sentAt);
+  }
+
+  /// Участник вышел из группы (по своему сообщению).
+  Future<void> _memberLeft(Contact g, String pub) async {
+    final group = g.group!;
+    group.members.removeWhere((m) => m.pub == pub);
+    if (group.admin == pub && group.members.isNotEmpty) group.admin = group.members.first.pub;
+    // Администратор фиксирует новый состав — следующее сообщение разнесёт его всем.
+    if (group.admin == keys?.pub) group.ver = DateTime.now().millisecondsSinceEpoch;
+    await saveContact(g);
+  }
+
+  /// Ответ отправителю (отчёт, «положил туда»): в группе — с пометкой группы.
+  void _reply(String to, String chat, Payload p) {
+    if (Contact.isGroupId(chat)) p.data['g'] = chat;
+    _control(to, p);
+  }
+
+  /// Общая обработка: [chat] — куда (собеседник или группа), [sender] — кто прислал.
+  Future<void> _apply(String chat, String sender, Contact c, Payload p, DateTime sentAt) async {
+    final group = c.isGroup;
     switch (p.type) {
       case Payload.msg:
         final id = p.str('id'), text = p.str('text') ?? '';
@@ -551,16 +649,18 @@ class Live {
           MsgKind.file => att != null && att.uploaded && att.size <= MediaEngine.maxBytes,
           MsgKind.geo => geo != null,
           MsgKind.poll => poll != null,
+          MsgKind.event => group,
         };
         if (!valid) {
           log('  непонятное сообщение ${short(id)} (${p.data['k']}) — пропущено');
           return;
         }
-        final list = app.messagesOf(sender);
+        final list = app.messagesOf(chat);
         if (list.any((m) => m.id == id)) {
           // Повтор (отправитель не получил наш отчёт) — подтверждаем ещё раз.
-          _control(
+          _reply(
             sender,
+            chat,
             Payload(Payload.receipt, {
               'ids': [id],
               's': 'd',
@@ -568,6 +668,10 @@ class Live {
           );
           return;
         }
+        // Вышли из группы — её переписку больше не принимаем (кроме событий о составе).
+        if (group && c.group!.left && kind != MsgKind.event) return;
+        final ev = kind == MsgKind.event ? _clip(p.data['ev'], 'info', 12) : null;
+        if (group && ev == 'leave') await _memberLeft(c, sender);
         final replyId = p.str('reply');
         Message? reply;
         if (replyId != null) {
@@ -584,49 +688,55 @@ class Live {
                 !exact.isAfter(DateTime.now())
             ? exact
             : sentAt;
+        final fwd = p.str('fw');
         final m = Message(
           id: id,
           mine: false,
           text: text.length > 20000 ? text.substring(0, 20000) : text,
           time: time,
-          status: MsgStatus.delivered,
+          status: kind == MsgKind.event ? MsgStatus.read : MsgStatus.delivered,
           replyTo: reply,
           secret: kind == MsgKind.text && p.flag('secret'),
           kind: kind,
           att: att,
           geo: geo,
           poll: poll,
+          from: group ? sender : null,
+          fwd: fwd == null ? null : _clip(fwd, 'Кто-то', 60),
+          ev: ev,
         );
         var at = list.length;
         while (at > 0 && list[at - 1].time.isAfter(m.time)) {
           at--;
         }
         list.insert(at, m);
-        app.typing.remove(sender);
-        await saveMessage(sender, m);
-        _control(
+        app.typing.remove(chat);
+        await saveMessage(chat, m);
+        _reply(
           sender,
+          chat,
           Payload(Payload.receipt, {
             'ids': [id],
             's': 'd',
           }),
         );
-        await app.onIncoming(c, m);
+        // События группы — тихо, без уведомления.
+        if (kind != MsgKind.event) await app.onIncoming(c, m, silent: p.flag('sl'));
         if (!background && !c.request && MediaEngine.autoKind(m)) {
-          unawaited(media.download(sender, m));
+          unawaited(media.download(chat, m));
         }
       case Payload.vote:
         final id = p.str('id');
         final raw = p.data['o'];
         if (id == null || raw is! List) return;
-        for (final m in app.messagesOf(sender)) {
+        for (final m in app.messagesOf(chat)) {
           final poll = m.poll;
           if (m.id == id && poll != null) {
             poll.votes[sender] = Poll.cleanVote(raw, poll.options.length);
             if (!poll.multi && poll.votes[sender]!.length > 1) {
               poll.votes[sender] = [poll.votes[sender]!.first];
             }
-            await saveMessage(sender, m);
+            await saveMessage(chat, m);
           }
         }
       case Payload.need:
@@ -634,13 +744,13 @@ class Live {
         final id = p.str('id');
         final where = Contact.cleanRelays(p.data['r']);
         if (id == null || where.isEmpty) return;
-        for (final m in app.messagesOf(sender)) {
+        for (final m in app.messagesOf(chat)) {
           if (m.id == id && m.mine && m.att != null) {
             log('  друг не может скачать ${m.att!.name} — делаю копию');
             unawaited(
-              media.mirror(sender, m, where).then((got) {
+              media.mirror(chat, m, where).then((got) {
                 if (got.isNotEmpty) {
-                  _control(sender, Payload(Payload.have, {'id': id, 'r': got}));
+                  _reply(sender, chat, Payload(Payload.have, {'id': id, 'r': got}));
                 }
               }),
             );
@@ -650,39 +760,41 @@ class Live {
         final id = p.str('id');
         final where = Contact.cleanRelays(p.data['r']);
         if (id == null || where.isEmpty) return;
-        for (final m in app.messagesOf(sender)) {
+        for (final m in app.messagesOf(chat)) {
           if (m.id == id && !m.mine && m.att != null && !background) {
             log('  друг положил копию ${m.att!.name} — качаю');
-            unawaited(media.gotMirror(sender, m, where));
+            unawaited(media.gotMirror(chat, m, where));
           }
         }
       case Payload.receipt:
         final ids = (p.data['ids'] as List?)?.whereType<String>().toSet() ?? {};
         final st = p.str('s') == 'r' ? MsgStatus.read : MsgStatus.delivered;
-        // Друг получил — больше не переотправляем.
-        await store.dequeueMessages(ids);
-        for (final m in app.messagesOf(sender)) {
+        // Друг получил — больше не переотправляем (в группе — именно ему).
+        await store.dequeueMessages(group ? ids.map((i) => '$i@$sender') : ids);
+        for (final m in app.messagesOf(chat)) {
           if (m.mine && ids.contains(m.id) && m.status.index < st.index) {
             m.status = st;
-            await saveMessage(sender, m);
+            await saveMessage(chat, m);
           }
         }
       case Payload.react:
         final id = p.str('id');
-        for (final m in app.messagesOf(sender)) {
+        for (final m in app.messagesOf(chat)) {
           if (m.id == id) {
             m.reaction = p.str('e');
-            await saveMessage(sender, m);
+            await saveMessage(chat, m);
           }
         }
       case Payload.ttl:
         c.disappearing = (p.integer('m') ?? 0).clamp(0, 60 * 24 * 30);
         await saveContact(c);
       case Payload.typing:
-        app.typing.add(sender);
-        _typingTimers[sender]?.cancel();
-        _typingTimers[sender] = Timer(const Duration(seconds: 6), () {
-          app.typing.remove(sender);
+        app.typing.add(chat);
+        if (group) app.typingBy[chat] = sender;
+        _typingTimers[chat]?.cancel();
+        _typingTimers[chat] = Timer(const Duration(seconds: 6), () {
+          app.typing.remove(chat);
+          app.typingBy.remove(chat);
           app.notifyChanged();
         });
     }
@@ -720,6 +832,26 @@ class Live {
         .catchError((Object e) => log('ОШИБКА отправки ${p.type}: $e'));
   }
 
+  /// Кому уходит сообщение чата: собеседнику или каждому участнику группы.
+  List<String> targets(String chat) {
+    final g = app.contact(chat)?.group;
+    if (g == null) return Contact.isGroupId(chat) ? const [] : [chat];
+    if (g.left) return const [];
+    final me = keys?.pub;
+    return [
+      for (final m in g.members)
+        if (m.pub != me) m.pub,
+    ];
+  }
+
+  /// Служебное сообщение в чат: в группе — каждому участнику, с пометкой группы.
+  void _toChat(String chat, Payload p, {bool ephemeral = false}) {
+    if (Contact.isGroupId(chat)) p.data['g'] = chat;
+    for (final to in targets(chat)) {
+      _control(to, p, ephemeral: ephemeral);
+    }
+  }
+
   /// «Я в сети» — только тем, с кем переписывались за неделю (до 8 человек),
   /// чтобы не тратить батарею на шифрование для всех контактов.
   void _ping({bool online = true}) {
@@ -727,7 +859,7 @@ class Live {
     final cutoff = DateTime.now().subtract(const Duration(days: 7));
     final targets =
         app.contacts.where((c) {
-          if (c.blocked || c.request) return false;
+          if (c.blocked || c.request || c.isGroup) return false;
           final last = app.lastMessage(c.id);
           return c.id == app.openChat || (last != null && last.time.isAfter(cutoff));
         }).toList()..sort((a, b) {
@@ -746,7 +878,12 @@ class Live {
 
   // ───────────────────────── действия из интерфейса ─────────────────────────
 
-  Map<String, dynamic> _msgPayload(Message m) => Payload(Payload.msg, {
+  Map<String, dynamic> _msgPayload(String chat, Message m) => Payload(Payload.msg, {
+    if (app.contact(chat) case final g? when g.isGroup) ...{'g': chat, 'gi': _groupWire(g)},
+    if (m.ev != null) 'ev': m.ev,
+    if (m.fwd != null) 'fw': m.fwd,
+    if (m.edited) 'ed': true,
+    if (_silent.contains(m.id)) 'sl': true,
     'id': m.id,
     'ts': m.time.millisecondsSinceEpoch,
     'text': m.text,
@@ -760,19 +897,44 @@ class Live {
     'p': myCard.toJson(),
   }).toMap();
 
-  Future<void> sendMessage(String chat, Message m) async {
+  /// [silent] — без звука у получателя; [extra] — ещё кому (см. [queueMessage]).
+  Future<void> sendMessage(
+    String chat,
+    Message m, {
+    bool silent = false,
+    List<String> extra = const [],
+  }) async {
     await saveMessage(chat, m);
+    if (silent) _silent.add(m.id);
     // С вложением: сначала файл, потом само сообщение (см. MediaEngine.send).
     if (m.att != null && !m.att!.uploaded) {
       unawaited(media.send(chat, m));
       return;
     }
-    await queueMessage(chat, m);
+    await queueMessage(chat, m, extra: extra);
   }
 
+  /// Сообщения, отправленные «без звука» (до ухода из очереди).
+  final Set<String> _silent = {};
+
   /// Сообщение лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
-  Future<void> queueMessage(String chat, Message m) async {
-    await store.queue(m.id, chat, _msgPayload(m));
+  /// В группе — отдельная запись для каждого участника (`id@ключ`).
+  /// [extra] — ещё кому (например, удалённому из группы — чтобы он узнал).
+  Future<void> queueMessage(String chat, Message m, {List<String> extra = const []}) async {
+    final payload = _msgPayload(chat, m);
+    if (Contact.isGroupId(chat)) {
+      final to = {...targets(chat), ...extra};
+      for (final pub in to) {
+        await store.queue('${m.id}@$pub', pub, payload);
+      }
+      if (to.isEmpty && m.status == MsgStatus.sending) {
+        // В группе больше никого — отправлять некому.
+        m.status = MsgStatus.sent;
+        await saveMessage(chat, m);
+      }
+    } else {
+      await store.queue(m.id, chat, payload);
+    }
     await _flushOutbox();
   }
 
@@ -803,9 +965,10 @@ class Live {
   /// Попросить отправителя положить куски файла туда, где мы на связи.
   void askMirror(String chat, Message m) {
     final r = _reach();
-    if (r.isEmpty) return;
-    log('  прошу ${who(chat)} положить ${m.att?.name ?? 'файл'} поближе');
-    _control(chat, Payload(Payload.need, {'id': m.id, 'r': r}));
+    final to = m.from ?? chat;
+    if (r.isEmpty || Contact.isGroupId(to)) return;
+    log('  прошу ${who(to)} положить ${m.att?.name ?? 'файл'} поближе');
+    _reply(to, chat, Payload(Payload.need, {'id': m.id, 'r': r}));
   }
 
   /// Проголосовать (или изменить голос).
@@ -815,7 +978,7 @@ class Live {
     if (poll == null || me == null) return;
     poll.votes[me] = Poll.cleanVote(options, poll.options.length);
     await saveMessage(chat, m);
-    _control(chat, Payload(Payload.vote, {'id': m.id, 'o': poll.votes[me]}));
+    _toChat(chat, Payload(Payload.vote, {'id': m.id, 'o': poll.votes[me]}));
   }
 
   /// После перезапуска: всё, что друг ещё не подтвердил, — снова в очередь.
@@ -824,12 +987,20 @@ class Live {
     final cutoff = DateTime.now().subtract(const Duration(days: 3));
     for (final c in app.contacts) {
       for (final m in app.messagesOf(c.id)) {
-        if (m.mine &&
-            m.status.index < MsgStatus.delivered.index &&
-            m.time.isAfter(cutoff) &&
-            !queued.contains(m.id) &&
-            (m.att == null || m.att!.uploaded)) {
-          await store.queue(m.id, c.id, _msgPayload(m));
+        if (!m.mine ||
+            m.status.index >= MsgStatus.delivered.index ||
+            !m.time.isAfter(cutoff) ||
+            (m.att != null && !m.att!.uploaded)) {
+          continue;
+        }
+        if (c.isGroup) {
+          for (final pub in targets(c.id)) {
+            if (!queued.contains('${m.id}@$pub')) {
+              await store.queue('${m.id}@$pub', pub, _msgPayload(c.id, m));
+            }
+          }
+        } else if (!queued.contains(m.id)) {
+          await store.queue(m.id, c.id, _msgPayload(c.id, m));
         }
       }
     }
@@ -887,7 +1058,11 @@ class Live {
       ok ? n : item.attempts,
       nowSec() + (ok ? _backoff[(n - 1).clamp(0, _backoff.length - 1)] : 30),
     );
-    if (ok) await _sent(item.chat, item.msgId);
+    if (ok) {
+      // В группе запись очереди — «id@участник», а сообщение лежит в чате группы.
+      final g = item.payload['g'];
+      await _sent(g is String ? g : item.chat, item.msgId.split('@').first);
+    }
   }
 
   Future<void> _sent(String chat, String msgId) async {
@@ -929,26 +1104,31 @@ class Live {
     final now = DateTime.now();
     if (now.difference(_lastTyping).inSeconds < 4) return;
     _lastTyping = now;
-    _control(chat, Payload(Payload.typing), ephemeral: true);
+    // В большой группе «печатает» не рассылаем — лишняя работа для батареи.
+    if (targets(chat).length > 8) return;
+    _toChat(chat, Payload(Payload.typing), ephemeral: true);
   }
 
   Future<void> react(String chat, Message m) async {
     await saveMessage(chat, m);
-    _control(chat, Payload(Payload.react, {'id': m.id, 'e': m.reaction}));
+    _toChat(chat, Payload(Payload.react, {'id': m.id, 'e': m.reaction}));
   }
 
   /// Отправить «прочитано» для всех непрочитанных входящих.
   Future<void> markRead(String chat, {required bool sendReceipt}) async {
-    final ids = <String>[];
+    // Кому что прочитано: в группе у каждого сообщения свой автор.
+    final ids = <String, List<String>>{};
     for (final m in app.messagesOf(chat)) {
       if (!m.mine && m.status == MsgStatus.delivered) {
         m.status = MsgStatus.read;
-        ids.add(m.id);
+        (ids[m.from ?? chat] ??= []).add(m.id);
         await saveMessage(chat, m);
       }
     }
-    if (ids.isNotEmpty && sendReceipt) {
-      _control(chat, Payload(Payload.receipt, {'ids': ids, 's': 'r'}));
+    if (!sendReceipt) return;
+    for (final e in ids.entries) {
+      if (Contact.isGroupId(e.key)) continue;
+      _reply(e.key, chat, Payload(Payload.receipt, {'ids': e.value, 's': 'r'}));
     }
   }
 
@@ -976,7 +1156,7 @@ class Live {
 
   Future<void> setTtl(Contact c) async {
     await saveContact(c);
-    _control(c.id, Payload(Payload.ttl, {'m': c.disappearing}));
+    _toChat(c.id, Payload(Payload.ttl, {'m': c.disappearing}));
   }
 
   /// Удалить друга полностью: контакт, переписку, очередь отправки.

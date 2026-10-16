@@ -34,10 +34,13 @@ class SystemNotify implements Notify {
   @override
   Future<void> message(Contact from, Message m) async {
     await init();
+    // В группе — с именем автора.
+    final who = from.group?.member(m.from ?? '');
+    final text = who == null ? m.preview : '${who.name}: ${m.preview}';
     final body = m.secret
         ? '🔒 Секретное сообщение'
         : showText()
-        ? m.preview
+        ? text
         : 'Новое сообщение';
     await _plugin.show(
       id: from.id.hashCode & 0x7fffffff,

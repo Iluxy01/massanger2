@@ -18,6 +18,9 @@ enum MsgKind {
 
   /// Видеосообщение («квадратик»): с фронтальной камеры, до минуты.
   note,
+
+  /// Событие в группе («создал группу», «добавил Катю», «вышел»).
+  event,
 }
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
@@ -103,6 +106,12 @@ class Contact {
   /// часть ретрансляторов бывает недоступна.
   List<String> reach = [];
 
+  /// Группа (а не человек): участники, администратор. id группы — `g_…`.
+  GroupInfo? group;
+  bool get isGroup => group != null;
+
+  static bool isGroupId(String id) => id.startsWith('g_');
+
   /// Только адреса ретрансляторов, не больше 12.
   static List<String> cleanRelays(Object? o) => o is List
       ? o
@@ -126,6 +135,7 @@ class Contact {
     'ttl': disappearing,
     if (reach.isNotEmpty) 'rl': reach,
     if (lastSeen != null) 'seen': lastSeen!.millisecondsSinceEpoch,
+    if (group != null) 'grp': group!.toJson(),
   };
 
   static Contact fromJson(Map<String, dynamic> j) =>
@@ -143,7 +153,92 @@ class Contact {
         )
         ..blocked = j['blocked'] == true
         ..disappearing = (j['ttl'] as num?)?.toInt() ?? 0
-        ..reach = cleanRelays(j['rl']);
+        ..reach = cleanRelays(j['rl'])
+        ..group = GroupInfo.fromJson(j['grp']);
+}
+
+/// Участник группы — как его видят остальные.
+class GroupMember {
+  GroupMember({required this.pub, required this.name, required this.emoji, required this.color});
+
+  /// Публичный ключ.
+  final String pub;
+  String name;
+  String emoji;
+  int color;
+
+  List<Color> get colors => gradientAt(color);
+
+  Map<String, dynamic> toJson() => {'k': pub, 'n': name, 'e': emoji, 'c': color};
+
+  static final _hex = RegExp(r'^[0-9a-f]{64}$');
+
+  static GroupMember? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final k = o['k'], n = o['n'], e = o['e'], c = o['c'];
+    if (k is! String || !_hex.hasMatch(k)) return null;
+    return GroupMember(
+      pub: k,
+      name: n is String && n.isNotEmpty ? (n.length > 40 ? n.substring(0, 40) : n) : 'Участник',
+      emoji: e is String && e.length <= 16 ? e : '🙂',
+      color: c is num ? c.toInt() : 0,
+    );
+  }
+}
+
+/// Группа: кто в ней и кто администратор. Каждое сообщение группы несёт эти
+/// сведения — новый участник узнаёт о группе из первого же сообщения.
+class GroupInfo {
+  GroupInfo({required this.members, required this.admin, required this.ver, this.left = false});
+
+  /// Больше не шифруем для всех — сообщение уходит каждому участнику отдельно.
+  static const maxMembers = 20;
+
+  final List<GroupMember> members;
+
+  /// Публичный ключ администратора (добавляет и удаляет участников).
+  String admin;
+
+  /// Версия состава (мс): у кого новее — та и верна.
+  int ver;
+
+  /// Я вышел из группы (или меня удалили) — писать в неё больше нельзя.
+  bool left;
+
+  GroupMember? member(String pub) {
+    for (final m in members) {
+      if (m.pub == pub) return m;
+    }
+    return null;
+  }
+
+  bool has(String pub) => member(pub) != null;
+
+  Map<String, dynamic> toJson() => {
+    'm': [for (final m in members) m.toJson()],
+    'a': admin,
+    'v': ver,
+    if (left) 'left': true,
+  };
+
+  static GroupInfo? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final raw = o['m'];
+    if (raw is! List) return null;
+    final seen = <String>{};
+    final members = [
+      for (final x in raw.take(maxMembers))
+        if (GroupMember.fromJson(x) case final m? when seen.add(m.pub)) m,
+    ];
+    final a = o['a'];
+    if (members.isEmpty || a is! String) return null;
+    return GroupInfo(
+      members: members,
+      admin: a,
+      ver: o['v'] is num ? (o['v'] as num).toInt() : 0,
+      left: o['left'] == true,
+    );
+  }
 }
 
 /// Вложение (фото, видео, файл, голосовое).
@@ -387,13 +482,29 @@ class Message {
     this.att,
     this.geo,
     this.poll,
+    this.from,
+    this.edited = false,
+    this.fwd,
+    this.ev,
   });
 
   final String id;
   final bool mine;
 
-  /// Текст сообщения или подпись к вложению.
-  final String text;
+  /// Текст сообщения или подпись к вложению (меняется при редактировании).
+  String text;
+
+  /// Кто написал (в группе — публичный ключ участника; в личном чате — null).
+  final String? from;
+
+  /// Текст изменён после отправки.
+  bool edited;
+
+  /// Переслано: от кого (имя).
+  final String? fwd;
+
+  /// Что за событие в группе (create, add, remove, leave, rename) — для [MsgKind.event].
+  final String? ev;
   final DateTime time;
   MsgStatus status;
   final Message? replyTo;
@@ -432,6 +543,7 @@ class Message {
       MsgKind.file => with_('📎 ${att?.name ?? 'Файл'}'),
       MsgKind.geo => '📍 Геопозиция',
       MsgKind.poll => '📊 ${poll?.question ?? 'Опрос'}',
+      MsgKind.event => text,
     };
   }
 
@@ -451,6 +563,10 @@ class Message {
     if (att != null) 'att': att!.toJson(),
     if (geo != null) 'geo': geo!.toJson(),
     if (poll != null) 'poll': poll!.toJson(),
+    if (from != null) 'fr': from,
+    if (edited) 'ed': true,
+    if (fwd != null) 'fw': fwd,
+    if (ev != null) 'ev': ev,
   };
 
   static MsgKind kindOf(Object? name) =>
@@ -471,5 +587,9 @@ class Message {
     att: Attachment.fromJson(j['att']),
     geo: GeoPoint.fromJson(j['geo']),
     poll: Poll.fromJson(j['poll']),
+    from: j['fr'] as String?,
+    edited: j['ed'] == true,
+    fwd: j['fw'] as String?,
+    ev: j['ev'] as String?,
   );
 }
