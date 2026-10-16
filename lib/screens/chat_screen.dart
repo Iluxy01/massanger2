@@ -1720,18 +1720,20 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
         480,
         Curves.easeOutQuart,
         (t, c) {
-          Widget w = Transform.translate(
-            offset: Offset(0, (1 - t) * 40),
-            child: Transform.scale(scale: 0.94 + 0.06 * t, alignment: corner, child: c),
-          );
-          if (blur && t < 1) {
-            final sigma = (1 - t) * 6;
-            w = ImageFiltered(
+          // Размытие выключаем флагом, а не убираем обёртку: иначе в конце
+          // анимации содержимое сообщения пересоздалось бы заново.
+          final sigma = max(0.0, (1 - t) * 6);
+          return Opacity(
+            opacity: t.clamp(0.0, 1.0),
+            child: ImageFiltered(
+              enabled: blur && sigma > 0.05,
               imageFilter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-              child: w,
-            );
-          }
-          return Opacity(opacity: t.clamp(0.0, 1.0), child: w);
+              child: Transform.translate(
+                offset: Offset(0, (1 - t) * 40),
+                child: Transform.scale(scale: 0.94 + 0.06 * t, alignment: corner, child: c),
+              ),
+            ),
+          );
         },
       ),
       // Лимонад: мягкий «поп» из уголка.
