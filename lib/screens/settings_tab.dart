@@ -143,6 +143,24 @@ class SettingsTab extends StatelessWidget {
             // ── Энергия ──
             const _Section('Батарея'),
             _UltraCard(on: app.ultra, onChanged: app.setUltra),
+            const SizedBox(height: 10),
+            _Group(
+              children: [
+                _LevelPicker(
+                  icon: Icons.battery_alert_rounded,
+                  title: 'Включать «Ультра» сам',
+                  labels: const ['Нет', '15%', '20%', '30%'],
+                  hints: const [
+                    'Только вручную',
+                    'Когда заряд 15% и меньше; на зарядке — выключится',
+                    'Когда заряд 20% и меньше; на зарядке — выключится',
+                    'Когда заряд 30% и меньше; на зарядке — выключится',
+                  ],
+                  value: const [0, 15, 20, 30].indexOf(app.ultraAuto).clamp(0, 3),
+                  onChanged: (i) => app.setUltraAuto(const [0, 15, 20, 30][i]),
+                ),
+              ],
+            ),
 
             // ── Оформление ──
             const _Section('Оформление'),
@@ -1531,9 +1549,19 @@ class _UltraCard extends StatelessWidget {
             '• не отправляет «в сети» и «печатает»\n'
             '• видео и видеосообщения — только по нажатию\n'
             '• без постоянной связи в фоне: новые сообщения — по расписанию, '
-            'примерно раз в 15 минут',
+            'примерно раз в 15 минут\n'
+            '• чёрный фон (на AMOLED-экранах чёрное не светится), чужое «печатает» '
+            'не анимируется, фото скачиваются сами только по Wi-Fi',
             style: body,
           ),
+          if (on && (context.app.savedSignals > 0 || context.app.savedDownloads > 0)) ...[
+            const SizedBox(height: 8),
+            Text(
+              'С момента запуска: не отправлено сигналов — ${context.app.savedSignals}, '
+              'отложено загрузок — ${context.app.savedDownloads}',
+              style: body.copyWith(color: acc.mid),
+            ),
+          ],
         ],
       ),
     );

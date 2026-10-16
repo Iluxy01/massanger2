@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.view.WindowManager
@@ -97,6 +98,25 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
+                    }
+                } else {
+                    result.notImplemented()
+                }
+            }
+        // Заряд батареи и зарядка — для автоматического режима «Ультра».
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "veil/power")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "state") {
+                    try {
+                        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                        result.success(
+                            mapOf(
+                                "level" to bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
+                                "charging" to bm.isCharging,
+                            ),
+                        )
+                    } catch (e: Exception) {
+                        result.success(null)
                     }
                 } else {
                     result.notImplemented()

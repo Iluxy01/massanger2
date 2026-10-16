@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/backup.dart';
 import '../core/giftwrap.dart';
+import '../core/media_tools.dart';
 import '../core/nostr.dart';
 import '../core/protocol.dart';
 import '../core/relay_pool.dart';
@@ -170,6 +171,7 @@ class Live {
       if (network) {
         startNetwork();
         resumeMedia();
+        unawaited(app.checkBattery());
       }
     }
     _expiry = Timer.periodic(const Duration(seconds: 30), (_) => _expire());
@@ -383,8 +385,11 @@ class Live {
     // Переотправка неподтверждённых сообщений (по расписанию с паузами).
     var ticks = 0;
     _resend = Timer.periodic(const Duration(seconds: 30), (_) {
+      final t = ticks++;
+      // Заряд — раз в 5 минут (автоматический «Ультра»).
+      if (t % 10 == 0 && app.foreground) app.checkBattery();
       // «Ультра»: раз в полторы минуты вместо 30 с.
-      if (app.ultra && ticks++ % 3 != 0) return;
+      if (app.ultra && t % 3 != 0) return;
       _flushOutbox();
       // Недокачанные файлы — повторяем сами, с растущей паузой.
       if (app.foreground) resumeMedia();
@@ -779,7 +784,9 @@ class Live {
         // События группы — тихо, без уведомления.
         if (kind != MsgKind.event) await app.onIncoming(c, m, silent: p.flag('sl'));
         if (!background && !c.request && app.autoDownload(m)) {
-          unawaited(media.download(chat, m));
+          unawaited(_autoDownload(chat, m));
+        } else if (app.ultra && !c.request && (m.kind == MsgKind.video || m.kind == MsgKind.note)) {
+          app.savedDownloads++;
         }
       case Payload.vote:
         final id = p.str('id');
@@ -909,6 +916,8 @@ class Live {
         c.pinnedMsg = id;
         await saveContact(c);
       case Payload.typing:
+        // «Ультра»: чужое «печатает» не показываем — анимация точек тоже ест батарею.
+        if (app.ultra) return;
         app.typing.add(chat);
         if (group) app.typingBy[chat] = sender;
         _typingTimers[chat]?.cancel();
@@ -977,7 +986,10 @@ class Live {
   void _ping({bool online = true}) {
     if (online && !app.foreground) return;
     // «Ультра»: статус «в сети» не рассылаем — меньше шифрования и трафика.
-    if (app.ultra) return;
+    if (app.ultra) {
+      app.savedSignals++;
+      return;
+    }
     final cutoff = DateTime.now().subtract(const Duration(days: 7));
     final targets =
         app.contacts.where((c) {
@@ -1111,10 +1123,19 @@ class Live {
             !c.request &&
             app.autoDownload(m) &&
             media.retryDue(m.id)) {
-          unawaited(media.download(c.id, m));
+          unawaited(_autoDownload(c.id, m));
         }
       }
     }
+  }
+
+  /// Скачать само. В «Ультра» — только по Wi-Fi (мобильная связь тратит больше).
+  Future<void> _autoDownload(String chat, Message m) async {
+    if (app.ultra && !await onWifi()) {
+      app.savedDownloads++;
+      return;
+    }
+    await media.download(chat, m);
   }
 
   /// Ретрансляторы, через которые мы сейчас на связи.

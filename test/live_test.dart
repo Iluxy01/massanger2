@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -343,6 +344,28 @@ void main() {
     expect(copy.ultra, isTrue);
     copy.dispose();
     await aliceLive.close();
+  });
+
+  test('«Ультра» сам: включается при низком заряде, выключается на зарядке', () async {
+    final app = AppState.demo();
+    await app.checkBattery(level: 12, charging: false);
+    expect(app.ultra, isFalse, reason: 'автоматика выключена');
+    app.setUltraAuto(20);
+    await app.checkBattery(level: 25, charging: false);
+    expect(app.ultra, isFalse);
+    await app.checkBattery(level: 18, charging: false);
+    expect((app.ultra, app.ultraByBattery), (true, true));
+    expect(app.colors.bg, const Color(0xFF000000), reason: 'чёрный фон AMOLED');
+    await app.checkBattery(level: 19, charging: true);
+    expect(app.ultra, isFalse, reason: 'на зарядке — выключился');
+    // Включённый вручную автоматика не выключает.
+    await app.setUltra(true);
+    await app.checkBattery(level: 90, charging: true);
+    expect(app.ultra, isTrue);
+    final copy = AppState.demo()..applySettings(app.settingsForTest);
+    expect(copy.ultraAuto, 20);
+    copy.dispose();
+    app.dispose();
   });
 
   test('PIN хранится как хэш', () async {

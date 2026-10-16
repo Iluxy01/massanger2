@@ -74,6 +74,22 @@ class VeilColors {
     panel: Color(0xE6181822),
   );
 
+  /// «Ультра»: настоящий чёрный — на AMOLED-экране чёрные точки не светятся
+  /// и не тратят батарею.
+  static const amoledColors = VeilColors(
+    dark: true,
+    bg: Color(0xFF000000),
+    surface: Color(0xFF0A0A0E),
+    elevated: Color(0xFF131318),
+    border: Color(0x14FFFFFF),
+    text: Color(0xFFE9E9EF),
+    textDim: Color(0xFF8E8EA0),
+    textFaint: Color(0xFF55555F),
+    bubbleIn: Color(0xFF111116),
+    glass: Color(0xF0000000),
+    panel: Color(0xF2050507),
+  );
+
   static const lightColors = VeilColors(
     dark: false,
     bg: Color(0xFFF4F4F9),

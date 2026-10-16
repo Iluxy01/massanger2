@@ -107,6 +107,16 @@ class AppState extends ChangeNotifier {
   bool ultra = false;
 
   /// Что реально действует (с учётом «Ультра»).
+  /// Включать «Ультра» самому при заряде не выше этого (0 — не включать).
+  int ultraAuto = 0;
+
+  /// «Ультра» включился сам (по заряду) — сам и выключится на зарядке.
+  bool ultraByBattery = false;
+
+  /// Что сэкономил «Ультра» с момента запуска (для карточки в настройках).
+  int savedSignals = 0;
+  int savedDownloads = 0;
+
   int get effLook => ultra ? 0 : look;
   int get effMotion => ultra ? 0 : motion;
   bool get effDark => ultra || dark;
@@ -197,7 +207,11 @@ class AppState extends ChangeNotifier {
   bool _disposed = false;
 
   Accent get accent => accents[accentIndex];
-  VeilColors get colors => effDark ? VeilColors.darkColors : VeilColors.lightColors;
+  VeilColors get colors => ultra
+      ? VeilColors.amoledColors
+      : effDark
+      ? VeilColors.darkColors
+      : VeilColors.lightColors;
 
   Timer? _notifyTimer;
 
@@ -373,6 +387,8 @@ class AppState extends ChangeNotifier {
     'motion': motion,
     'instant': instantNotify,
     if (ultra) 'ultra': true,
+    if (ultraAuto > 0) 'ultraAuto': ultraAuto,
+    if (ultraByBattery) 'ultraBat': true,
     if (disguise > 0) 'disguise': disguise,
     if (coverNotes.isNotEmpty) 'notes': coverNotes,
     'noteCam': noteCamera,
@@ -410,6 +426,8 @@ class AppState extends ChangeNotifier {
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     instantNotify = s['instant'] == true;
     ultra = s['ultra'] == true;
+    ultraAuto = ((s['ultraAuto'] as num?)?.toInt() ?? 0).clamp(0, 50);
+    ultraByBattery = s['ultraBat'] == true;
     disguise = ((s['disguise'] as num?)?.toInt() ?? 0).clamp(0, 2);
     coverNotes
       ..clear()
@@ -474,14 +492,44 @@ class AppState extends ChangeNotifier {
 
   static const _service = MethodChannel('veil/service');
 
-  /// Включить/выключить режим «Ультра».
-  Future<void> setUltra(bool v) async {
+  /// Включить/выключить режим «Ультра» (вручную — автоматика его не трогает).
+  Future<void> setUltra(bool v, {bool byBattery = false}) async {
     if (ultra == v) return;
     ultra = v;
+    ultraByBattery = v && byBattery;
     themeTick.value++;
     _saveSettings();
     live?.applyPower();
     await syncInstantService();
+  }
+
+  void setUltraAuto(int percent) {
+    ultraAuto = percent;
+    _saveSettings();
+    checkBattery();
+  }
+
+  static const _power = MethodChannel('veil/power');
+
+  /// Проверить заряд: мало и не заряжается — включить «Ультра»; поставили на
+  /// зарядку — выключить, если включали сами.
+  Future<void> checkBattery({int? level, bool? charging}) async {
+    if (demo && level == null) return;
+    if (level == null || charging == null) {
+      try {
+        final st = await _power.invokeMapMethod<String, Object?>('state');
+        level = (st?['level'] as num?)?.toInt();
+        charging = st?['charging'] == true;
+      } catch (_) {
+        return;
+      }
+    }
+    if (level == null || level <= 0) return;
+    if (ultraAuto > 0 && !ultra && !charging && level <= ultraAuto) {
+      await setUltra(true, byBattery: true);
+    } else if (ultra && ultraByBattery && (charging || level > ultraAuto + 5)) {
+      await setUltra(false);
+    }
   }
 
   /// Включить/выключить «мгновенные уведомления».
@@ -696,6 +744,7 @@ class AppState extends ChangeNotifier {
     if (foreground == v) return;
     foreground = v;
     if (v) {
+      checkBattery();
       live?.resumed();
     } else {
       live?.paused();
@@ -958,7 +1007,12 @@ class AppState extends ChangeNotifier {
 
   /// Пользователь что-то набирает в чате.
   void userTyping(String chatId) {
-    if (typingIndicators && !ultra) live?.typing(chatId);
+    if (!typingIndicators) return;
+    if (ultra) {
+      savedSignals++;
+      return;
+    }
+    live?.typing(chatId);
   }
 
   /// Добавить друга по QR-коду или ссылке.
