@@ -21,7 +21,7 @@ class VideoNote {
   static const maxSeconds = 60;
 
   /// Скругление углов — доля стороны квадрата.
-  static const corner = 0.24;
+  static const corner = 0.12;
 }
 
 /// Запись видеосообщения.
