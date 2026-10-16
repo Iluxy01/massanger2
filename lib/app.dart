@@ -73,11 +73,11 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
             navigatorKey: navigatorKey,
             theme: _theme(s),
             builder: (context, child) => Visual(
-              look: s.look,
-              motion: s.motion,
+              look: s.effLook,
+              motion: s.effMotion,
               // Анимации выключены — аватарки между экранами тоже не «летают».
               child: HeroMode(
-                enabled: s.motion > 0,
+                enabled: s.effMotion > 0,
                 child: Stack(
                   children: [
                     child!,
@@ -118,7 +118,7 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
         selectionHandleColor: acc.a,
       ),
       dividerColor: vc.border,
-      pageTransitionsTheme: s.motion == 0
+      pageTransitionsTheme: s.effMotion == 0
           ? const PageTransitionsTheme(
               builders: {
                 TargetPlatform.android: _NoTransitions(),

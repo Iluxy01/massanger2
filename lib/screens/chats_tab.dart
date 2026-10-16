@@ -86,6 +86,13 @@ class _ChatsTabState extends State<ChatsTab> {
                     ),
                     const SizedBox(width: 10),
                     const _E2EChip(),
+                    if (app.ultra) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'Режим «Ультра»: экономия батареи',
+                        child: Icon(Icons.bolt_rounded, color: app.accent.mid, size: 22),
+                      ),
+                    ],
                     const Spacer(),
                     _RoundIcon(
                       icon: _searching ? Icons.close_rounded : Icons.search_rounded,

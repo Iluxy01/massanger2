@@ -302,6 +302,46 @@ void main() {
     await store.close();
   });
 
+  test('режим «Ультра»: меньше ретрансляторов, без «в сети», сообщения ходят', () async {
+    final (alice, aliceLive) = await phone('Алиса');
+    final (bob, bobLive) = await phone('Боб');
+    await until(() => aliceLive.pool!.onlineCount > 0 && bobLive.pool!.onlineCount > 0);
+    final c = await alice.addContact(Invite.parse(bob.inviteLink)!);
+    await until(() => bob.contact(aliceLive.keys!.pub) != null, what: 'hello');
+    // Список из шести — в «Ультра» на связи только первые четыре.
+    final six = ['ws://127.0.0.1:${relay.port}', for (var i = 1; i < 6; i++) 'ws://127.0.0.$i:1'];
+    await aliceLive.setRelays(six);
+    expect(aliceLive.pool!.urls.length, 6);
+    await alice.setUltra(true);
+    expect(aliceLive.pool!.urls, six.take(4).toList());
+    expect(alice.relayResting(six.last), isTrue);
+    expect(aliceLive.pool!.idleProbe, const Duration(minutes: 3));
+    expect((alice.effLook, alice.effMotion, alice.effDark), (0, 0, true));
+    // Сообщения по-прежнему ходят.
+    alice.send(c.id, 'экономлю батарею ⚡');
+    await until(
+      () => bob.messagesOf(aliceLive.keys!.pub).any((m) => m.text == 'экономлю батарею ⚡'),
+      what: 'сообщение в «Ультра»',
+    );
+    // «В сети» не рассылается: Боб не видит Алису онлайн от пинга.
+    final before = relay.published;
+    aliceLive.resumed();
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(relay.published, before, reason: 'ни пингов, ни «печатает»');
+    alice.userTyping(c.id);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(relay.published, before);
+    // Выключили — всё как было.
+    await alice.setUltra(false);
+    expect(aliceLive.pool!.urls.length, 6);
+    expect(aliceLive.pool!.idleProbe, const Duration(seconds: 45));
+    final copy = AppState()..applySettings({'ultra': true});
+    expect(copy.ultra, isTrue);
+    copy.dispose();
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('PIN хранится как хэш', () async {
     final secrets = MemorySecrets();
     final (app, live) = await phone('Пин', secrets: secrets);

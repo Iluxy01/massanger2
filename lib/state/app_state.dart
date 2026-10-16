@@ -74,6 +74,19 @@ class AppState extends ChangeNotifier {
   /// (служба с тихим значком в шторке). Выключено — проверка раз в ~15 минут.
   bool instantNotify = false;
 
+  /// Режим «Ультра» — максимальная экономия батареи: без анимаций и размытия,
+  /// тёмная тема, 4 ретранслятора вместо 9, без «в сети» и «печатает»,
+  /// видео — по нажатию, без постоянной связи в фоне.
+  bool ultra = false;
+
+  /// Что реально действует (с учётом «Ультра»).
+  int get effLook => ultra ? 0 : look;
+  int get effMotion => ultra ? 0 : motion;
+  bool get effDark => ultra || dark;
+
+  /// Сколько ретрансляторов держать на связи в «Ультра».
+  static const ultraRelays = 4;
+
   /// С какой камеры начинается запись видеосообщения: 0 — фронтальная, 1 — основная.
   int noteCamera = 0;
 
@@ -115,10 +128,15 @@ class AppState extends ChangeNotifier {
   /// Скачивать ли файл из сообщения сам (по тонким настройкам).
   bool autoDownload(Message m) => switch (m.kind) {
     MsgKind.photo => autoPhoto,
-    MsgKind.video => autoVideo,
-    MsgKind.voice || MsgKind.note => autoVoice,
+    // В «Ультра» тяжёлое (видео, видеосообщения) — только по нажатию.
+    MsgKind.video => autoVideo && !ultra,
+    MsgKind.note => autoVoice && !ultra,
+    MsgKind.voice => autoVoice,
     _ => false,
   };
+
+  /// Видеосообщения крутятся сами (не в «Ультра» и не без анимаций).
+  bool get notesPlayThemselves => notesAutoplay && effMotion > 0;
 
   /// Меняется только при смене темы/акцента — от него перестраивается всё
   /// приложение. Остальные изменения перерисовывают лишь нужные экраны.
@@ -152,7 +170,7 @@ class AppState extends ChangeNotifier {
   bool _disposed = false;
 
   Accent get accent => accents[accentIndex];
-  VeilColors get colors => dark ? VeilColors.darkColors : VeilColors.lightColors;
+  VeilColors get colors => effDark ? VeilColors.darkColors : VeilColors.lightColors;
 
   Timer? _notifyTimer;
 
@@ -223,6 +241,9 @@ class AppState extends ChangeNotifier {
   List<String> get relays => live?.relays ?? defaultRelays;
   RelayState relayState(String url) =>
       demo ? RelayState.online : live?.pool?.stateOf(url) ?? RelayState.offline;
+
+  /// Ретранслятор отключён режимом «Ультра» (не ошибка).
+  bool relayResting(String url) => ultra && !relays.take(ultraRelays).contains(url);
   String? relayError(String url) => live?.pool?.errorOf(url);
   int get onlineRelays => demo ? relays.length : live?.pool?.onlineCount ?? 0;
 
@@ -304,6 +325,7 @@ class AppState extends ChangeNotifier {
     'look': look,
     'motion': motion,
     'instant': instantNotify,
+    if (ultra) 'ultra': true,
     'noteCam': noteCamera,
     'font': msgFont,
     'enter': enterSends,
@@ -338,6 +360,7 @@ class AppState extends ChangeNotifier {
     look = ((s['look'] as num?)?.toInt() ?? 1).clamp(0, 2);
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
     instantNotify = s['instant'] == true;
+    ultra = s['ultra'] == true;
     wifiHintShown = s['wifiHint'] == true;
     noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
     msgFont = ((s['font'] as num?)?.toInt() ?? 1).clamp(0, 2);
@@ -398,6 +421,16 @@ class AppState extends ChangeNotifier {
 
   static const _service = MethodChannel('veil/service');
 
+  /// Включить/выключить режим «Ультра».
+  Future<void> setUltra(bool v) async {
+    if (ultra == v) return;
+    ultra = v;
+    themeTick.value++;
+    _saveSettings();
+    live?.applyPower();
+    await syncInstantService();
+  }
+
   /// Включить/выключить «мгновенные уведомления».
   Future<void> setInstantNotify(bool v) async {
     instantNotify = v;
@@ -409,7 +442,8 @@ class AppState extends ChangeNotifier {
   Future<void> syncInstantService() async {
     if (demo || live == null) return;
     try {
-      await _service.invokeMethod<bool>(instantNotify ? 'start' : 'stop');
+      // В «Ультра» постоянную связь в фоне не держим — проверка по расписанию.
+      await _service.invokeMethod<bool>(instantNotify && !ultra ? 'start' : 'stop');
     } catch (e) {
       debugPrint('service: $e');
     }
@@ -464,7 +498,7 @@ class AppState extends ChangeNotifier {
   }
 
   void tick([HapticKind kind = HapticKind.light]) {
-    if (!haptics) return;
+    if (!haptics || ultra) return;
     switch (kind) {
       case HapticKind.selection:
         HapticFeedback.selectionClick();
@@ -724,7 +758,7 @@ class AppState extends ChangeNotifier {
 
   /// Пользователь что-то набирает в чате.
   void userTyping(String chatId) {
-    if (typingIndicators) live?.typing(chatId);
+    if (typingIndicators && !ultra) live?.typing(chatId);
   }
 
   /// Добавить друга по QR-коду или ссылке.

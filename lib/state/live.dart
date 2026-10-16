@@ -336,7 +336,7 @@ class Live {
 
   void startNetwork() {
     if (pool != null || keys == null || _closed) return;
-    final p = pool = RelayPool(relays, connector: _connector);
+    final p = pool = RelayPool(activeRelays, connector: _connector);
     p.onSynced = _synced;
     _events = p.events.listen((e) => _queue = _queue.then((_) => _safely(e)));
     _changes = p.changes.listen((_) {
@@ -362,14 +362,17 @@ class Live {
     p.start();
     _presence = Timer.periodic(const Duration(seconds: 60), (_) => _ping());
     // Переотправка неподтверждённых сообщений (по расписанию с паузами).
+    var ticks = 0;
     _resend = Timer.periodic(const Duration(seconds: 30), (_) {
+      // «Ультра»: раз в полторы минуты вместо 30 с.
+      if (app.ultra && ticks++ % 3 != 0) return;
       _flushOutbox();
       // Недокачанные файлы — повторяем сами, с растущей паузой.
       if (app.foreground) resumeMedia();
     });
     // Подстраховка: изредка заново спросить новое (дёшево — окно маленькое).
     _resub = Timer.periodic(const Duration(minutes: 10), (_) {
-      if (app.foreground) p.subscribe(_filters);
+      if (app.foreground && !app.ultra) p.subscribe(_filters);
     });
     store.pruneOutbox().catchError((_) {});
     Future<void>.delayed(const Duration(seconds: 3), _ping);
@@ -407,8 +410,31 @@ class Live {
   Future<void> setRelays(List<String> urls) async {
     relays = urls;
     await store.set('relays', jsonEncode(urls));
-    pool?.setUrls(urls);
+    pool?.setUrls(activeRelays);
     app.notifyChanged();
+  }
+
+  /// С какими ретрансляторами держать связь: в «Ультра» — только с первыми.
+  List<String> get activeRelays =>
+      app.ultra ? relays.take(AppState.ultraRelays).toList() : List.of(relays);
+
+  /// Режим «Ультра» включили или выключили — меньше соединений и проверок.
+  void applyPower() {
+    pool?.setUrls(activeRelays);
+    tuneProbe();
+    log(app.ultra ? 'режим «Ультра»: ${activeRelays.length} ретранслятора' : 'обычный режим');
+  }
+
+  bool _paused = false;
+
+  /// Как часто проверять молчащие соединения: в фоне и в «Ультра» — реже.
+  void tuneProbe() {
+    pool?.idleProbe = switch ((_paused, app.ultra)) {
+      (true, true) => const Duration(minutes: 8),
+      (true, false) => const Duration(minutes: 4),
+      (false, true) => const Duration(minutes: 3),
+      (false, false) => const Duration(seconds: 45),
+    };
   }
 
   /// Приложение вернулось на экран.
@@ -417,7 +443,8 @@ class Live {
     await reload();
     // Проверить соединения (мобильная сеть могла их тихо оборвать) и
     // заново спросить накопившееся.
-    pool?.idleProbe = const Duration(seconds: 45);
+    _paused = false;
+    tuneProbe();
     pool?.wake();
     pool?.subscribe(_filters);
     unawaited(_flushOutbox());
@@ -434,7 +461,8 @@ class Live {
   /// Приложение свернули — сразу сообщаем друзьям «не в сети».
   void paused() {
     // В фоне (с «мгновенными уведомлениями») проверяем соединения реже — батарея.
-    pool?.idleProbe = const Duration(minutes: 4);
+    _paused = true;
+    tuneProbe();
     _ping(online: false);
   }
 
@@ -887,6 +915,8 @@ class Live {
   /// чтобы не тратить батарею на шифрование для всех контактов.
   void _ping({bool online = true}) {
     if (online && !app.foreground) return;
+    // «Ультра»: статус «в сети» не рассылаем — меньше шифрования и трафика.
+    if (app.ultra) return;
     final cutoff = DateTime.now().subtract(const Duration(days: 7));
     final targets =
         app.contacts.where((c) {
@@ -1123,10 +1153,10 @@ class Live {
     unawaited(pl.publish(wrap));
     for (var i = 0; i < 40; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
-      if (pl.deliveredBy(wrap.id).length == relays.length) break;
+      if (pl.deliveredBy(wrap.id).length == pl.urls.length) break;
     }
     return {
-      for (final url in relays)
+      for (final url in pl.urls)
         url: (pl.acceptedBy(wrap.id).contains(url), pl.deliveredBy(wrap.id).contains(url)),
     };
   }

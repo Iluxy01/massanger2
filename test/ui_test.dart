@@ -7,6 +7,7 @@ import 'package:veil/screens/settings_tab.dart';
 import 'package:veil/screens/wifi_hint.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/widgets/avatar.dart';
+import 'package:veil/widgets/effects.dart';
 import 'package:veil/widgets/video_note.dart';
 import 'package:veil/widgets/visual.dart';
 
@@ -398,6 +399,51 @@ void main() {
       isTrue,
     );
     copy.dispose();
+    await close(tester, state);
+  });
+
+  testWidgets('режим «Ультра»: переключатель, минимум оформления, значок', (tester) async {
+    final state = await launch(tester, banner: false);
+    state.setDark(false);
+    await settle(tester);
+    await tester.tap(find.byWidgetPredicate((w) => w is Avatar && w.size == 26).last);
+    await settle(tester);
+    await tester.scrollUntilVisible(
+      find.text('Режим «Ультра»'),
+      300,
+      scrollable: find
+          .descendant(of: find.byType(SettingsTab), matching: find.byType(Scrollable))
+          .first,
+    );
+    await settle(tester);
+    expect(find.text('Максимальная экономия батареи'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.ancestor(of: find.text('Режим «Ультра»'), matching: find.byType(Row)).first,
+        matching: find.byType(VeilSwitch),
+      ),
+    );
+    await settle(tester);
+    expect(state.ultra, isTrue);
+    expect(find.text('Включён — максимальная экономия'), findsOneWidget);
+    final v = Visual.of(tester.element(find.byType(Scaffold).first));
+    expect((v.look, v.motion), (0, 0));
+    expect(state.colors.dark, isTrue, reason: 'в «Ультра» всегда тёмная');
+    expect(state.look, 1, reason: 'свой выбор не потерян');
+    // На главной — значок молнии.
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) => w is Icon && w.icon == Icons.chat_bubble_rounded && w.size == null,
+      ),
+    );
+    await settle(tester);
+    expect(
+      find.descendant(of: find.byType(ChatsTab), matching: find.byIcon(Icons.bolt_rounded)),
+      findsOneWidget,
+    );
+    await state.setUltra(false);
+    await settle(tester);
+    expect(state.colors.dark, isFalse);
     await close(tester, state);
   });
 

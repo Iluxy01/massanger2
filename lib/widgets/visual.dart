@@ -38,6 +38,9 @@ extension MotionDuration on Duration {
   Duration by(BuildContext context) {
     final k = Visual.of(context).motionScale;
     if (k == 1) return this;
+    // «Без анимаций» — 1 мс, а не ноль: на глаз мгновенно, а AnimatedSize и
+    // подобные не завершаются синхронно посреди раскладки.
+    if (k == 0) return const Duration(milliseconds: 1);
     return Duration(microseconds: (inMicroseconds * k).round());
   }
 }

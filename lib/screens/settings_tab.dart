@@ -114,6 +114,10 @@ class SettingsTab extends StatelessWidget {
               ],
             ),
 
+            // ── Энергия ──
+            const _Section('Батарея'),
+            _UltraCard(on: app.ultra, onChanged: app.setUltra),
+
             // ── Оформление ──
             const _Section('Оформление'),
             _Group(
@@ -121,7 +125,13 @@ class SettingsTab extends StatelessWidget {
                 _Tile(
                   icon: vc.dark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
                   title: 'Тёмная тема',
-                  trailing: VeilSwitch(value: app.dark, onChanged: app.setDark),
+                  subtitle: app.ultra ? 'В «Ультра» всегда тёмная' : null,
+                  trailing: VeilSwitch(
+                    value: app.effDark,
+                    onChanged: (v) {
+                      if (!app.ultra) app.setDark(v);
+                    },
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
@@ -177,6 +187,15 @@ class SettingsTab extends StatelessWidget {
                 ),
               ],
             ),
+            if (app.ultra)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Text(
+                  'Пока включён «Ультра», оформление и анимации — минимальные. '
+                  'Выбранные уровни вернутся, когда выключишь его.',
+                  style: TextStyle(color: vc.textDim, fontSize: 12.5),
+                ),
+              ),
 
             // ── Тонкие настройки ──
             const _Section('Чаты'),
@@ -1003,20 +1022,28 @@ class _NetworkCard extends StatelessWidget {
                 Icon(
                   Icons.circle,
                   size: 8,
-                  color: switch (app.relayState(url)) {
-                    RelayState.online => VeilColors.success,
-                    RelayState.connecting => VeilColors.warning,
-                    RelayState.offline => VeilColors.danger,
-                  },
+                  color: app.relayResting(url)
+                      ? vc.textFaint
+                      : switch (app.relayState(url)) {
+                          RelayState.online => VeilColors.success,
+                          RelayState.connecting => VeilColors.warning,
+                          RelayState.offline => VeilColors.danger,
+                        },
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     url.replaceFirst('wss://', ''),
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: vc.text, fontSize: 13.5, fontFamily: 'monospace'),
+                    style: TextStyle(
+                      color: app.relayResting(url) ? vc.textFaint : vc.text,
+                      fontSize: 13.5,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ),
+                if (app.relayResting(url))
+                  Text('отдыхает', style: TextStyle(color: vc.textFaint, fontSize: 12)),
                 if (relays.length > 1)
                   IconButton(
                     visualDensity: VisualDensity.compact,
@@ -1407,6 +1434,75 @@ class _ReactionChoice extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(6),
         child: Text(value.isEmpty ? '—' : value, style: TextStyle(color: vc.text, fontSize: 22)),
+      ),
+    );
+  }
+}
+
+/// Режим «Ультра»: одна большая кнопка и честный список, что он меняет.
+class _UltraCard extends StatelessWidget {
+  const _UltraCard({required this.on, required this.onChanged});
+  final bool on;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    final acc = context.accent;
+    final body = TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.45);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300).by(context),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: vc.surface.withValues(alpha: vc.dark ? 0.85 : 0.9),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: on ? acc.mid : vc.border, width: on ? 1.5 : 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  gradient: on ? acc.gradient : null,
+                  color: on ? null : acc.a.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.bolt_rounded, color: on ? acc.onAccent : acc.a, size: 21),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Режим «Ультра»',
+                      style: TextStyle(color: vc.text, fontSize: 15.5, fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      on ? 'Включён — максимальная экономия' : 'Максимальная экономия батареи',
+                      style: TextStyle(color: on ? acc.mid : vc.textDim, fontSize: 12.5),
+                    ),
+                  ],
+                ),
+              ),
+              VeilSwitch(value: on, onChanged: onChanged),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '• без анимаций, размытия и вибрации, всегда тёмная тема\n'
+            '• связь с 4 ретрансляторами вместо 9, проверки — реже\n'
+            '• не отправляет «в сети» и «печатает»\n'
+            '• видео и видеосообщения — только по нажатию\n'
+            '• без постоянной связи в фоне: новые сообщения — по расписанию, '
+            'примерно раз в 15 минут',
+            style: body,
+          ),
+        ],
       ),
     );
   }

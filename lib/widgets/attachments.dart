@@ -731,7 +731,8 @@ class MapPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
-    final demo = context.appRead.demo;
+    // В демо и в «Ультра» плитки карты не грузим — рисуем схему.
+    final demo = context.appRead.demo || context.appRead.ultra;
     const tile = 256.0;
     final t = tileOf(point.lat, point.lng, zoom);
     // Пиксель точки в «мире» плиток; центр карты — на точке.
