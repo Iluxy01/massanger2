@@ -81,7 +81,7 @@ void main() {
 
     // Оба узнают о группе из первого же сообщения.
     await until(
-      () => bob.contact(g.id) != null && carol.contact(g.id) != null,
+      () => bob.messagesOf(g.id).isNotEmpty && carol.messagesOf(g.id).isNotEmpty,
       what: 'группа у участников',
     );
     final atBob = bob.contact(g.id)!;
@@ -106,7 +106,7 @@ void main() {
     expect(atCarol.from, bobId);
     expect(carol.memberName(g.id, bobId), 'Боб');
     expect(carol.contact(bobId), isNull, reason: 'Боб не стал «заявкой» у Киры');
-    expect(carol.unread[g.id], greaterThan(0));
+    await until(() => (carol.unread[g.id] ?? 0) > 0, what: 'непрочитанное у Киры');
     await until(() => hi.status == MsgStatus.delivered, what: 'доставлено');
 
     // Ответ с цитатой и голос в опросе.
@@ -141,8 +141,12 @@ void main() {
     // Боб выходит — Алиса видит, что остался одна.
     await bob.leaveGroup(g.id);
     expect(bob.contact(g.id)!.group!.left, isTrue);
-    await until(() => !alice.contact(g.id)!.group!.has(bobId), what: 'Боб вышел');
-    expect(alice.messagesOf(g.id).last.ev, 'leave');
+    await until(
+      () =>
+          !alice.contact(g.id)!.group!.has(bobId) &&
+          alice.messagesOf(g.id).any((m) => m.ev == 'leave' && m.from == bobId),
+      what: 'Боб вышел',
+    );
 
     await aliceLive.close();
     await bobLive.close();
@@ -158,8 +162,12 @@ void main() {
     final g = await alice.createGroup(name: 'Двое', emoji: '👥', colorIndex: 0, pubs: [bobId]);
     await until(() => bob.contact(g.id) != null, what: 'группа у Боба');
     await alice.leaveGroup(g.id);
-    await until(() => bob.contact(g.id)!.group!.admin == bobId, what: 'Боб — администратор');
-    expect(bob.contact(g.id)!.group!.members.map((m) => m.pub), [bobId]);
+    await until(
+      () =>
+          bob.contact(g.id)!.group!.admin == bobId && bob.contact(g.id)!.group!.members.length == 1,
+      what: 'Боб — администратор и единственный участник',
+    );
+    expect(bob.contact(g.id)!.group!.members.single.pub, bobId);
     await aliceLive.close();
     await bobLive.close();
   });
