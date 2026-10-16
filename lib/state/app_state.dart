@@ -807,6 +807,24 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// Одноразовое открыли и закрыли: файл стирается, автор видит «просмотрено».
+  Future<void> openedOnce(String chatId, Message m) async {
+    if (m.mine || m.opened) return;
+    if (live != null) {
+      await live!.openedOnce(chatId, m);
+    } else {
+      m.opened = true;
+      m.att?.path = null;
+    }
+    notifyChanged();
+  }
+
+  /// Показ одноразового: запрет скриншотов на время просмотра.
+  void secureFor(bool on) {
+    if (demo) return;
+    _secure.invokeMethod('setSecure', on || screenshotProtection).catchError((_) => null);
+  }
+
   /// Удалить своё сообщение у всех (у собеседника или у всей группы).
   void deleteForAll(String chatId, Message m) {
     if (!m.mine) return;
@@ -992,6 +1010,7 @@ class AppState extends ChangeNotifier {
     String? id,
     String? fwd,
     bool silent = false,
+    bool once = false,
   }) {
     final m = compose(
       chatId,
@@ -1005,6 +1024,7 @@ class AppState extends ChangeNotifier {
       poll: poll,
       id: id,
       fwd: fwd,
+      once: once,
     );
     drafts.remove(chatId);
     final c = contact(chatId);
@@ -1037,6 +1057,7 @@ class AppState extends ChangeNotifier {
     String? id,
     String? fwd,
     String? ev,
+    bool once = false,
   }) {
     // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
     // (в базе время хранится с точностью до миллисекунды).
@@ -1060,6 +1081,7 @@ class AppState extends ChangeNotifier {
       poll: poll,
       fwd: fwd,
       ev: ev,
+      once: once,
     );
     messagesOf(chatId).add(m);
     return m;
@@ -1234,6 +1256,7 @@ class AppState extends ChangeNotifier {
     List<int>? wave,
     Message? replyTo,
     String? fwd,
+    bool once = false,
   }) async {
     final id = newMessageId();
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
@@ -1247,6 +1270,7 @@ class AppState extends ChangeNotifier {
       kind: kind,
       replyTo: replyTo,
       fwd: fwd,
+      once: once,
       att: Attachment(
         name: name,
         mime: mime,

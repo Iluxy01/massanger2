@@ -751,6 +751,7 @@ class Live {
           from: group ? sender : null,
           fwd: fwd == null ? null : _clip(fwd, 'Кто-то', 60),
           ev: ev,
+          once: p.flag('once') && att != null,
         );
         var at = list.length;
         while (at > 0 && list[at - 1].time.isAfter(m.time)) {
@@ -861,6 +862,15 @@ class Live {
             }
           }
         }
+      case Payload.opened:
+        // Друг открыл наше одноразовое — отмечаем «просмотрено».
+        final id = p.str('id');
+        for (final m in app.messagesOf(chat)) {
+          if (m.id == id && m.mine && m.once && !m.opened) {
+            m.opened = true;
+            await saveMessage(chat, m);
+          }
+        }
       case Payload.pin:
         final id = p.str('id');
         if (id != null && !app.messagesOf(chat).any((m) => m.id == id)) return;
@@ -964,6 +974,7 @@ class Live {
     if (m.fwd != null) 'fw': m.fwd,
     if (m.edited) 'ed': true,
     if (_silent.contains(m.id)) 'sl': true,
+    if (m.once) 'once': true,
     'id': m.id,
     'ts': m.time.millisecondsSinceEpoch,
     'text': m.text,
@@ -1002,6 +1013,12 @@ class Live {
   /// [extra] — ещё кому (например, удалённому из группы — чтобы он узнал).
   Future<void> queueMessage(String chat, Message m, {List<String> extra = const []}) async {
     final payload = _msgPayload(chat, m);
+    // Одноразовое: куски уже на ретрансляторах — своя копия больше не нужна.
+    if (m.once && m.mine && (m.att?.local ?? false)) {
+      await media.deleteFile(m);
+      m.att!.path = null;
+      await saveMessage(chat, m);
+    }
     if (Contact.isGroupId(chat)) {
       final to = {...targets(chat), ...extra};
       for (final pub in to) {
@@ -1198,6 +1215,16 @@ class Live {
       await queueMessage(chat, m);
     }
     _toChat(chat, Payload(Payload.edit, {'id': m.id, 'text': m.text}));
+  }
+
+  /// Одноразовое открыли: стираем файл и сообщаем автору.
+  Future<void> openedOnce(String chat, Message m) async {
+    await media.deleteFile(m);
+    m.att?.path = null;
+    m.opened = true;
+    await saveMessage(chat, m);
+    final to = m.from ?? chat;
+    if (!Contact.isGroupId(to)) _reply(to, chat, Payload(Payload.opened, {'id': m.id}));
   }
 
   /// Удалить своё сообщение у всех.

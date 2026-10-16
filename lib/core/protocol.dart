@@ -15,6 +15,7 @@ import 'dart:convert';
 /// t = edit   правка своего     {id, text}
 /// t = del    удалить у всех    {id}
 /// t = pin    закрепить в чате  {id?} (без id — открепить)
+/// t = seen1  одноразовое открыли {id} (у msg — once: true)
 /// В группе у любого сигнала есть g (id группы), у сообщения — ещё gi (состав).
 /// t = typ    печатает (эфемерно)
 /// t = ping   я в сети (эфемерно)
@@ -38,6 +39,7 @@ class Payload {
   static const edit = 'edit';
   static const delete = 'del';
   static const pin = 'pin';
+  static const opened = 'seen1';
 
   Map<String, dynamic> toMap() => {'v': 1, 't': type, ...data};
 

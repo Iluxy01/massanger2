@@ -16,6 +16,7 @@ import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
+import '../widgets/once_media.dart';
 import '../widgets/rich_text.dart';
 import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
@@ -70,6 +71,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Редактируем своё сообщение (поле ввода — его текст).
   Message? _editing;
+
+  /// Следующее фото / видео / голосовое / квадратик — одноразовое.
+  bool _once = false;
   bool _secret = false;
 
   // Поиск по чату: совпадения (новые первыми) и текущее.
@@ -510,7 +514,9 @@ class _ChatScreenState extends State<ChatScreen> {
       height: 1,
       duration: secs,
       replyTo: replyTo,
+      once: _once,
     );
+    _sentOnce();
     if (!mounted) return;
     setState(() => _replyTo = null);
     _toBottom();
@@ -572,7 +578,9 @@ class _ChatScreenState extends State<ChatScreen> {
         duration: rec.seconds,
         wave: rec.wave,
         replyTo: replyTo,
+        once: _once,
       );
+      _sentOnce();
     }
     if (!mounted) return;
     setState(() => _replyTo = null);
@@ -581,14 +589,17 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _attach(String what) async {
     setState(() => _attachOpen = false);
-    final flows = AttachFlows(context, c.id, replyTo: _replyTo);
+    final flows = AttachFlows(context, c.id, replyTo: _replyTo, once: _once);
     switch (what) {
       case 'photo':
         await flows.photos();
+        _sentOnce();
       case 'camera':
         await flows.photos(camera: true);
+        _sentOnce();
       case 'video':
         await flows.video();
+        _sentOnce();
       case 'file':
         await flows.file();
       case 'geo':
@@ -601,6 +612,11 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _replyTo = null);
     }
     _toBottom();
+  }
+
+  /// Одноразовость действует на одно вложение.
+  void _sentOnce() {
+    if (_once && mounted) setState(() => _once = false);
   }
 
   List<_Item> _buildItems(List<Message> msgs, bool typing) {
@@ -760,9 +776,38 @@ class _ChatScreenState extends State<ChatScreen> {
             duration: const Duration(milliseconds: 280).by(context),
             curve: Curves.easeOutCubic,
             child: _attachOpen
-                ? _AttachMenu(onPick: _attach)
+                ? _AttachMenu(
+                    onPick: _attach,
+                    once: _once,
+                    onOnce: (v) => setState(() => _once = v),
+                  )
                 : const SizedBox(width: double.infinity),
           ),
+          if (_once && !_attachOpen)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Glass(
+                radius: 16,
+                padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
+                child: Row(
+                  children: [
+                    const Text('🔥'),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Следующее фото, видео, голосовое или квадратик — одноразовое',
+                        style: TextStyle(color: vc.textDim, fontSize: 13),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Отменить',
+                      onPressed: () => setState(() => _once = false),
+                      icon: Icon(Icons.close_rounded, color: vc.textDim, size: 20),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           AnimatedSize(
             duration: const Duration(milliseconds: 250).by(context),
             curve: Curves.easeOutCubic,
@@ -1699,7 +1744,7 @@ class BubbleBody extends StatelessWidget {
         : null;
 
     // Видеосообщение — «квадратик» без пузыря.
-    if (m.kind == MsgKind.note && m.att != null) {
+    if (m.kind == MsgKind.note && m.att != null && !m.once) {
       return Column(
         crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1745,7 +1790,8 @@ class BubbleBody extends StatelessWidget {
     );
 
     // Фото, видео и карта — от края до края пузыря.
-    final edge = m.kind == MsgKind.photo || m.kind == MsgKind.video || m.kind == MsgKind.geo;
+    final edge =
+        !m.once && (m.kind == MsgKind.photo || m.kind == MsgKind.video || m.kind == MsgKind.geo);
     final maxW = MediaQuery.sizeOf(context).width * 0.78;
     final mediaW = min(270.0, maxW) - 6;
     final inner = BorderRadius.only(
@@ -1808,6 +1854,8 @@ class BubbleBody extends StatelessWidget {
     final hasCaption = m.text.trim().isNotEmpty;
     Widget content;
     switch (m.kind) {
+      case _ when m.once && m.att != null:
+        content = OnceContent(m: m, chatId: contact.id, fg: fg, meta: meta);
       case MsgKind.voice:
         content = m.att == null
             ? _VoiceContent(m: m, fg: fg, meta: meta)
@@ -2423,24 +2471,28 @@ class _ActionsMenu extends StatelessWidget {
         m.mine &&
         canWrite &&
         !m.secret &&
+        !m.once &&
         (m.kind == MsgKind.text ||
             (m.att != null && m.text.isNotEmpty && m.kind != MsgKind.note)) &&
         DateTime.now().difference(m.time).inHours < 48;
     return [
       if (canWrite) (Icons.reply_rounded, 'Ответить', 'reply', false),
-      if (m.att?.local ?? false)
+      if (m.once)
+        ...[]
+      else if (m.att?.local ?? false)
         (Icons.ios_share_rounded, 'Поделиться', 'share', false)
       else
         (Icons.copy_rounded, 'Копировать', 'copy', false),
-      (Icons.forward_rounded, 'Переслать', 'forward', false),
+      if (!m.once) (Icons.forward_rounded, 'Переслать', 'forward', false),
       if (editable) (Icons.edit_rounded, 'Изменить', 'edit', false),
       if (canWrite)
         c.pinnedMsg == m.id
             ? (Icons.push_pin_outlined, 'Открепить', 'pin', false)
             : (Icons.push_pin_rounded, 'Закрепить', 'pin', false),
-      app.isStarred(c.id, m)
-          ? (Icons.star_rounded, 'Убрать из избранного', 'star', false)
-          : (Icons.star_outline_rounded, 'В избранное', 'star', false),
+      if (!m.once)
+        app.isStarred(c.id, m)
+            ? (Icons.star_rounded, 'Убрать из избранного', 'star', false)
+            : (Icons.star_outline_rounded, 'В избранное', 'star', false),
       if (m.mine && canWrite) (Icons.delete_forever_rounded, 'Удалить у всех', 'deleteAll', true),
       (Icons.delete_outline_rounded, 'Удалить у себя', 'delete', true),
     ];
@@ -2810,8 +2862,12 @@ class _ReplyPreview extends StatelessWidget {
 }
 
 class _AttachMenu extends StatelessWidget {
-  const _AttachMenu({required this.onPick});
+  const _AttachMenu({required this.onPick, required this.once, required this.onOnce});
   final ValueChanged<String> onPick;
+
+  /// «🔥 Одноразово» — для следующего фото, видео, голосового или квадратика.
+  final bool once;
+  final ValueChanged<bool> onOnce;
 
   static const _items = [
     (Icons.photo_rounded, 'Фото', 'photo', [Color(0xFF7C5CFF), Color(0xFF00C2FF)]),
@@ -2878,6 +2934,23 @@ class _AttachMenu extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [for (var i = 3; i < 6; i++) item(i)],
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                children: [
+                  const Text('🔥', style: TextStyle(fontSize: 18)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Одноразовый просмотр',
+                      style: TextStyle(color: vc.text, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  VeilSwitch(value: once, onChanged: onOnce),
+                ],
+              ),
             ),
           ],
         ),

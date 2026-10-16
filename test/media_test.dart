@@ -454,6 +454,41 @@ void main() {
     await bobLive.close();
   });
 
+  test('одноразовое фото: открыть один раз, стереть у обоих', () async {
+    final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
+    final src = await randomFile('secret.jpg', 90 * 1024 + 3);
+    final sent = await alice.sendFile(
+      bobId,
+      kind: MsgKind.photo,
+      path: src,
+      name: 'secret.jpg',
+      mime: 'image/jpeg',
+      size: File(src).lengthSync(),
+      once: true,
+    );
+    await until(() => sent.att!.uploaded, what: 'заливка');
+    // У отправителя копии больше нет — куски уже на ретрансляторах.
+    await until(() => sent.att!.path == null, what: 'своя копия стёрта');
+    expect(sent.preview, '🔥 Одноразовое фото');
+    await until(() => bob.messagesOf(aliceId).isNotEmpty, what: 'сообщение');
+    final got = bob.messagesOf(aliceId).single;
+    expect(got.once, isTrue);
+    expect(got.att!.thumb, isNull, reason: 'превью не шлём');
+    await until(() => got.att!.local, what: 'скачано');
+    final path = got.att!.path!;
+    expect(File(path).readAsBytesSync(), File(src).readAsBytesSync());
+    // Боб посмотрел и закрыл.
+    await bob.openedOnce(aliceId, got);
+    expect(File(path).existsSync(), isFalse);
+    expect(got.opened, isTrue);
+    await until(() => sent.opened, what: '«просмотрено» у Алисы');
+    // После перезапуска всё так же: открыть второй раз нельзя.
+    final again = bob.messagesOf(aliceId).single;
+    expect((again.opened, again.att!.local), (true, false));
+    await aliceLive.close();
+    await bobLive.close();
+  });
+
   test('видеосообщение доходит и скачивается само', () async {
     final (alice, aliceLive, bob, bobLive, bobId, aliceId) = await friends();
     final src = await randomFile('note.mp4', 180 * 1024 + 5);

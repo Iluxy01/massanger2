@@ -21,11 +21,14 @@ import 'wifi_hint.dart';
 
 /// Сценарии отправки вложений из меню «＋» в чате.
 class AttachFlows {
-  AttachFlows(this.context, this.chatId, {this.replyTo});
+  AttachFlows(this.context, this.chatId, {this.replyTo, this.once = false});
 
   final BuildContext context;
   final String chatId;
   final Message? replyTo;
+
+  /// Фото / видео — одноразовые (🔥 в меню вложений).
+  final bool once;
 
   AppState get app => context.appRead;
 
@@ -97,8 +100,10 @@ class AttachFlows {
         caption: i == 0 ? caption : '',
         width: meta.width,
         height: meta.height,
-        thumb: meta.thumb,
+        // Одноразовому превью не нужно: у получателя его не видно.
+        thumb: once ? null : meta.thumb,
         replyTo: i == 0 ? replyTo : null,
+        once: once,
       );
     }
   }
@@ -158,6 +163,7 @@ class AttachFlows {
       height: meta.height,
       duration: meta.seconds,
       replyTo: replyTo,
+      once: once,
     );
   }
 

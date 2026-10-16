@@ -447,6 +447,50 @@ void main() {
     await close(tester, state);
   });
 
+  testWidgets('одноразовое: переключатель в меню, пузырь без превью', (tester) async {
+    final state = await launch(tester, banner: false);
+    state
+        .messagesOf('dima')
+        .add(
+          Message(
+            id: 'once1',
+            mine: false,
+            text: '',
+            time: DateTime.now(),
+            status: MsgStatus.delivered,
+            kind: MsgKind.photo,
+            once: true,
+            att: Attachment(name: 'x.jpg', mime: 'image/jpeg', size: 1000, key: 'k', chunks: 1),
+          ),
+        );
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-dima').first);
+    await settle(tester);
+    expect(find.text('Одноразовое фото'), findsOneWidget);
+    expect(find.text('Нажми, чтобы загрузить'), findsOneWidget);
+    // Меню на одноразовом: ни переслать, ни поделиться, ни в избранное.
+    await tester.longPress(find.text('Одноразовое фото'));
+    await settle(tester);
+    expect(find.text('Переслать'), findsNothing);
+    expect(find.text('В избранное'), findsNothing);
+    await tester.tapAt(const Offset(20, 120));
+    await settle(tester);
+    // «🔥 Одноразовый просмотр» в меню вложений — и напоминание над полем ввода.
+    await tester.tap(find.byIcon(Icons.add_rounded));
+    await settle(tester);
+    expect(find.text('Одноразовый просмотр'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.ancestor(of: find.text('Одноразовый просмотр'), matching: find.byType(Row)).first,
+        matching: find.byType(VeilSwitch),
+      ),
+    );
+    await settle(tester);
+    await tester.tap(find.byIcon(Icons.add_rounded));
+    await settle(tester);
+    expect(find.textContaining('— одноразовое'), findsOneWidget);
+    await close(tester, state);
+  });
+
   testWidgets('подсказка про Wi-Fi: причина по кнопке «Подробнее»', (tester) async {
     final state = await launch(tester, banner: false);
     final ctx = tester.element(find.byType(Scaffold).first);

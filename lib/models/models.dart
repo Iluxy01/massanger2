@@ -496,6 +496,8 @@ class Message {
     this.edited = false,
     this.fwd,
     this.ev,
+    this.once = false,
+    this.opened = false,
   });
 
   final String id;
@@ -515,6 +517,13 @@ class Message {
 
   /// Что за событие в группе (create, add, remove, leave, rename) — для [MsgKind.event].
   final String? ev;
+
+  /// Одноразовое (фото, видео, голосовое, квадратик): открыть можно один раз.
+  final bool once;
+
+  /// Одноразовое уже открыли (у получателя — файл стёрт; у отправителя —
+  /// друг посмотрел).
+  bool opened;
   final DateTime time;
   MsgStatus status;
   final Message? replyTo;
@@ -544,6 +553,14 @@ class Message {
   String get preview {
     final caption = text.trim();
     String with_(String label) => caption.isEmpty ? label : '$label · $caption';
+    if (once) {
+      return switch (kind) {
+        MsgKind.video => '🔥 Одноразовое видео',
+        MsgKind.voice => '🔥 Одноразовое голосовое',
+        MsgKind.note => '🔥 Одноразовое видеосообщение',
+        _ => '🔥 Одноразовое фото',
+      };
+    }
     return switch (kind) {
       MsgKind.text => secret ? '🔒 Секретное сообщение' : text,
       MsgKind.voice => '🎤 Голосовое · ${_dur(seconds)}',
@@ -577,6 +594,8 @@ class Message {
     if (edited) 'ed': true,
     if (fwd != null) 'fw': fwd,
     if (ev != null) 'ev': ev,
+    if (once) 'once': true,
+    if (opened) 'op': true,
   };
 
   static MsgKind kindOf(Object? name) =>
@@ -601,5 +620,7 @@ class Message {
     edited: j['ed'] == true,
     fwd: j['fw'] as String?,
     ev: j['ev'] as String?,
+    once: j['once'] == true,
+    opened: j['op'] == true,
   );
 }
