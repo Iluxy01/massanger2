@@ -79,6 +79,7 @@ class _NavBar extends StatelessWidget {
     final acc = app.accent;
     final profile = app.profile;
     final unread = app.totalUnread;
+    final skin = context.skin;
 
     Widget item(int i, Widget icon, String label, {int badge = 0}) {
       final active = i == index;
@@ -146,7 +147,7 @@ class _NavBar extends StatelessWidget {
           Positioned.fill(
             child: AnimatedAlign(
               duration: const Duration(milliseconds: 420).by(context),
-              curve: Curves.easeOutBack,
+              curve: skin.id == 0 ? Curves.easeOutBack : skin.curve,
               alignment: Alignment(-1 + index * 1.0, 0),
               child: FractionallySizedBox(
                 widthFactor: 1 / 3,
@@ -154,8 +155,13 @@ class _NavBar extends StatelessWidget {
                 child: Container(
                   decoration: BoxDecoration(
                     gradient: acc.gradient,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [BoxShadow(color: acc.mid.withValues(alpha: 0.5), blurRadius: 18)],
+                    borderRadius: BorderRadius.circular(24 * skin.radius),
+                    boxShadow: [
+                      BoxShadow(
+                        color: acc.mid.withValues(alpha: skin.id == 1 ? 0.25 : 0.5),
+                        blurRadius: skin.glow ? 24 : 18,
+                      ),
+                    ],
                   ),
                 ),
               ),

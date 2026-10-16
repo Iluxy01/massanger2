@@ -12,6 +12,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/mock_data.dart';
 import '../theme/palette.dart';
+import '../theme/skin.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
@@ -1324,6 +1325,20 @@ class _ChatBackground extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
+    final skin = context.skin;
+    // У стилей — их фон, но неподвижный и приглушённый: поверх — переписка.
+    if (skin.id != 0) {
+      const still = AlwaysStoppedAnimation<double>(0.18);
+      return RepaintBoundary(
+        child: CustomPaint(
+          painter: skinPainter(skin, vc, acc, still, live: false, dim: 0.75),
+          foregroundPainter: skin.stillLayer
+              ? skinPainter(skin, vc, acc, still, live: true, dim: 0.75)
+              : null,
+          child: const SizedBox.expand(),
+        ),
+      );
+    }
     return RepaintBoundary(
       child: CustomPaint(painter: _PatternPainter(vc.bg, vc.text, acc.a, acc.b, vc.dark)),
     );
@@ -1442,12 +1457,14 @@ class _TypingBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final skin = context.skin;
+    final r = Radius.circular(20 * skin.radius);
     return Align(
       alignment: Alignment.centerLeft,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
         duration: const Duration(milliseconds: 380).by(context),
-        curve: Curves.easeOutBack,
+        curve: skin.id == 1 ? Curves.easeOutQuart : Curves.easeOutBack,
         builder: (_, t, c) => Transform.scale(
           scale: t,
           alignment: Alignment.bottomLeft,
@@ -1458,12 +1475,13 @@ class _TypingBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           decoration: BoxDecoration(
             color: vc.bubbleIn,
-            border: Border.all(color: vc.border),
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(20),
-              topRight: Radius.circular(20),
-              bottomRight: Radius.circular(20),
-              bottomLeft: Radius.circular(6),
+            border: skin.border > 0 ? Border.all(color: vc.border) : null,
+            boxShadow: skin.shadow ? _softShadow : null,
+            borderRadius: BorderRadius.only(
+              topLeft: r,
+              topRight: r,
+              bottomRight: r,
+              bottomLeft: Radius.circular(6 * skin.radius),
             ),
           ),
           child: TypingDots(color: vc.textDim, size: 7),
@@ -1681,26 +1699,104 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
     );
 
     if (!widget.animate) return tile;
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 420).by(context),
-      curve: Curves.easeOutCubic,
-      onEnd: widget.onAnimated,
-      builder: (_, t, child) => Opacity(
-        opacity: t,
-        child: Transform.translate(
-          offset: Offset(0, (1 - t) * 28),
-          child: Transform.scale(
-            scale: 0.88 + 0.12 * t,
-            alignment: mine ? Alignment.bottomRight : Alignment.bottomLeft,
-            child: child,
+    final corner = mine ? Alignment.bottomRight : Alignment.bottomLeft;
+    final blur = context.visual.look > 0;
+    // Появление нового сообщения — у каждого стиля своё.
+    final (int ms, Curve curve, Widget Function(double, Widget) fx) = switch (context.skin.appear) {
+      // Терминал: строка «выводится» — быстрый сдвиг сбоку и раскрытие сверху вниз.
+      Appear.type => (
+        300,
+        Curves.easeOutQuart,
+        (t, c) => Opacity(
+          opacity: t.clamp(0.0, 1.0),
+          child: Transform.translate(
+            offset: Offset((1 - t) * (mine ? 14 : -14), 0),
+            child: ClipRect(clipper: _RevealClipper(0.3 + 0.7 * t), child: c),
           ),
         ),
       ),
+      // Космос: медленно всплывает из глубины и проявляется из дымки.
+      Appear.float => (
+        480,
+        Curves.easeOutQuart,
+        (t, c) {
+          Widget w = Transform.translate(
+            offset: Offset(0, (1 - t) * 40),
+            child: Transform.scale(scale: 0.94 + 0.06 * t, alignment: corner, child: c),
+          );
+          if (blur && t < 1) {
+            final sigma = (1 - t) * 6;
+            w = ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+              child: w,
+            );
+          }
+          return Opacity(opacity: t.clamp(0.0, 1.0), child: w);
+        },
+      ),
+      // Лимонад: мягкий «поп» из уголка.
+      Appear.pop => (
+        420,
+        Curves.easeOutBack,
+        (t, c) => Opacity(
+          opacity: t.clamp(0.0, 1.0),
+          child: Transform.translate(
+            offset: Offset(0, (1 - t) * 12),
+            child: Transform.scale(scale: 0.7 + 0.3 * t, alignment: corner, child: c),
+          ),
+        ),
+      ),
+      // Лимонад, «пружинистые»: поп с отскоком и лёгким наклоном.
+      Appear.bounce => (
+        700,
+        const ElasticOutCurve(0.55),
+        (t, c) => Opacity(
+          opacity: (t * 2).clamp(0.0, 1.0),
+          child: Transform.rotate(
+            angle: (1 - t) * (mine ? 0.08 : -0.08),
+            alignment: corner,
+            child: Transform.scale(scale: 0.6 + 0.4 * t, alignment: corner, child: c),
+          ),
+        ),
+      ),
+      Appear.rise => (
+        420,
+        Curves.easeOutCubic,
+        (t, c) => Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, (1 - t) * 28),
+            child: Transform.scale(scale: 0.88 + 0.12 * t, alignment: corner, child: c),
+          ),
+        ),
+      ),
+    };
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: ms).by(context),
+      curve: curve,
+      onEnd: widget.onAnimated,
+      builder: (_, t, child) => fx(t, child!),
       child: tile,
     );
   }
 }
+
+/// Раскрытие сверху вниз (появление сообщения в «Терминале»): режет только
+/// отрисовку, раскладка не меняется.
+class _RevealClipper extends CustomClipper<Rect> {
+  _RevealClipper(this.k);
+  final double k;
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width, size.height * k.clamp(0.0, 1.0));
+
+  @override
+  bool shouldReclip(_RevealClipper old) => old.k != k;
+}
+
+/// Мягкая тёплая тень «Лимонада» (вместо обводки).
+const _softShadow = [BoxShadow(color: Color(0x14603A00), blurRadius: 6, offset: Offset(0, 2))];
 
 /// Сам «пузырь» сообщения. Используется и в ленте, и в контекстном меню.
 class BubbleBody extends StatelessWidget {
@@ -1729,8 +1825,9 @@ class BubbleBody extends StatelessWidget {
     final vc = app.colors;
     final acc = app.accent;
     final mine = m.mine;
-    final fg = mine ? acc.onAccent : vc.text;
-    final metaColor = mine ? acc.onAccent.withValues(alpha: 0.75) : vc.textFaint;
+    final skin = context.skin;
+    final fg = mine ? app.mineFg : vc.text;
+    final metaColor = mine ? fg.withValues(alpha: 0.75) : vc.textFaint;
 
     final meta = Row(
       mainAxisSize: MainAxisSize.min,
@@ -1842,8 +1939,9 @@ class BubbleBody extends StatelessWidget {
       );
     }
 
-    const r = Radius.circular(20);
-    const small = Radius.circular(6);
+    final k = skin.radius;
+    final r = Radius.circular(20 * k);
+    final small = Radius.circular(6 * k);
     final radius = BorderRadius.only(
       topLeft: r,
       topRight: r,
@@ -1857,10 +1955,10 @@ class BubbleBody extends StatelessWidget {
     final maxW = MediaQuery.sizeOf(context).width * 0.78;
     final mediaW = min(270.0, maxW) - 6;
     final inner = BorderRadius.only(
-      topLeft: const Radius.circular(17),
-      topRight: const Radius.circular(17),
-      bottomLeft: Radius.circular(!mine && tail ? 4 : 17),
-      bottomRight: Radius.circular(mine && tail ? 4 : 17),
+      topLeft: Radius.circular(17 * k),
+      topRight: Radius.circular(17 * k),
+      bottomLeft: Radius.circular((!mine && tail ? 4 : 17) * k),
+      bottomRight: Radius.circular((mine && tail ? 4 : 17) * k),
     );
 
     Widget metaOn(Color color) => Row(
@@ -1876,7 +1974,12 @@ class BubbleBody extends StatelessWidget {
     );
 
     Widget textBlock(String t) {
-      final style = TextStyle(color: fg, fontSize: app.msgFontSize, height: 1.32);
+      final style = TextStyle(
+        color: fg,
+        fontSize: app.msgFontSize,
+        height: 1.32,
+        fontFamily: skin.monoMessages ? 'monospace' : null,
+      );
       Widget text = Fmt.has(t)
           ? Text.rich(
               TextSpan(children: Fmt.spans(t, style, reveal: m.revealed)),
@@ -1933,14 +2036,11 @@ class BubbleBody extends StatelessWidget {
           width: mediaW,
           radius: hasCaption || m.replyTo != null
               ? (hasCaption
-                    ? const BorderRadius.vertical(
-                        top: Radius.circular(17),
-                        bottom: Radius.circular(6),
+                    ? BorderRadius.vertical(
+                        top: Radius.circular(17 * k),
+                        bottom: Radius.circular(6 * k),
                       )
-                    : BorderRadius.vertical(
-                        top: const Radius.circular(6),
-                        bottom: inner.bottomLeft,
-                      ))
+                    : BorderRadius.vertical(top: Radius.circular(6 * k), bottom: inner.bottomLeft))
               : inner,
           overlayMeta: hasCaption ? null : metaOn(Colors.white),
         );
@@ -1981,25 +2081,37 @@ class BubbleBody extends StatelessWidget {
     return Container(
       padding: edge ? const EdgeInsets.all(3) : const EdgeInsets.fromLTRB(14, 9, 12, 8),
       decoration: BoxDecoration(
-        gradient: mine
+        // «Терминал»: свои — контуром на тёмной подложке, а не заливкой.
+        gradient: mine && !skin.outlineMine
             ? LinearGradient(
                 colors: [acc.a, acc.b],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               )
             : null,
-        color: mine ? null : vc.bubbleIn,
+        color: !mine
+            ? vc.bubbleIn
+            : skin.outlineMine
+            ? Color.alphaBlend(acc.a.withValues(alpha: 0.10), vc.surface)
+            : null,
         borderRadius: radius,
-        border: mine ? null : Border.all(color: vc.border),
+        border: mine
+            ? (skin.outlineMine ? Border.all(color: acc.a.withValues(alpha: 0.6)) : null)
+            : (skin.border > 0 ? Border.all(color: vc.border) : null),
         // Лёгкая тень только у своих пузырей (тени дороги при прокрутке).
-        boxShadow: mine
+        // Космос — свечение вокруг, Лимонад — мягкая тень и у чужих.
+        boxShadow: mine && !skin.outlineMine
             ? [
-                BoxShadow(
-                  color: acc.mid.withValues(alpha: 0.18),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
+                skin.glow
+                    ? BoxShadow(color: acc.mid.withValues(alpha: 0.35), blurRadius: 16)
+                    : BoxShadow(
+                        color: acc.mid.withValues(alpha: skin.shadow ? 0.25 : 0.18),
+                        blurRadius: skin.shadow ? 10 : 8,
+                        offset: Offset(0, skin.shadow ? 4 : 3),
+                      ),
               ]
+            : !mine && skin.shadow
+            ? _softShadow
             : null,
       ),
       child: Column(
@@ -2087,7 +2199,9 @@ class _QuotedReply extends StatelessWidget {
     final app = context.app;
     final vc = app.colors;
     final acc = app.accent;
-    final fg = mine ? acc.onAccent : vc.text;
+    final fg = mine ? app.mineFg : vc.text;
+    // На контурном пузыре «Терминала» цитата — в цвете акцента, как у чужих.
+    final onFill = mine && !context.skin.outlineMine;
     final name = m.mine
         ? 'Вы'
         : m.from != null
@@ -2098,16 +2212,16 @@ class _QuotedReply extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
       decoration: BoxDecoration(
-        color: mine ? Colors.white.withValues(alpha: 0.16) : acc.a.withValues(alpha: 0.10),
+        color: onFill ? Colors.white.withValues(alpha: 0.16) : acc.a.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(10),
-        border: Border(left: BorderSide(color: mine ? acc.onAccent : acc.a, width: 3)),
+        border: Border(left: BorderSide(color: onFill ? fg : acc.a, width: 3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             name,
-            style: TextStyle(color: mine ? fg : acc.a, fontWeight: FontWeight.w700, fontSize: 13),
+            style: TextStyle(color: onFill ? fg : acc.a, fontWeight: FontWeight.w700, fontSize: 13),
           ),
           Text(
             text,
@@ -2721,7 +2835,9 @@ class _SendMicButton extends StatelessWidget {
       transform: Matrix4.diagonal3Values(recording ? 1.25 : 1, recording ? 1.25 : 1, 1),
       transformAlignment: Alignment.center,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
+        // «Терминал» — квадратная кнопка, остальные — круглая.
+        shape: context.skin.id == 1 ? BoxShape.rectangle : BoxShape.circle,
+        borderRadius: context.skin.id == 1 ? BorderRadius.circular(8) : null,
         gradient: active ? acc.gradient : null,
         color: active ? null : Colors.transparent,
         boxShadow: active

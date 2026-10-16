@@ -772,6 +772,7 @@ class _NewChatButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final acc = context.accent;
+    final skin = context.skin;
     return Pressable(
       scale: 0.88,
       onTap: () => _pickContact(context),
@@ -780,12 +781,12 @@ class _NewChatButton extends StatelessWidget {
         height: 60,
         decoration: BoxDecoration(
           gradient: acc.gradient,
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(22 * skin.radius),
           boxShadow: [
             BoxShadow(
-              color: acc.mid.withValues(alpha: 0.55),
-              blurRadius: 24,
-              offset: const Offset(0, 8),
+              color: acc.mid.withValues(alpha: skin.id == 1 ? 0.3 : 0.55),
+              blurRadius: skin.glow ? 32 : 24,
+              offset: Offset(0, skin.glow ? 0 : 8),
             ),
           ],
         ),

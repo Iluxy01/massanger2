@@ -9,6 +9,7 @@ import '../core/protocol.dart';
 import '../core/relay_pool.dart';
 import '../models/models.dart';
 import '../theme/palette.dart';
+import '../theme/skin.dart';
 import '../utils.dart';
 import '../widgets/rich_text.dart';
 import 'live.dart';
@@ -117,6 +118,15 @@ class AppState extends ChangeNotifier {
   int savedSignals = 0;
   int savedDownloads = 0;
 
+  /// Стиль оформления (0 Veil · 1 Терминал · 2 Космос · 3 Лимонад) и его
+  /// мелкие настройки, см. theme/skin.dart.
+  int skinId = 0;
+  final Map<String, int> skinOpts = {};
+  Skin? _skin;
+
+  /// Действующий стиль: «Ультра» всегда возвращает классический чёрный.
+  Skin get skin => ultra ? Skin.classic : (_skin ??= Skin.of(skinId, Map.of(skinOpts)));
+
   int get effLook => ultra ? 0 : look;
   int get effMotion => ultra ? 0 : motion;
   bool get effDark => ultra || dark;
@@ -206,12 +216,14 @@ class AppState extends ChangeNotifier {
   final List<Timer> _timers = [];
   bool _disposed = false;
 
-  Accent get accent => accents[accentIndex];
+  Accent get accent => skin.accent ?? accents[accentIndex];
+
+  /// Цвет текста на своих пузырях: на градиенте — свой у акцента, у
+  /// «Терминала» пузыри контурные — обычный цвет текста.
+  Color get mineFg => skin.outlineMine ? colors.text : accent.onAccent;
   VeilColors get colors => ultra
       ? VeilColors.amoledColors
-      : effDark
-      ? VeilColors.darkColors
-      : VeilColors.lightColors;
+      : skin.colors ?? (effDark ? VeilColors.darkColors : VeilColors.lightColors);
 
   Timer? _notifyTimer;
 
@@ -385,6 +397,8 @@ class AppState extends ChangeNotifier {
     'banner': inAppBanner,
     'look': look,
     'motion': motion,
+    if (skinId > 0) 'skin': skinId,
+    if (skinOpts.isNotEmpty) 'skinOpt': Map.of(skinOpts),
     'instant': instantNotify,
     if (ultra) 'ultra': true,
     if (ultraAuto > 0) 'ultraAuto': ultraAuto,
@@ -424,6 +438,15 @@ class AppState extends ChangeNotifier {
     inAppBanner = s['banner'] as bool? ?? true;
     look = ((s['look'] as num?)?.toInt() ?? 1).clamp(0, 2);
     motion = ((s['motion'] as num?)?.toInt() ?? 2).clamp(0, 3);
+    skinId = ((s['skin'] as num?)?.toInt() ?? 0).clamp(0, Skin.names.length - 1);
+    skinOpts.clear();
+    final so = s['skinOpt'];
+    if (so is Map) {
+      for (final e in so.entries) {
+        if (e.key is String && e.value is num) skinOpts[e.key as String] = (e.value as num).toInt();
+      }
+    }
+    _skin = null;
     instantNotify = s['instant'] == true;
     ultra = s['ultra'] == true;
     ultraAuto = ((s['ultraAuto'] as num?)?.toInt() ?? 0).clamp(0, 50);
@@ -486,6 +509,21 @@ class AppState extends ChangeNotifier {
 
   void setMotion(int v) {
     motion = v;
+    themeTick.value++;
+    _saveSettings();
+  }
+
+  void setSkin(int id) {
+    skinId = id;
+    _skin = null;
+    themeTick.value++;
+    _saveSettings();
+  }
+
+  /// Мелкая настройка стиля (ключи — [Skin.options]).
+  void setSkinOpt(String key, int v) {
+    skinOpts[key] = v;
+    _skin = null;
     themeTick.value++;
     _saveSettings();
   }

@@ -43,12 +43,15 @@ class Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Форма — от стиля: круг, «сквиркл» (Лимонад) или почти квадрат (Терминал).
+    final round = context.skin.avatarRadius;
     final core = Container(
       width: size,
       height: size,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
+        shape: round >= 0.5 ? BoxShape.circle : BoxShape.rectangle,
+        borderRadius: round >= 0.5 ? null : BorderRadius.circular(size * round),
         gradient: LinearGradient(
           colors: colors,
           begin: Alignment.topLeft,
@@ -71,7 +74,10 @@ class Avatar extends StatelessWidget {
         alignment: Alignment.center,
         clipBehavior: Clip.none,
         children: [
-          if (ring) Positioned.fill(child: _StoryRing(colors: colors)),
+          if (ring)
+            Positioned.fill(
+              child: _StoryRing(colors: colors, round: round),
+            ),
           core,
           if (online)
             Positioned(
@@ -86,21 +92,33 @@ class Avatar extends StatelessWidget {
 }
 
 class _StoryRing extends StatelessWidget {
-  const _StoryRing({required this.colors});
+  const _StoryRing({required this.colors, required this.round});
   final List<Color> colors;
+  final double round;
 
   @override
   Widget build(BuildContext context) {
     final acc = context.accent;
-    return Container(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: SweepGradient(colors: [acc.a, acc.b, colors.last, acc.a]),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Container(
-        decoration: BoxDecoration(shape: BoxShape.circle, color: context.vc.bg),
-      ),
+    final circle = round >= 0.5;
+    return LayoutBuilder(
+      builder: (context, box) {
+        final r = circle ? null : BorderRadius.circular(box.maxWidth * round + 2);
+        return Container(
+          decoration: BoxDecoration(
+            shape: circle ? BoxShape.circle : BoxShape.rectangle,
+            borderRadius: r,
+            gradient: SweepGradient(colors: [acc.a, acc.b, colors.last, acc.a]),
+          ),
+          padding: const EdgeInsets.all(2),
+          child: Container(
+            decoration: BoxDecoration(
+              shape: circle ? BoxShape.circle : BoxShape.rectangle,
+              borderRadius: r,
+              color: context.vc.bg,
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -165,11 +183,12 @@ class StatusTicks extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final onBubble = color != null;
     final vc = context.vc;
-    final dim = onBubble ? Colors.white.withValues(alpha: 0.55) : vc.textFaint;
-    final bright = onBubble ? Colors.white : vc.textDim;
-    final read = onBubble ? Colors.white : context.accent.b;
+    // На пузыре — цветом текста пузыря (на светлых акцентах он тёмный).
+    final on = color?.withValues(alpha: 1);
+    final dim = on != null ? on.withValues(alpha: 0.55) : vc.textFaint;
+    final bright = on ?? vc.textDim;
+    final read = on ?? context.accent.b;
     final Widget icon = switch (status) {
       MsgStatus.sending => Icon(Icons.schedule_rounded, size: size - 2, color: dim),
       MsgStatus.sent => Icon(Icons.done_rounded, size: size, color: dim),

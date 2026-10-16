@@ -5,6 +5,7 @@ import '../app.dart';
 import '../core/relay_pool.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
+import '../theme/skin.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
@@ -166,53 +167,73 @@ class SettingsTab extends StatelessWidget {
             const _Section('Оформление'),
             _Group(
               children: [
-                _Tile(
-                  icon: vc.dark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
-                  title: 'Тёмная тема',
-                  subtitle: app.ultra ? 'В «Ультра» всегда тёмная' : null,
-                  trailing: VeilSwitch(
-                    value: app.effDark,
-                    onChanged: (v) {
-                      if (!app.ultra) app.setDark(v);
-                    },
+                const _SkinPicker(),
+                // У стилей свои цвета — тёмная тема и акцент только у «Veil».
+                if (app.skinId == 0) ...[
+                  _Tile(
+                    icon: vc.dark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                    title: 'Тёмная тема',
+                    subtitle: app.ultra ? 'В «Ультра» всегда тёмная' : null,
+                    trailing: VeilSwitch(
+                      value: app.effDark,
+                      onChanged: (v) {
+                        if (!app.ultra) app.setDark(v);
+                      },
+                    ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Акцент · ${app.accent.name}',
-                        style: TextStyle(color: vc.textDim, fontSize: 13),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          for (var i = 0; i < accents.length; i++)
-                            _AccentDot(
-                              accent: accents[i],
-                              selected: i == app.accentIndex,
-                              onTap: () {
-                                app.tick(HapticKind.light);
-                                app.setAccent(i);
-                              },
-                            ),
-                        ],
-                      ),
-                    ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Акцент · ${app.accent.name}',
+                          style: TextStyle(color: vc.textDim, fontSize: 13),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            for (var i = 0; i < accents.length; i++)
+                              _AccentDot(
+                                accent: accents[i],
+                                selected: i == app.accentIndex,
+                                onTap: () {
+                                  app.tick(HapticKind.light);
+                                  app.setAccent(i);
+                                },
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ] else
+                  for (final o in Skin.options[app.skinId] ?? const <SkinOption>[])
+                    _LevelPicker(
+                      key: ValueKey('skin-${o.key}'),
+                      icon: o.icon,
+                      title: o.title,
+                      labels: o.labels,
+                      hints: o.hints,
+                      value: (app.skinOpts[o.key] ?? 0).clamp(0, o.labels.length - 1),
+                      onChanged: (v) => app.setSkinOpt(o.key, v),
+                    ),
                 _LevelPicker(
                   icon: Icons.auto_awesome_rounded,
                   title: 'Оформление',
                   labels: lookLevels,
-                  hints: const [
-                    'Чистый фон, без размытия — бережёт батарею',
-                    'Сияние на фоне, стекло на главных панелях',
-                    'Живое сияние и матовое стекло везде',
-                  ],
+                  hints: app.skinId == 0
+                      ? const [
+                          'Чистый фон, без размытия — бережёт батарею',
+                          'Сияние на фоне, стекло на главных панелях',
+                          'Живое сияние и матовое стекло везде',
+                        ]
+                      : const [
+                          'Неподвижный фон, без размытия — бережёт батарею',
+                          'Фон слегка оживает, стекло на главных панелях',
+                          'Плавный живой фон и матовое стекло везде',
+                        ],
                   value: app.look,
                   onChanged: app.setLook,
                 ),
@@ -235,8 +256,8 @@ class SettingsTab extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                 child: Text(
-                  'Пока включён «Ультра», оформление и анимации — минимальные. '
-                  'Выбранные уровни вернутся, когда выключишь его.',
+                  'Пока включён «Ультра», стиль, оформление и анимации — минимальные. '
+                  'Выбранные вернутся, когда выключишь его.',
                   style: TextStyle(color: vc.textDim, fontSize: 12.5),
                 ),
               ),
@@ -540,11 +561,15 @@ class _Group extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final skin = context.skin;
     return Container(
       decoration: BoxDecoration(
         color: vc.surface.withValues(alpha: vc.dark ? 0.85 : 0.9),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: vc.border),
+        borderRadius: BorderRadius.circular(22 * skin.radius),
+        border: skin.border > 0 ? Border.all(color: vc.border) : null,
+        boxShadow: skin.shadow
+            ? const [BoxShadow(color: Color(0x14603A00), blurRadius: 16, offset: Offset(0, 4))]
+            : null,
       ),
       child: Column(
         children: [
@@ -580,7 +605,7 @@ class _Tile extends StatelessWidget {
             height: 34,
             decoration: BoxDecoration(
               color: acc.a.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(10 * context.skin.radius),
             ),
             child: Center(child: GradientIcon(icon, size: 19)),
           ),
@@ -613,6 +638,7 @@ class _Tile extends StatelessWidget {
 /// Выбор уровня: заголовок, подсказка к выбранному уровню и ряд сегментов.
 class _LevelPicker extends StatelessWidget {
   const _LevelPicker({
+    super.key,
     required this.icon,
     required this.title,
     required this.labels,
@@ -632,6 +658,7 @@ class _LevelPicker extends StatelessWidget {
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
+    final k = context.skin.radius;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
       child: Column(
@@ -644,7 +671,7 @@ class _LevelPicker extends StatelessWidget {
                 height: 34,
                 decoration: BoxDecoration(
                   color: acc.a.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(10 * k),
                 ),
                 child: Center(child: GradientIcon(icon, size: 19)),
               ),
@@ -666,7 +693,10 @@ class _LevelPicker extends StatelessWidget {
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(color: vc.elevated, borderRadius: BorderRadius.circular(14)),
+            decoration: BoxDecoration(
+              color: vc.elevated,
+              borderRadius: BorderRadius.circular(14 * k),
+            ),
             child: Row(
               children: [
                 for (var i = 0; i < labels.length; i++)
@@ -684,7 +714,7 @@ class _LevelPicker extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(vertical: 9),
                         decoration: BoxDecoration(
                           gradient: i == value ? acc.gradient : null,
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(10 * k),
                         ),
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
@@ -701,6 +731,160 @@ class _LevelPicker extends StatelessWidget {
                     ),
                   ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Выбор стиля: четыре живые миниатюры — фон, форма пузырей, цвета.
+class _SkinPicker extends StatelessWidget {
+  const _SkinPicker();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final id = app.skinId;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Стиль · ${Skin.names[id]}',
+            style: TextStyle(color: vc.text, fontSize: 15.5, fontWeight: FontWeight.w600),
+          ),
+          Text(Skin.hints[id], style: TextStyle(color: vc.textDim, fontSize: 12.5)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              for (var i = 0; i < Skin.names.length; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: _SkinTile(
+                    key: ValueKey('skin-$i'),
+                    id: i,
+                    selected: i == id,
+                    onTap: () {
+                      if (i == id) return;
+                      app.tick(HapticKind.light);
+                      app.setSkin(i);
+                    },
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SkinTile extends StatelessWidget {
+  const _SkinTile({super.key, required this.id, required this.selected, required this.onTap});
+
+  final int id;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    // Миниатюра рисуется в цветах самого стиля (с его текущими настройками).
+    final skin = id == app.skinId ? app.skin : Skin.of(id, app.skinOpts);
+    final c = skin.colors ?? (app.dark ? VeilColors.darkColors : VeilColors.lightColors);
+    final a = skin.accent ?? accents[app.accentIndex];
+    const still = AlwaysStoppedAnimation<double>(0.18);
+    final k = skin.radius;
+    Widget bubble({required bool mine, required double w}) => Container(
+      width: w,
+      height: 11,
+      margin: const EdgeInsets.only(top: 5),
+      decoration: BoxDecoration(
+        gradient: mine && !skin.outlineMine ? a.gradient : null,
+        color: mine ? (skin.outlineMine ? c.surface : null) : c.bubbleIn,
+        borderRadius: BorderRadius.circular(6 * k),
+        border: mine
+            ? (skin.outlineMine ? Border.all(color: a.a.withValues(alpha: 0.7)) : null)
+            : (skin.border > 0 ? Border.all(color: c.border) : null),
+        boxShadow: skin.glow && mine
+            ? [BoxShadow(color: a.mid.withValues(alpha: 0.5), blurRadius: 8)]
+            : skin.shadow
+            ? const [BoxShadow(color: Color(0x1A603A00), blurRadius: 4, offset: Offset(0, 1))]
+            : null,
+      ),
+    );
+    return Pressable(
+      scale: 0.93,
+      onTap: onTap,
+      child: Column(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 220).by(context),
+            height: 96,
+            padding: const EdgeInsets.all(2.5),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: selected ? app.accent.gradient : null,
+              color: selected ? null : vc.border,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13.5),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (id == 0)
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: c.bg,
+                        gradient: RadialGradient(
+                          center: const Alignment(0.8, -0.8),
+                          radius: 1.2,
+                          colors: [
+                            a.a.withValues(alpha: c.dark ? 0.35 : 0.2),
+                            c.bg,
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    CustomPaint(
+                      painter: skinPainter(skin, c, a, still, live: false),
+                      foregroundPainter: skin.stillLayer
+                          ? skinPainter(skin, c, a, still, live: true)
+                          : null,
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(7, 6, 7, 8),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Align(alignment: Alignment.centerLeft, child: bubble(mine: false, w: 30)),
+                        Align(alignment: Alignment.centerRight, child: bubble(mine: true, w: 26)),
+                        Align(alignment: Alignment.centerLeft, child: bubble(mine: false, w: 20)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              Skin.names[id],
+              style: TextStyle(
+                color: selected ? vc.text : vc.textDim,
+                fontSize: 12.5,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                fontFamily: id == 1 ? 'monospace' : null,
+              ),
             ),
           ),
         ],

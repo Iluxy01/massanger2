@@ -3,15 +3,18 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../state/app_state.dart';
+import '../theme/skin.dart';
 import 'visual.dart';
 
-/// Северное сияние на фоне.
+/// Северное сияние на фоне (у других стилей — их фон: сетка, космос, пятна).
 ///
 /// По умолчанию статичное: рисуется один раз и кэшируется (RepaintBoundary), так
 /// что прокрутка поверх него не перерисовывает фон. Живое движение ([animate])
-/// — только там, где экран виден недолго (приветствие).
+/// — только там, где экран виден недолго (приветствие). У стилей фон движется
+/// и на «Балансе», но реже (20 кадров в секунду) — чтобы не греть телефон.
 class AuroraBackground extends StatefulWidget {
   const AuroraBackground({super.key, this.child, this.intensity = 1, this.animate = false});
 
@@ -23,8 +26,15 @@ class AuroraBackground extends StatefulWidget {
   State<AuroraBackground> createState() => _AuroraBackgroundState();
 }
 
-class _AuroraBackgroundState extends State<AuroraBackground> with TickerProviderStateMixin {
-  AnimationController? _c;
+class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerProviderStateMixin {
+  Ticker? _ticker;
+  final _t = ValueNotifier<double>(0);
+  bool _live = false;
+
+  /// Пауза между кадрами (0 — каждый кадр).
+  Duration _gap = Duration.zero;
+  Duration _last = Duration.zero;
+  Duration _period = const Duration(seconds: 24);
 
   static const _still = AlwaysStoppedAnimation<double>(0.18);
 
@@ -44,18 +54,33 @@ class _AuroraBackgroundState extends State<AuroraBackground> with TickerProvider
   /// с выключенными анимациями — нигде.
   void _sync() {
     final v = context.visual;
-    final live = v.motion > 0 && v.look > 0 && (widget.animate || v.look == 2);
-    if (live && _c == null) {
-      _c = AnimationController(vsync: this, duration: const Duration(seconds: 24))..repeat();
-    } else if (!live && _c != null) {
-      _c!.dispose();
-      _c = null;
+    final full = widget.animate || v.look == 2;
+    final skinned = v.skin.id != 0;
+    final live = v.motion > 0 && v.look > 0 && (full || skinned);
+    _gap = full ? Duration.zero : const Duration(milliseconds: 50);
+    _period = Duration(seconds: skinned ? 60 : 24);
+    if (live == _live) return;
+    _live = live;
+    final ticker = _ticker ??= createTicker(_tick);
+    if (live) {
+      _last = Duration.zero;
+      _t.value = 0;
+      ticker.start();
+    } else {
+      ticker.stop();
     }
+  }
+
+  void _tick(Duration elapsed) {
+    if (_gap > Duration.zero && elapsed - _last < _gap) return;
+    _last = elapsed;
+    _t.value = (elapsed.inMicroseconds % _period.inMicroseconds) / _period.inMicroseconds;
   }
 
   @override
   void dispose() {
-    _c?.dispose();
+    _ticker?.dispose();
+    _t.dispose();
     super.dispose();
   }
 
@@ -63,19 +88,40 @@ class _AuroraBackgroundState extends State<AuroraBackground> with TickerProvider
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
-    final look = context.visual.look;
-    final bg = RepaintBoundary(
-      child: CustomPaint(
-        size: Size.infinite,
-        painter: _AuroraPainter(
-          _c ?? _still,
-          bg: vc.bg,
-          colors: [acc.a, acc.b, Color.lerp(acc.a, const Color(0xFFFF4F8B), 0.5)!],
-          // «Минимум» — чистый фон без сияния.
-          intensity: look == 0 ? 0 : widget.intensity * (vc.dark ? 1 : 0.6),
+    final v = context.visual;
+    final look = v.look;
+    final ValueListenable<double> anim = _live ? _t : _still;
+    final Widget bg;
+    if (v.skin.id != 0) {
+      final dim = 0.6 + 0.4 * widget.intensity;
+      bg = Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(
+            child: CustomPaint(
+              painter: skinPainter(v.skin, vc, acc, _still, live: false, dim: dim),
+            ),
+          ),
+          if (_live || v.skin.stillLayer)
+            RepaintBoundary(
+              child: CustomPaint(painter: skinPainter(v.skin, vc, acc, anim, live: true, dim: dim)),
+            ),
+        ],
+      );
+    } else {
+      bg = RepaintBoundary(
+        child: CustomPaint(
+          size: Size.infinite,
+          painter: _AuroraPainter(
+            anim,
+            bg: vc.bg,
+            colors: [acc.a, acc.b, Color.lerp(acc.a, const Color(0xFFFF4F8B), 0.5)!],
+            // «Минимум» — чистый фон без сияния.
+            intensity: look == 0 ? 0 : widget.intensity * (vc.dark ? 1 : 0.6),
+          ),
         ),
-      ),
-    );
+      );
+    }
     final child = widget.child;
     if (child == null) return bg;
     return Stack(
@@ -92,7 +138,7 @@ class _AuroraPainter extends CustomPainter {
   _AuroraPainter(this.anim, {required this.bg, required this.colors, required this.intensity})
     : super(repaint: anim);
 
-  final Animation<double> anim;
+  final ValueListenable<double> anim;
   final Color bg;
   final List<Color> colors;
   final double intensity;
@@ -154,7 +200,8 @@ class Glass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
-    final r = BorderRadius.circular(radius);
+    final skin = context.skin;
+    final r = BorderRadius.circular(radius * skin.radius);
     // «Минимум» — без размытия вовсе, «Максимум» — матовое стекло везде.
     final blur = switch (context.visual.look) {
       0 => 0.0,
@@ -174,7 +221,11 @@ class Glass extends StatelessWidget {
                 ? Color.alphaBlend(vc.panel, vc.bg)
                 : vc.panel),
         borderRadius: r,
-        border: border ? Border.all(color: vc.border) : null,
+        border: border && skin.border > 0 ? Border.all(color: vc.border, width: skin.border) : null,
+        // Лимонад: вместо обводки — мягкая тёплая тень.
+        boxShadow: skin.shadow && border
+            ? const [BoxShadow(color: Color(0x14603A00), blurRadius: 16, offset: Offset(0, 4))]
+            : null,
       ),
       child: child,
     );
@@ -238,11 +289,17 @@ class _PressableState extends State<Pressable> {
               context.appRead.tick(HapticKind.medium);
               widget.onLongPress!();
             },
-      child: AnimatedScale(
-        scale: _down ? widget.scale : 1,
-        duration: const Duration(milliseconds: 140).by(context),
-        curve: Curves.easeOutCubic,
-        child: widget.child,
+      child: Builder(
+        builder: (context) {
+          // Терминал почти не «вжимается», Лимонад — заметно и с отскоком.
+          final skin = context.skin;
+          return AnimatedScale(
+            scale: _down ? 1 - (1 - widget.scale) * skin.press : 1,
+            duration: const Duration(milliseconds: 140).by(context),
+            curve: skin.curve,
+            child: widget.child,
+          );
+        },
       ),
     );
   }
@@ -294,7 +351,16 @@ class AccentButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final acc = context.accent;
+    final skin = context.skin;
     final enabled = onTap != null;
+    // Свечение: Терминал — короткое и тусклое, Космос — широкое, Лимонад —
+    // мягкая тень снизу.
+    final (glow, blur, dy) = switch (skin.id) {
+      1 => (0.25, 14.0, 0.0),
+      2 => (0.6, 32.0, 0.0),
+      3 => (0.35, 16.0, 6.0),
+      _ => (0.45, 24.0, 8.0),
+    };
     return Pressable(
       onTap: onTap,
       child: AnimatedOpacity(
@@ -306,12 +372,12 @@ class AccentButton extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 28),
           decoration: BoxDecoration(
             gradient: acc.gradient,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(18 * skin.radius),
             boxShadow: [
               BoxShadow(
-                color: acc.mid.withValues(alpha: enabled ? 0.45 : 0),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
+                color: acc.mid.withValues(alpha: enabled ? glow : 0),
+                blurRadius: blur,
+                offset: Offset(0, dy),
               ),
             ],
           ),
@@ -359,7 +425,7 @@ class VeilLogo extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         gradient: acc.gradient,
-        borderRadius: BorderRadius.circular(size * 0.32),
+        borderRadius: BorderRadius.circular(size * 0.32 * min(context.skin.radius, 1.3)),
         boxShadow: glow
             ? [BoxShadow(color: acc.mid.withValues(alpha: 0.55), blurRadius: size * 0.6)]
             : null,
@@ -423,23 +489,77 @@ class _TypingDotsState extends State<TypingDots> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final color = widget.color ?? context.accent.mid;
+    final skin = context.skin.id;
+    final sz = widget.size;
+    final margin = EdgeInsets.symmetric(horizontal: sz * 0.25);
     return AnimatedBuilder(
       animation: _c,
       builder: (_, _) => Row(
         mainAxisSize: MainAxisSize.min,
         children: List.generate(3, (i) {
           final t = (_c.value - i * 0.16) % 1.0;
-          final bounce = t < 0.5 ? sin(t * 2 * pi).clamp(0.0, 1.0) : 0.0;
-          return Container(
-            margin: EdgeInsets.symmetric(horizontal: widget.size * 0.25),
-            width: widget.size,
-            height: widget.size,
-            transform: Matrix4.translationValues(0, -bounce * widget.size * 0.8, 0),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.4 + 0.6 * bounce),
-              shape: BoxShape.circle,
-            ),
-          );
+          switch (skin) {
+            // Терминал: квадратики загораются по очереди, без прыжков.
+            case 1:
+              final on = (_c.value * 4).floor() % 4 > i;
+              return Container(
+                margin: margin,
+                width: sz,
+                height: sz,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: on ? 0.95 : 0.22),
+                  borderRadius: BorderRadius.circular(1.5),
+                ),
+              );
+            // Космос: точки мерцают, как звёзды.
+            case 2:
+              final glow = 0.5 + 0.5 * sin(t * 2 * pi);
+              return Container(
+                margin: margin,
+                width: sz,
+                height: sz,
+                transform: Matrix4.diagonal3Values(0.7 + 0.4 * glow, 0.7 + 0.4 * glow, 1),
+                transformAlignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.35 + 0.65 * glow),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.55 * glow),
+                      blurRadius: sz * 1.4,
+                    ),
+                  ],
+                ),
+              );
+            // Лимонад: прыгают и чуть «сплющиваются», приземляясь.
+            case 3:
+              final up = t < 0.5 ? sin(t * 2 * pi) : 0.0;
+              final squash = t >= 0.5 && t < 0.64 ? sin((t - 0.5) / 0.14 * pi) : 0.0;
+              return Container(
+                margin: margin,
+                width: sz,
+                height: sz,
+                transform: Matrix4.diagonal3Values(1 + 0.25 * squash, 1 - 0.3 * squash, 1)
+                  ..setTranslationRaw(0, -up * sz, 0),
+                transformAlignment: Alignment.bottomCenter,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.45 + 0.55 * up),
+                  shape: BoxShape.circle,
+                ),
+              );
+            default:
+              final bounce = t < 0.5 ? sin(t * 2 * pi).clamp(0.0, 1.0) : 0.0;
+              return Container(
+                margin: margin,
+                width: sz,
+                height: sz,
+                transform: Matrix4.translationValues(0, -bounce * sz * 0.8, 0),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.4 + 0.6 * bounce),
+                  shape: BoxShape.circle,
+                ),
+              );
+          }
         }),
       ),
     );
@@ -457,6 +577,9 @@ class VeilSwitch extends StatelessWidget {
   Widget build(BuildContext context) {
     final acc = context.accent;
     final vc = context.vc;
+    final skin = context.skin;
+    // Терминал — прямоугольный, без отскока; Космос — ползунок светится.
+    final square = skin.id == 1;
     return Pressable(
       scale: 0.9,
       onTap: () => onChanged(!value),
@@ -469,20 +592,26 @@ class VeilSwitch extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: value ? acc.gradient : null,
           color: value ? null : vc.elevated,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(square ? 5 : 20),
           border: Border.all(color: value ? Colors.transparent : vc.border),
         ),
         child: AnimatedAlign(
           duration: const Duration(milliseconds: 320).by(context),
-          curve: Curves.easeOutBack,
+          curve: square ? Curves.easeOutQuart : Curves.easeOutBack,
           alignment: value ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
             width: 24,
             height: 24,
             decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 6)],
+              color: square && !value ? vc.textDim : Colors.white,
+              shape: square ? BoxShape.rectangle : BoxShape.circle,
+              borderRadius: square ? BorderRadius.circular(3) : null,
+              boxShadow: [
+                if (skin.glow && value)
+                  BoxShadow(color: Colors.white.withValues(alpha: 0.7), blurRadius: 10)
+                else
+                  BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 6),
+              ],
             ),
           ),
         ),

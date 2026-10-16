@@ -76,6 +76,7 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
             builder: (context, child) => Visual(
               look: s.effLook,
               motion: s.effMotion,
+              skin: s.skin,
               // Анимации выключены — аватарки между экранами тоже не «летают».
               child: HeroMode(
                 enabled: s.effMotion > 0,
@@ -101,10 +102,12 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
   ThemeData _theme(AppState s) {
     final vc = s.colors;
     final acc = s.accent;
+    final skin = s.skin;
     final brightness = vc.dark ? Brightness.dark : Brightness.light;
     final base = ThemeData(
       useMaterial3: true,
       brightness: brightness,
+      fontFamily: skin.font,
       colorScheme: ColorScheme.fromSeed(
         seedColor: acc.a,
         brightness: brightness,
@@ -128,10 +131,17 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
                 TargetPlatform.iOS: _NoTransitions(),
               },
             )
-          : const PageTransitionsTheme(
+          : skin.id == 0
+          ? const PageTransitionsTheme(
               builders: {
                 TargetPlatform.android: CupertinoPageTransitionsBuilder(),
                 TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+              },
+            )
+          : PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: _SkinTransitions(skin.id),
+                TargetPlatform.iOS: _SkinTransitions(skin.id),
               },
             ),
     );
@@ -154,6 +164,64 @@ class _NoTransitions extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) => child;
+}
+
+/// Переходы между экранами у стилей:
+///   Терминал — короткий сдвиг с проявлением, без «пружин»;
+///   Космос — экран выплывает из глубины, прежний уходит «вперёд»;
+///   Лимонад — мягко поднимается снизу с лёгким отскоком.
+class _SkinTransitions extends PageTransitionsBuilder {
+  const _SkinTransitions(this.skin);
+
+  final int skin;
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    switch (skin) {
+      case 1:
+        final a = CurvedAnimation(parent: animation, curve: Curves.easeOutQuart);
+        return FadeTransition(
+          opacity: a,
+          child: SlideTransition(
+            position: Tween(begin: const Offset(0.06, 0), end: Offset.zero).animate(a),
+            child: child,
+          ),
+        );
+      case 2:
+        final a = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        final out = CurvedAnimation(parent: secondaryAnimation, curve: Curves.easeInOutCubic);
+        return ScaleTransition(
+          scale: Tween(begin: 1.0, end: 1.05).animate(out),
+          child: FadeTransition(
+            opacity: a,
+            child: ScaleTransition(scale: Tween(begin: 0.9, end: 1.0).animate(a), child: child),
+          ),
+        );
+      default:
+        final a = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutBack,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: const Interval(0, 0.6)),
+          child: SlideTransition(
+            position: Tween(begin: const Offset(0, 0.08), end: Offset.zero).animate(a),
+            child: child,
+          ),
+        );
+    }
+  }
 }
 
 class _CoverLayer extends StatelessWidget {

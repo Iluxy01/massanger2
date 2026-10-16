@@ -1,5 +1,7 @@
 import 'package:flutter/widgets.dart';
 
+import '../theme/skin.dart';
+
 /// Уровень оформления: сколько «тяжёлых» эффектов рисовать.
 ///   0 — минимум: чистый фон без сияния, без размытия (меньше всего греет);
 ///   1 — баланс (по умолчанию);
@@ -13,24 +15,37 @@ const _motionScale = [0.0, 0.6, 1.0, 1.4];
 /// Настройки визуала для всего дерева. Перерисовывает только тех, кто от них
 /// зависит, и только когда уровень действительно меняется.
 class Visual extends InheritedWidget {
-  const Visual({super.key, this.look = 1, this.motion = 2, required super.child});
+  const Visual({
+    super.key,
+    this.look = 1,
+    this.motion = 2,
+    this.skin = Skin.classic,
+    required super.child,
+  });
 
   final int look;
   final int motion;
+
+  /// Стиль оформления: формы, обводки, характер анимаций.
+  final Skin skin;
 
   static const _fallback = Visual(child: SizedBox.shrink());
 
   static Visual of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<Visual>() ?? _fallback;
 
-  double get motionScale => _motionScale[motion.clamp(0, _motionScale.length - 1)];
+  /// Темп анимаций: уровень из настроек × характер стиля (Терминал резче,
+  /// Космос плавнее).
+  double get motionScale => _motionScale[motion.clamp(0, _motionScale.length - 1)] * skin.speed;
 
   @override
-  bool updateShouldNotify(Visual old) => old.look != look || old.motion != motion;
+  bool updateShouldNotify(Visual old) =>
+      old.look != look || old.motion != motion || !identical(old.skin, skin);
 }
 
 extension VisualContext on BuildContext {
   Visual get visual => Visual.of(this);
+  Skin get skin => Visual.of(this).skin;
 }
 
 extension MotionDuration on Duration {
