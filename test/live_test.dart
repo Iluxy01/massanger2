@@ -318,12 +318,16 @@ void main() {
     expect(aliceLive.pool!.idleProbe, const Duration(minutes: 3));
     expect((alice.effLook, alice.effMotion, alice.effDark), (0, 0, true));
     // Сообщения по-прежнему ходят.
-    alice.send(c.id, 'экономлю батарею ⚡');
+    final sent = alice.send(c.id, 'экономлю батарею ⚡');
     await until(
       () => bob.messagesOf(aliceLive.keys!.pub).any((m) => m.text == 'экономлю батарею ⚡'),
       what: 'сообщение в «Ультра»',
     );
-    // «В сети» не рассылается: Боб не видит Алису онлайн от пинга.
+    await until(() => sent.status.index >= MsgStatus.delivered.index, what: 'доставлено');
+    // Дальше считаем только то, что шлёт Алиса: Боб (обычный режим) замолкает.
+    await bobLive.close();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // «В сети» не рассылается: при возвращении в приложение — ни одного пинга.
     final before = relay.published;
     aliceLive.resumed();
     await Future<void>.delayed(const Duration(milliseconds: 600));
@@ -339,7 +343,6 @@ void main() {
     expect(copy.ultra, isTrue);
     copy.dispose();
     await aliceLive.close();
-    await bobLive.close();
   });
 
   test('PIN хранится как хэш', () async {
