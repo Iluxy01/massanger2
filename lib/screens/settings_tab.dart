@@ -10,6 +10,7 @@ import '../theme/sky.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
+import 'chat_screen.dart';
 import 'favorites_screen.dart';
 import 'lock_screen.dart';
 import '../widgets/visual.dart';
@@ -104,6 +105,12 @@ class SettingsTab extends StatelessWidget {
                   title: 'Мой QR-код',
                   subtitle: 'Чтобы друг добавил тебя',
                   onTap: () => Navigator.of(context).push(AddFriendScreen.route()),
+                ),
+                _Tile(
+                  icon: Icons.edit_note_rounded,
+                  title: 'Заметки',
+                  subtitle: 'Чат с собой — только на этом телефоне',
+                  onTap: () => Navigator.of(context).push(ChatScreen.route(app.notes())),
                 ),
                 _Tile(
                   icon: Icons.star_rounded,

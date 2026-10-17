@@ -5,6 +5,7 @@ import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
+import '../widgets/visual.dart';
 import 'chat_screen.dart';
 
 const _groupEmojis = ['👥', '🏕️', '🎉', '💼', '🎮', '📚', '⚽', '🎵', '🍕', '✈️', '🏠', '❤️'];
@@ -597,59 +598,141 @@ String membersLabel(int n) {
   return '$n $word';
 }
 
-/// Выбрать чат (друга или группу) — например, куда переслать.
-Future<Contact?> pickChat(BuildContext context, {String title = 'Выбери чат'}) =>
-    showModalBottomSheet<Contact>(
+/// Выбрать чаты (друзей, группы, «Заметки») — например, куда переслать.
+/// Можно отметить несколько сразу. null или пусто — передумали.
+Future<List<Contact>?> pickChats(BuildContext context, {String title = 'Переслать в…'}) =>
+    showModalBottomSheet<List<Contact>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        final app = ctx.app;
-        final vc = app.colors;
-        // Сначала недавние чаты, потом остальные друзья.
-        final seen = <String>{};
-        final chats = [
-          for (final c in [...app.chatList, ...app.archivedChats, ...app.friends])
-            if (!c.blocked && !(c.group?.left ?? false) && seen.add(c.id)) c,
-        ];
-        return DraggableScrollableSheet(
-          initialChildSize: 0.65,
-          maxChildSize: 0.92,
-          minChildSize: 0.4,
-          expand: false,
-          builder: (_, scroll) => Material(
-            color: vc.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-            clipBehavior: Clip.antiAlias,
-            child: ListView(
-              controller: scroll,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
-                  child: Text(
-                    title,
-                    style: TextStyle(color: vc.text, fontSize: 20, fontWeight: FontWeight.w800),
+      builder: (ctx) => _ChatsPicker(title: title),
+    );
+
+class _ChatsPicker extends StatefulWidget {
+  const _ChatsPicker({required this.title});
+  final String title;
+
+  @override
+  State<_ChatsPicker> createState() => _ChatsPickerState();
+}
+
+class _ChatsPickerState extends State<_ChatsPicker> {
+  final _picked = <String>[];
+  late final Contact _notes = context.appRead.notes();
+
+  static String _chats(int n) {
+    final d = n % 10, h = n % 100;
+    final w = d == 1 && h != 11
+        ? 'чат'
+        : d >= 2 && d <= 4 && (h < 12 || h > 14)
+        ? 'чата'
+        : 'чатов';
+    return '$n $w';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final acc = app.accent;
+    // «Заметки» первыми, потом недавние чаты, потом остальные друзья.
+    final seen = <String>{};
+    final chats = [
+      for (final c in [_notes, ...app.chatList, ...app.archivedChats, ...app.friends])
+        if (!c.blocked && !(c.group?.left ?? false) && seen.add(c.id)) c,
+    ];
+    final byId = {for (final c in chats) c.id: c};
+    return DraggableScrollableSheet(
+      initialChildSize: 0.7,
+      maxChildSize: 0.92,
+      minChildSize: 0.4,
+      expand: false,
+      builder: (_, scroll) => Material(
+        color: vc.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: TextStyle(color: vc.text, fontSize: 20, fontWeight: FontWeight.w800),
+                    ),
                   ),
-                ),
-                for (final c in chats)
-                  ListTile(
+                  if (_picked.isNotEmpty)
+                    Text(
+                      'Выбрано: ${_picked.length}',
+                      style: TextStyle(color: vc.textDim, fontSize: 13),
+                    ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                controller: scroll,
+                itemCount: chats.length,
+                itemBuilder: (_, i) {
+                  final c = chats[i];
+                  final on = _picked.contains(c.id);
+                  return ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
-                    leading: Avatar.contact(c, size: 44),
+                    leading: Avatar.contact(c, size: 44, showOnline: false),
                     title: Text(
                       c.name,
                       style: TextStyle(color: vc.text, fontWeight: FontWeight.w600),
                     ),
-                    subtitle: c.group == null
+                    subtitle: c.isNotes
+                        ? Text(
+                            'Только на этом телефоне',
+                            style: TextStyle(color: vc.textDim, fontSize: 12.5),
+                          )
+                        : c.group == null
                         ? null
                         : Text(
                             membersLabel(c.group!.members.length),
                             style: TextStyle(color: vc.textDim, fontSize: 12.5),
                           ),
-                    onTap: () => Navigator.pop(ctx, c),
-                  ),
-              ],
+                    trailing: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180).by(context),
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: on ? acc.gradient : null,
+                        border: on ? null : Border.all(color: vc.textFaint, width: 2),
+                      ),
+                      child: on ? Icon(Icons.check_rounded, size: 16, color: acc.onAccent) : null,
+                    ),
+                    onTap: () {
+                      app.tick(HapticKind.selection);
+                      setState(() => on ? _picked.remove(c.id) : _picked.add(c.id));
+                    },
+                    // Долгое нажатие — сразу в этот один чат.
+                    onLongPress: () => Navigator.pop(context, [c]),
+                  );
+                },
+              ),
             ),
-          ),
-        );
-      },
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: AccentButton(
+                  label: _picked.length > 1 ? 'Переслать в ${_chats(_picked.length)}' : 'Переслать',
+                  icon: Icons.send_rounded,
+                  onTap: _picked.isEmpty
+                      ? null
+                      : () => Navigator.pop(context, [for (final id in _picked) ?byId[id]]),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
+  }
+}

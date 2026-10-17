@@ -127,7 +127,11 @@ class _ChatScreenState extends State<ChatScreen> {
     // Без setState: иначе каждая буква перестраивала весь экран со списком
     // сообщений. Кнопка «отправить/микрофон» слушает поле сама.
     _input.addListener(() {
-      if (_input.text.isNotEmpty && _input.text != last) _app.userTyping(c.id);
+      if (_input.text != last) {
+        if (_input.text.isNotEmpty) _app.userTyping(c.id);
+        // Черновик сохраняется по ходу (и переживёт перезапуск).
+        if (_editing == null) _app.saveDraft(c.id, _input.text);
+      }
       last = _input.text;
     });
     _animated = _app.messagesOf(c.id).map((m) => m.id).toSet();
@@ -167,7 +171,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     if (_app.openChat == c.id) _app.openChat = null;
-    _app.saveDraft(c.id, _input.text);
+    if (_editing == null) _app.saveDraft(c.id, _input.text);
     _recTimer?.cancel();
     _voice?.stop(cancel: true).whenComplete(() => _voice?.dispose());
     _noteRec?.stop(cancel: true);
@@ -262,16 +266,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _forward(Message m) async {
-    final target = await pickChat(context, title: 'Переслать в…');
-    if (target == null || !mounted) return;
-    final sent = await _app.forward(c.id, m, target.id);
+    final targets = await pickChats(context);
+    if (targets == null || targets.isEmpty || !mounted) return;
+    var sent = 0;
+    for (final t in targets) {
+      if (await _app.forward(c.id, m, t.id) != null) sent++;
+    }
     if (!mounted) return;
     showVeilToast(
       context,
-      sent == null
+      sent == 0
           ? 'Сначала скачай файл — потом его можно переслать'
-          : 'Переслано: ${target.name}',
-      icon: sent == null ? Icons.download_rounded : Icons.forward_rounded,
+          : targets.length == 1
+          ? 'Переслано: ${targets.first.name}'
+          : 'Переслано в чатов: $sent',
+      icon: sent == 0 ? Icons.download_rounded : Icons.forward_rounded,
     );
   }
 
@@ -1017,7 +1026,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       recording: _recording || _noteOpening,
                       note: _noteMode,
                       onSend: _send,
-                      onSendMenu: _editing == null ? _sendMenu : null,
+                      // «Без звука», «позже», «капсула» — не для «Заметок».
+                      onSendMenu: _editing == null && !c.isNotes ? _sendMenu : null,
                       onToggleMode: _toggleNoteMode,
                       onRecordStart: () {
                         _holding = true;
@@ -1084,6 +1094,12 @@ class _TopBar extends StatelessWidget {
           const TypingDots(size: 4),
         ],
       );
+    } else if (c.isNotes) {
+      status = Text(
+        'только на этом телефоне',
+        key: const ValueKey('n'),
+        style: TextStyle(color: vc.textDim, fontSize: 13),
+      );
     } else if (group != null) {
       status = Text(
         group.left ? 'ты больше не участник' : membersLabel(group.members.length),
@@ -1104,9 +1120,10 @@ class _TopBar extends StatelessWidget {
       );
     }
 
-    void openProfile() => Navigator.of(
-      context,
-    ).push(group != null ? GroupInfoScreen.route(c) : ContactScreen.route(c));
+    void openProfile() {
+      if (c.isNotes) return; // у «Заметок» нет профиля
+      Navigator.of(context).push(group != null ? GroupInfoScreen.route(c) : ContactScreen.route(c));
+    }
 
     return Glass(
       blur: 20,
@@ -1184,7 +1201,7 @@ class _TopBar extends StatelessWidget {
                         ),
                       ),
                     ),
-                    if (group == null)
+                    if (group == null && !c.isNotes)
                       IconButton(
                         onPressed: () => showVeilToast(
                           context,
@@ -1470,18 +1487,26 @@ class _EncryptionBanner extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 8, 28, 8),
       child: Pressable(
-        onTap: () => Navigator.of(
-          context,
-        ).push(contact.isGroup ? GroupInfoScreen.route(contact) : ContactScreen.route(contact)),
+        onTap: contact.isNotes
+            ? null
+            : () => Navigator.of(context).push(
+                contact.isGroup ? GroupInfoScreen.route(contact) : ContactScreen.route(contact),
+              ),
         child: Glass(
           radius: 18,
           padding: const EdgeInsets.all(14),
           child: Column(
             children: [
-              const GradientIcon(Icons.lock_rounded, size: 22),
+              GradientIcon(
+                contact.isNotes ? Icons.edit_note_rounded : Icons.lock_rounded,
+                size: 22,
+              ),
               const SizedBox(height: 8),
               Text(
-                contact.isGroup
+                contact.isNotes
+                    ? 'Заметки для себя: тексты, фото, файлы, списки. Хранятся только на этом '
+                          'телефоне и никуда не отправляются.'
+                    : contact.isGroup
                     ? 'Сообщения группы шифруются для каждого участника отдельно и хранятся '
                           'только на ваших телефонах. Нажми, чтобы увидеть участников.'
                     : 'Сообщения защищены сквозным шифрованием и хранятся только на ваших с ${contact.name} телефонах. Нажми, чтобы сверить код безопасности.',
@@ -1872,6 +1897,8 @@ class BubbleBody extends StatelessWidget {
     final vc = app.colors;
     final acc = app.accent;
     final mine = m.mine;
+    // В «Заметках» галочки не нужны: сообщение никуда не уходит.
+    final ticks = mine && !contact.isNotes;
     final skin = context.skin;
     final fg = mine ? app.mineFg : vc.text;
     final metaColor = mine ? fg.withValues(alpha: 0.75) : vc.textFaint;
@@ -1897,7 +1924,7 @@ class BubbleBody extends StatelessWidget {
             style: TextStyle(color: metaColor, fontSize: 11, fontStyle: FontStyle.italic),
           ),
         Text(fmtTime(m.time), style: TextStyle(color: metaColor, fontSize: 11)),
-        if (mine) ...[
+        if (ticks) ...[
           const SizedBox(width: 3),
           StatusTicks(status: m.status, color: metaColor, size: 15),
         ],
@@ -1925,7 +1952,7 @@ class BubbleBody extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(fmtTime(m.time), style: TextStyle(color: vc.textDim, fontSize: 11)),
-                  if (mine) ...[const SizedBox(width: 3), StatusTicks(status: m.status, size: 14)],
+                  if (ticks) ...[const SizedBox(width: 3), StatusTicks(status: m.status, size: 14)],
                 ],
               ),
             ),
@@ -1975,7 +2002,7 @@ class BubbleBody extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(fmtTime(m.time), style: const TextStyle(color: Colors.white, fontSize: 11)),
-                if (mine) ...[
+                if (ticks) ...[
                   const SizedBox(width: 3),
                   StatusTicks(status: m.status, color: Colors.white, size: 15),
                 ],
@@ -2013,7 +2040,7 @@ class BubbleBody extends StatelessWidget {
       children: [
         if (m.edited) Text('изм. ', style: TextStyle(color: color, fontSize: 11)),
         Text(fmtTime(m.time), style: TextStyle(color: color, fontSize: 11)),
-        if (mine) ...[
+        if (ticks) ...[
           const SizedBox(width: 3),
           StatusTicks(status: m.status, color: color, size: 15),
         ],
@@ -2731,8 +2758,9 @@ class _ActionsMenu extends StatelessWidget {
         app.isStarred(c.id, m)
             ? (Icons.star_rounded, 'Убрать из избранного', 'star', false)
             : (Icons.star_outline_rounded, 'В избранное', 'star', false),
-      if (m.mine && canWrite) (Icons.delete_forever_rounded, 'Удалить у всех', 'deleteAll', true),
-      (Icons.delete_outline_rounded, 'Удалить у себя', 'delete', true),
+      if (m.mine && canWrite && !c.isNotes)
+        (Icons.delete_forever_rounded, 'Удалить у всех', 'deleteAll', true),
+      (Icons.delete_outline_rounded, c.isNotes ? 'Удалить' : 'Удалить у себя', 'delete', true),
     ];
   }
 

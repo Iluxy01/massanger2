@@ -121,6 +121,14 @@ class Contact {
 
   static bool isGroupId(String id) => id.startsWith('g_');
 
+  /// «Заметки» — чат с самим собой: живёт только на этом телефоне и никуда
+  /// не отправляется.
+  static const notesId = 'notes';
+  bool get isNotes => id == notesId;
+
+  /// Чат, который никуда не отправляется (сейчас — только «Заметки»).
+  static bool isLocalId(String id) => id == notesId;
+
   /// Только адреса ретрансляторов, не больше 12.
   static List<String> cleanRelays(Object? o) => o is List
       ? o

@@ -280,13 +280,15 @@ class AppState extends ChangeNotifier {
     final list = contacts
         .where(
           (c) =>
-              lastMessage(c.id) != null && visible(c) && this.archived.contains(c.id) == archived,
+              (lastMessage(c.id) != null || drafts.containsKey(c.id)) &&
+              visible(c) &&
+              this.archived.contains(c.id) == archived,
         )
         .toList();
     list.sort((a, b) {
       final pa = pinned.contains(a.id), pb = pinned.contains(b.id);
       if (pa != pb) return pa ? -1 : 1;
-      return lastMessage(b.id)!.time.compareTo(lastMessage(a.id)!.time);
+      return chatTime(b.id).compareTo(chatTime(a.id));
     });
     return list;
   }
@@ -853,7 +855,7 @@ class AppState extends ChangeNotifier {
     muted.remove(id);
     unread.remove(id);
     typing.remove(id);
-    drafts.remove(id);
+    _dropDraft(id);
     if (live != null) {
       await live!.deleteContact(id);
     } else {
@@ -1039,8 +1041,60 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// Когда начат черновик (для порядка в списке чатов).
+  final Map<String, DateTime> draftAt = {};
+  Timer? _draftTimer;
+
+  /// Запомнить черновик (сохраняется и после перезапуска).
   void saveDraft(String chatId, String text) {
-    text.trim().isEmpty ? drafts.remove(chatId) : drafts[chatId] = text;
+    final had = drafts[chatId];
+    if (text.trim().isEmpty) {
+      if (had == null) return;
+      drafts.remove(chatId);
+      draftAt.remove(chatId);
+    } else {
+      if (had == text) return;
+      drafts[chatId] = text;
+      draftAt[chatId] ??= DateTime.now();
+    }
+    // Пишем в базу не на каждую букву, а когда пауза.
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 800), _persistDrafts);
+    // В списке чатов черновик появился или исчез.
+    if ((had == null) != (drafts[chatId] == null)) notifyChanged();
+  }
+
+  void _dropDraft(String chatId) {
+    if (drafts.remove(chatId) == null) return;
+    draftAt.remove(chatId);
+    _draftTimer?.cancel();
+    _persistDrafts();
+  }
+
+  void _persistDrafts() => live?.saveDrafts({
+    for (final e in drafts.entries)
+      e.key: {'t': e.value, 'at': (draftAt[e.key] ?? DateTime.now()).millisecondsSinceEpoch},
+  });
+
+  /// Черновики из базы (при запуске).
+  void loadDrafts(Map<String, dynamic> j) {
+    drafts.clear();
+    draftAt.clear();
+    for (final e in j.entries) {
+      final v = e.value;
+      if (v is! Map || v['t'] is! String) continue;
+      drafts[e.key] = v['t'] as String;
+      draftAt[e.key] = DateTime.fromMillisecondsSinceEpoch((v['at'] as num?)?.toInt() ?? 0);
+    }
+  }
+
+  /// Время для сортировки списка чатов: последнее сообщение или черновик.
+  DateTime chatTime(String id) {
+    final m = lastMessage(id)?.time;
+    final d = draftAt[id];
+    if (m == null) return d ?? DateTime(2000);
+    if (d == null) return m;
+    return d.isAfter(m) ? d : m;
   }
 
   /// Пользователь что-то набирает в чате.
@@ -1126,7 +1180,16 @@ class AppState extends ChangeNotifier {
       todo: todo,
     );
     if (sendAt != null && sendAt.isAfter(DateTime.now())) m.sendAt = sendAt;
-    drafts.remove(chatId);
+    _dropDraft(chatId);
+    if (Contact.isLocalId(chatId)) {
+      // «Заметки»: никуда не отправляем — сразу «готово».
+      m
+        ..status = MsgStatus.read
+        ..sendAt = null;
+      notifyChanged();
+      live?.saveMessage(chatId, m);
+      return m;
+    }
     final c = contact(chatId);
     if (c != null && c.request) {
       // Ответили незнакомцу — значит, приняли его.
@@ -1233,8 +1296,20 @@ class AppState extends ChangeNotifier {
   /// Друзья (без групп).
   List<Contact> get friends => [
     for (final c in contacts)
-      if (!c.isGroup && visible(c)) c,
+      if (!c.isGroup && !c.isNotes && visible(c)) c,
   ];
+
+  // ───────────────────────── Заметки ─────────────────────────
+
+  /// Чат «Заметки» (создаётся при первом открытии).
+  Contact notes() {
+    final have = contact(Contact.notesId);
+    if (have != null) return have;
+    final c = Contact(id: Contact.notesId, name: 'Заметки', emoji: '📝', colorIndex: 3);
+    contacts.add(c);
+    live?.saveContact(c);
+    return c;
+  }
 
   /// Имя участника группы: как он записан у меня в друзьях, иначе — как назвался.
   String memberName(String chatId, String pub) {
@@ -1482,6 +1557,8 @@ class AppState extends ChangeNotifier {
     _timers.clear();
     typing.clear();
     drafts.clear();
+    draftAt.clear();
+    _draftTimer?.cancel();
     muted.clear();
     pinned.clear();
     unread.clear();
@@ -1593,6 +1670,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _notifyTimer?.cancel();
+    _draftTimer?.cancel();
     themeTick.dispose();
     for (final t in _timers) {
       t.cancel();

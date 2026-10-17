@@ -27,7 +27,8 @@ Xfer xferOf(AppState app, Message m) {
   final local = att.local && (app.demo || File(att.path!).existsSync());
   if (m.mine) {
     if (!local) return Xfer.missing;
-    if (att.uploaded || app.demo) return Xfer.ready;
+    // «Прочитано» без выгрузки — это «Заметки»: файл никуда не отправляется.
+    if (att.uploaded || app.demo || m.status == MsgStatus.read) return Xfer.ready;
     if (failed && !busy) return Xfer.failed;
     return Xfer.uploading;
   }

@@ -156,6 +156,9 @@ class Live {
     // Маскировка: при запуске — сначала «калькулятор» / «заметки».
     app.covered = app.disguise > 0 && await hasSecret('cover');
 
+    final drafts = await store.getJson('drafts');
+    if (drafts != null) app.loadDrafts(drafts);
+
     final synced = int.tryParse(await store.get('synced') ?? '');
     final legacy = int.tryParse(await store.get('since') ?? '');
     // Переход со старой версии (конверты «задним числом» до 2 суток): один раз
@@ -960,10 +963,16 @@ class Live {
     app.notifyChanged();
   }
 
+  static final _pubHex = RegExp(r'^[0-9a-f]{64}$');
+
+  /// Черновики (зашифрованная база, как и переписка).
+  Future<void> saveDrafts(Map<String, dynamic> j) => store.setJson('drafts', j);
+
   /// Служебное сообщение (отчёт, реакция, «печатает»). Не хранится в outbox.
   void _control(String to, Payload p, {bool ephemeral = false}) {
     final k = keys, pl = pool;
-    if (k == null || pl == null || to == k.pub) return;
+    // Только настоящим собеседникам («Заметки» никуда не отправляются).
+    if (k == null || pl == null || to == k.pub || !_pubHex.hasMatch(to)) return;
     GiftWrap.wrapAsync(
           sender: k,
           recipientPub: to,
@@ -979,6 +988,7 @@ class Live {
 
   /// Кому уходит сообщение чата: собеседнику или каждому участнику группы.
   List<String> targets(String chat) {
+    if (Contact.isLocalId(chat)) return const [];
     final g = app.contact(chat)?.group;
     if (g == null) return Contact.isGroupId(chat) ? const [] : [chat];
     if (g.left) return const [];
@@ -1060,7 +1070,8 @@ class Live {
     await saveMessage(chat, m);
     if (silent) _silent.add(m.id);
     // С вложением: сначала файл, потом само сообщение (см. MediaEngine.send).
-    if (m.att != null && !m.att!.uploaded) {
+    // В «Заметках» файл остаётся только на телефоне.
+    if (m.att != null && !m.att!.uploaded && !Contact.isLocalId(chat)) {
       unawaited(media.send(chat, m));
       return;
     }
@@ -1076,6 +1087,12 @@ class Live {
   Future<void> queueMessage(String chat, Message m, {List<String> extra = const []}) async {
     // Успели удалить (например, запланированное) — не отправляем.
     if (!app.messagesOf(chat).any((x) => x.id == m.id)) return;
+    // «Заметки» никуда не уходят.
+    if (Contact.isLocalId(chat)) {
+      m.status = MsgStatus.read;
+      await saveMessage(chat, m);
+      return;
+    }
     final payload = _msgPayload(chat, m);
     // Одноразовое: куски уже на ретрансляторах — своя копия больше не нужна.
     if (m.once && m.mine && (m.att?.local ?? false)) {

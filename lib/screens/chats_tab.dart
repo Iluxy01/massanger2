@@ -397,7 +397,8 @@ class _ChatTile extends StatelessWidget {
     final vc = app.colors;
     final acc = app.accent;
     final c = contact;
-    final last = app.lastMessage(c.id)!;
+    // Чат может быть в списке только из-за черновика — без сообщений.
+    final last = app.lastMessage(c.id);
     final unread = app.unread[c.id] ?? 0;
     final pinned = app.pinned.contains(c.id);
     final typing = app.typingIndicators && app.typing.contains(c.id);
@@ -421,8 +422,8 @@ class _ChatTile extends StatelessWidget {
       );
     } else {
       final String body;
-      if (draft != null) {
-        body = draft;
+      if (draft != null || last == null) {
+        body = draft ?? '';
       } else {
         // «Скрывать текст в списке» — только что сообщение есть.
         body = app.hidePreviews && last.kind != MsgKind.event
@@ -430,7 +431,7 @@ class _ChatTile extends StatelessWidget {
             : app.previewOf(c.id, last);
       }
       preview = Text.rich(
-        key: ValueKey('text${last.id}$draft'),
+        key: ValueKey('text${last?.id}$draft'),
         TextSpan(
           children: [
             if (draft != null)
@@ -438,7 +439,7 @@ class _ChatTile extends StatelessWidget {
                 text: 'Черновик: ',
                 style: TextStyle(color: VeilColors.danger),
               )
-            else if (last.mine && last.kind != MsgKind.event)
+            else if (last != null && last.mine && last.kind != MsgKind.event)
               TextSpan(
                 text: 'Вы: ',
                 style: TextStyle(color: vc.text.withValues(alpha: 0.8)),
@@ -519,12 +520,12 @@ class _ChatTile extends StatelessWidget {
                             ],
                           ),
                         ),
-                        if (last.mine && !typing) ...[
+                        if (last != null && last.mine && !typing && !c.isNotes) ...[
                           StatusTicks(status: last.status),
                           const SizedBox(width: 4),
                         ],
                         Text(
-                          fmtListTime(last.time),
+                          fmtListTime(app.chatTime(c.id)),
                           style: TextStyle(
                             color: unread > 0 ? acc.mid : vc.textFaint,
                             fontSize: 12.5,
@@ -831,28 +832,22 @@ class _NewChatButton extends StatelessWidget {
                   style: TextStyle(color: vc.text, fontSize: 22, fontWeight: FontWeight.w800),
                 ),
               ),
-              ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
-                leading: Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: context.accent.gradient,
-                  ),
-                  child: Icon(Icons.group_add_rounded, color: context.accent.onAccent),
-                ),
-                title: Text(
-                  'Новая группа',
-                  style: TextStyle(color: vc.text, fontWeight: FontWeight.w700),
-                ),
-                subtitle: Text(
-                  'до ${GroupInfo.maxMembers} человек',
-                  style: TextStyle(color: vc.textDim, fontSize: 13),
-                ),
+              _NewAction(
+                icon: Icons.group_add_rounded,
+                title: 'Новая группа',
+                subtitle: 'до ${GroupInfo.maxMembers} человек',
                 onTap: () {
                   Navigator.pop(ctx);
                   Navigator.of(context).push(CreateGroupScreen.route());
+                },
+              ),
+              _NewAction(
+                icon: Icons.edit_note_rounded,
+                title: 'Заметки для себя',
+                subtitle: 'Только на этом телефоне',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(ChatScreen.route(app.notes()));
                 },
               ),
               for (final (i, c) in app.friends.indexed)
@@ -1050,6 +1045,42 @@ class VaultScreen extends StatelessWidget {
                       : _ChatTile(contact: c),
               ],
             ),
+    );
+  }
+}
+
+/// Пункт в начале листа «Новый чат»: группа, канал, заметки.
+class _NewAction extends StatelessWidget {
+  const _NewAction({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final vc = context.vc;
+    final acc = context.accent;
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+      leading: Container(
+        width: 46,
+        height: 46,
+        decoration: BoxDecoration(shape: BoxShape.circle, gradient: acc.gradient),
+        child: Icon(icon, color: acc.onAccent),
+      ),
+      title: Text(
+        title,
+        style: TextStyle(color: vc.text, fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text(subtitle, style: TextStyle(color: vc.textDim, fontSize: 13)),
+      onTap: onTap,
     );
   }
 }
