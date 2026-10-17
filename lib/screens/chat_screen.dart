@@ -21,6 +21,8 @@ import '../widgets/effects.dart';
 import '../widgets/once_media.dart';
 import '../widgets/todo_list.dart';
 import '../widgets/rich_text.dart';
+import '../widgets/sticker_panel.dart';
+import '../widgets/stickers.dart';
 import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
 import 'attach_flows.dart';
@@ -91,6 +93,9 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _flashTimer;
   List<_Item> _items = const [];
   bool _attachOpen = false;
+
+  /// Панель стикеров и GIF (вместо клавиатуры).
+  bool _stickersOpen = false;
   bool _showDown = false;
   int _seen = 0;
 
@@ -158,7 +163,12 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scroll.addListener(_onScroll);
     _focus.addListener(() {
-      if (_focus.hasFocus && _attachOpen) setState(() => _attachOpen = false);
+      if (_focus.hasFocus && (_attachOpen || _stickersOpen)) {
+        setState(() {
+          _attachOpen = false;
+          _stickersOpen = false;
+        });
+      }
     });
   }
 
@@ -262,6 +272,22 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'jumpReply':
         final r = m.replyTo;
         if (r != null) _jumpTo(r.id);
+      case 'saveSticker' || 'saveGif':
+        final path = m.att?.path;
+        if (path == null) return;
+        final gif = action == 'saveGif';
+        _app.addToCollection(path, gif: gif).then((saved) {
+          if (!mounted) return;
+          showVeilToast(
+            context,
+            saved == null
+                ? 'Не получилось сохранить'
+                : gif
+                ? 'Добавлено в «Мои GIF»'
+                : 'Добавлено в «Мои стикеры»',
+            icon: Icons.bookmark_added_rounded,
+          );
+        });
     }
   }
 
@@ -693,6 +719,29 @@ class _ChatScreenState extends State<ChatScreen> {
     _toBottom();
   }
 
+  /// Стикеры и GIF из панели над полем ввода.
+  Future<void> _sticker({String? id, String? mine, String? gif, String? action}) async {
+    final reply = _replyTo;
+    final flows = AttachFlows(context, c.id, replyTo: reply);
+    if (id != null) {
+      _app.tick(HapticKind.light);
+      _app.sendSticker(c.id, id, replyTo: reply);
+    } else if (mine != null) {
+      await flows.sendSticker(mine);
+    } else if (gif != null) {
+      await flows.sendGif(gif);
+    } else if (action == 'make') {
+      await flows.makeSticker();
+    } else if (action == 'gif') {
+      await flows.addGif();
+    }
+    if (!mounted) return;
+    if (reply != null && _app.lastMessage(c.id)?.replyTo == reply) {
+      setState(() => _replyTo = null);
+    }
+    _toBottom();
+  }
+
   /// Одноразовость действует на одно вложение.
   void _sentOnce() {
     if (_once && mounted) setState(() => _once = false);
@@ -862,6 +911,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     once: _once,
                     onOnce: (v) => setState(() => _once = v),
                   )
+                : _stickersOpen
+                ? StickerPanel(
+                    onSticker: (id) => _sticker(id: id),
+                    onMine: (p) => _sticker(mine: p),
+                    onGif: (p) => _sticker(gif: p),
+                    onCreate: () => _sticker(action: 'make'),
+                    onAddGif: () => _sticker(action: 'gif'),
+                  )
                 : const SizedBox(width: double.infinity),
           ),
           if (_once && !_attachOpen)
@@ -935,7 +992,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     scale: 0.85,
                     onTap: () {
                       FocusScope.of(context).unfocus();
-                      setState(() => _attachOpen = !_attachOpen);
+                      setState(() {
+                        _attachOpen = !_attachOpen;
+                        _stickersOpen = false;
+                      });
                     },
                     child: SizedBox(
                       width: 44,
@@ -986,6 +1046,33 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                     ),
                   ),
+                  if (!_recording)
+                    Pressable(
+                      key: const ValueKey('stickers'),
+                      scale: 0.85,
+                      onTap: () {
+                        // Панель стикеров ⇄ клавиатура.
+                        if (_stickersOpen) {
+                          setState(() => _stickersOpen = false);
+                          _focus.requestFocus();
+                        } else {
+                          FocusScope.of(context).unfocus();
+                          setState(() {
+                            _stickersOpen = true;
+                            _attachOpen = false;
+                          });
+                        }
+                      },
+                      child: SizedBox(
+                        width: 38,
+                        height: 44,
+                        child: Icon(
+                          _stickersOpen ? Icons.keyboard_rounded : Icons.emoji_emotions_outlined,
+                          color: _stickersOpen ? acc.mid : vc.textFaint,
+                          size: 23,
+                        ),
+                      ),
+                    ),
                   if (!_recording)
                     Pressable(
                       scale: 0.85,
@@ -1980,6 +2067,50 @@ class BubbleBody extends StatelessWidget {
       );
     }
 
+    // Стикер — без пузыря, как в Telegram.
+    if (m.kind == MsgKind.sticker) {
+      final author = showName && !mine && m.from != null && contact.isGroup && !contact.isChannel
+          ? Text(
+              app.memberName(contact.id, m.from!),
+              style: TextStyle(color: vc.textDim, fontSize: 12.5, fontWeight: FontWeight.w700),
+            )
+          : null;
+      return Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ?author,
+          if (m.replyTo != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Glass(
+                radius: 14,
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                child: SizedBox(
+                  width: 200,
+                  child: GestureDetector(
+                    onTap: onQuoteTap,
+                    child: _QuotedReply(m: m.replyTo!, contact: contact, mine: false),
+                  ),
+                ),
+              ),
+            ),
+          _StickerContent(m: m, chatId: contact.id),
+          Glass(
+            radius: 10,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(fmtTime(m.time), style: TextStyle(color: vc.textDim, fontSize: 11)),
+                if (ticks) ...[const SizedBox(width: 3), StatusTicks(status: m.status, size: 14)],
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
     // В группе — имя автора (цветом его аватарки).
     final from = m.from;
     final Widget? author =
@@ -2760,10 +2891,15 @@ class _ActionsMenu extends StatelessWidget {
             (m.att != null && m.text.isNotEmpty && m.kind != MsgKind.note)) &&
         DateTime.now().difference(m.time).inHours < 48;
     final sealed = m.sealed && !m.mine;
+    final local = m.att?.local ?? false;
+    final gif = m.kind == MsgKind.photo && m.att?.mime == 'image/gif';
     return [
       if (m.mine && m.sendAt != null) (Icons.send_rounded, 'Отправить сейчас', 'sendNow', false),
       if (canWrite) (Icons.reply_rounded, 'Ответить', 'reply', false),
-      if (m.once || sealed)
+      if (m.kind == MsgKind.sticker && local)
+        (Icons.bookmark_add_rounded, 'В мои стикеры', 'saveSticker', false),
+      if (gif && local) (Icons.gif_box_rounded, 'В мои GIF', 'saveGif', false),
+      if (m.once || sealed || (m.kind == MsgKind.sticker && m.att == null))
         ...[]
       else if (m.att?.local ?? false)
         (Icons.ios_share_rounded, 'Поделиться', 'share', false)
@@ -3470,4 +3606,50 @@ class _LeftGroupBar extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Стикер в ленте: из набора Veil — рисуется; свой — картинка (сама скачается).
+class _StickerContent extends StatelessWidget {
+  const _StickerContent({required this.m, required this.chatId});
+
+  final Message m;
+  final String chatId;
+
+  static const size = 150.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final att = m.att;
+    if (att == null) {
+      final spec = VeilStickers.byId(m.sticker);
+      if (spec != null) return VeilSticker(spec, size: size);
+      // Стикер из набора новее этой версии Veil.
+      return SizedBox.square(
+        dimension: 96,
+        child: Center(
+          child: Text('✨', style: TextStyle(fontSize: 48, color: app.colors.text)),
+        ),
+      );
+    }
+    final state = xferOf(app, m);
+    final path = att.path;
+    if (state == Xfer.ready && path != null && !app.demo) {
+      return Image.file(
+        File(path),
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) => const SizedBox.square(dimension: size),
+      );
+    }
+    return SizedBox.square(
+      dimension: size,
+      child: Center(
+        child: TransferBadge(m: m, chatId: chatId, state: state, dark: false),
+      ),
+    );
+  }
 }

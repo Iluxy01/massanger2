@@ -24,6 +24,10 @@ enum MsgKind {
 
   /// Общий список дел: пункты отмечают все участники чата.
   todo,
+
+  /// Стикер: из набора Veil (по коду [Message.sticker]) или свой — картинка
+  /// с прозрачным фоном во вложении.
+  sticker,
 }
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
@@ -613,10 +617,14 @@ class Message {
     this.openAt,
     this.sendAt,
     this.todo,
+    this.sticker,
   });
 
   final String id;
   final bool mine;
+
+  /// Код стикера из набора Veil (у своих стикеров — null, картинка во вложении).
+  final String? sticker;
 
   /// Текст сообщения или подпись к вложению (меняется при редактировании).
   String text;
@@ -700,6 +708,7 @@ class Message {
       MsgKind.poll => '📊 ${poll?.question ?? 'Опрос'}',
       MsgKind.event => text,
       MsgKind.todo => '☑️ ${todo?.title ?? 'Список'}',
+      MsgKind.sticker => '✨ Стикер',
     };
   }
 
@@ -728,6 +737,7 @@ class Message {
     if (openAt != null) 'oa': openAt!.millisecondsSinceEpoch,
     if (sendAt != null) 'sa': sendAt!.millisecondsSinceEpoch,
     if (todo != null) 'todo': todo!.toJson(),
+    if (sticker != null) 'stk': sticker,
   };
 
   static MsgKind kindOf(Object? name) =>
@@ -757,5 +767,6 @@ class Message {
     openAt: j['oa'] is num ? DateTime.fromMillisecondsSinceEpoch((j['oa'] as num).toInt()) : null,
     sendAt: j['sa'] is num ? DateTime.fromMillisecondsSinceEpoch((j['sa'] as num).toInt()) : null,
     todo: Todo.fromJson(j['todo']),
+    sticker: j['stk'] is String ? j['stk'] as String : null,
   );
 }

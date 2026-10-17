@@ -782,6 +782,9 @@ class Live {
         final poll = Poll.fromJson(p.data['poll'])?..votes.clear();
         final todo = Todo.fromJson(p.data['todo']);
         final oa = p.integer('oa');
+        // Стикер из набора — короткий код; свой — небольшая картинка.
+        final stk = p.str('stk');
+        final sticker = stk != null && stk.length <= 24 ? stk : null;
         final valid = switch (kind) {
           MsgKind.text => true,
           MsgKind.voice ||
@@ -793,6 +796,9 @@ class Live {
           MsgKind.poll => poll != null,
           MsgKind.event => group,
           MsgKind.todo => todo != null && todo.items.isNotEmpty,
+          MsgKind.sticker =>
+            sticker != null ||
+                (att != null && att.uploaded && att.size <= MediaEngine.maxStickerBytes),
         };
         if (!valid) {
           log('  непонятное сообщение ${short(id)} (${p.data['k']}) — пропущено');
@@ -870,6 +876,7 @@ class Live {
           ev: ev,
           once: p.flag('once') && att != null,
           todo: todo,
+          sticker: kind == MsgKind.sticker ? sticker : null,
           // Капсула времени — не дальше, чем на 10 лет вперёд.
           openAt: oa == null || oa > DateTime.now().millisecondsSinceEpoch + 315360000000
               ? null
@@ -1137,6 +1144,7 @@ class Live {
     if (m.once) 'once': true,
     if (m.openAt != null) 'oa': m.openAt!.millisecondsSinceEpoch,
     if (m.todo != null) 'todo': m.todo!.toJson(wire: true),
+    if (m.sticker != null) 'stk': m.sticker,
     'id': m.id,
     'ts': m.time.millisecondsSinceEpoch,
     'text': m.text,

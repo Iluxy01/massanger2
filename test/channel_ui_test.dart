@@ -5,8 +5,9 @@ import 'package:veil/models/models.dart';
 import 'package:veil/screens/chat_screen.dart';
 import 'package:veil/screens/chats_tab.dart';
 import 'package:veil/state/app_state.dart';
+import 'package:veil/widgets/stickers.dart';
 
-/// Каналы и «Заметки» на экране (демо-режим, без сети).
+/// Каналы, «Заметки» и стикеры на экране (демо-режим, без сети).
 void main() {
   Future<void> settle(WidgetTester tester) async {
     for (var i = 0; i < 15; i++) {
@@ -120,6 +121,32 @@ void main() {
     await settle(tester);
     expect(find.text('Код от домофона 1234'), findsOneWidget);
     expect(state.messagesOf(Contact.notesId).single.status, MsgStatus.read);
+    await close(tester, state);
+  });
+
+  testWidgets('панель стикеров: отправка стикера из набора', (tester) async {
+    final state = await launch(tester);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+    await settle(tester);
+    await tester.tap(find.byKey(const ValueKey('stickers')));
+    await settle(tester);
+    expect(find.text('Стикеры'), findsOneWidget);
+    expect(find.text('Из фото'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('stk-cool')));
+    await settle(tester);
+    final m = state.messagesOf('alice').last;
+    expect(m.kind, MsgKind.sticker);
+    expect(m.sticker, 'cool');
+    // В ленте — сам стикер, без пузыря.
+    expect(
+      find.byWidgetPredicate((w) => w is VeilSticker && w.spec.id == 'cool' && w.size == 150),
+      findsOneWidget,
+    );
+    // Вкладка GIF.
+    await tester.tap(find.text('GIF'));
+    await settle(tester);
+    expect(find.text('С телефона'), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await close(tester, state);
   });
 }

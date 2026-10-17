@@ -37,6 +37,9 @@ class MediaEngine {
   /// Предел размера файла.
   static const maxBytes = 20 * 1024 * 1024;
 
+  /// Свой стикер — небольшая картинка (у нас он ~100–300 КБ).
+  static const maxStickerBytes = 1536 * 1024;
+
   final Map<String, Future<bool>> _jobs = {};
 
   /// Ретрансляторы, которые отказались принять крупное событие (до перезапуска).

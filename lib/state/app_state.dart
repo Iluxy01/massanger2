@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/biometric.dart';
+import '../core/media_tools.dart';
 import '../core/protocol.dart';
 import '../core/relay_pool.dart';
 import '../models/models.dart';
@@ -183,6 +184,8 @@ class AppState extends ChangeNotifier {
     MsgKind.video => autoVideo && !ultra,
     MsgKind.note => autoVoice && !ultra,
     MsgKind.voice => autoVoice,
+    // Свои стикеры маленькие — всегда сразу.
+    MsgKind.sticker => true,
     _ => false,
   };
 
@@ -425,6 +428,8 @@ class AppState extends ChangeNotifier {
     'confirmDel': confirmDelete,
     if (wifiHintShown) 'wifiHint': true,
     if (biometric) 'bio': true,
+    if (myStickers.isNotEmpty) 'stickers': myStickers,
+    if (myGifs.isNotEmpty) 'gifs': myGifs,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
     if (archived.isNotEmpty) 'archived': archived.toList(),
@@ -464,6 +469,12 @@ class AppState extends ChangeNotifier {
       ..addAll((s['notes'] as List? ?? const []).whereType<String>());
     wifiHintShown = s['wifiHint'] == true;
     biometric = s['bio'] == true;
+    myStickers
+      ..clear()
+      ..addAll((s['stickers'] as List? ?? const []).whereType<String>());
+    myGifs
+      ..clear()
+      ..addAll((s['gifs'] as List? ?? const []).whereType<String>());
     noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
     msgFont = ((s['font'] as num?)?.toInt() ?? 1).clamp(0, 2);
     enterSends = s['enter'] == true;
@@ -1051,6 +1062,7 @@ class AppState extends ChangeNotifier {
           ? null
           : Poll(question: poll.question, options: [...poll.options], multi: poll.multi),
       voiceSeconds: m.voiceSeconds,
+      sticker: m.sticker,
       fwd: origin,
     );
   }
@@ -1193,10 +1205,12 @@ class AppState extends ChangeNotifier {
     DateTime? openAt,
     DateTime? sendAt,
     Todo? todo,
+    String? sticker,
   }) {
     final m = compose(
       chatId,
       text,
+      sticker: sticker,
       replyTo: replyTo,
       secret: secret,
       kind: kind,
@@ -1291,6 +1305,7 @@ class AppState extends ChangeNotifier {
     bool once = false,
     DateTime? openAt,
     Todo? todo,
+    String? sticker,
   }) {
     // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
     // (в базе время хранится с точностью до миллисекунды).
@@ -1317,10 +1332,92 @@ class AppState extends ChangeNotifier {
       once: once,
       openAt: openAt,
       todo: todo,
+      sticker: sticker,
     );
     messagesOf(chatId).add(m);
     return m;
   }
+
+  // ───────────────────────── Мои стикеры и GIF ─────────────────────────
+
+  /// Свои стикеры (PNG с прозрачным фоном) и GIF — файлы в папке приложения.
+  final List<String> myStickers = [];
+  final List<String> myGifs = [];
+  static const maxCollection = 60;
+
+  Future<String> _collectionPath(String folder, String ext) async {
+    final root = live == null ? Directory.systemTemp.path : await live!.media.root();
+    final dir = Directory('$root/$folder');
+    await dir.create(recursive: true);
+    return '${dir.path}/${newMessageId()}.$ext';
+  }
+
+  /// Положить стикер / GIF в свою коллекцию (копией). Вернёт путь копии.
+  Future<String?> addToCollection(String src, {required bool gif}) async {
+    final list = gif ? myGifs : myStickers;
+    try {
+      final f = File(src);
+      if (!f.existsSync()) return null;
+      final dst = await _collectionPath(gif ? '_gifs' : '_stickers', gif ? 'gif' : 'png');
+      await f.copy(dst);
+      list.insert(0, dst);
+      while (list.length > maxCollection) {
+        final old = list.removeLast();
+        try {
+          File(old).deleteSync();
+        } catch (_) {}
+      }
+      _saveSettings();
+      return dst;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void removeFromCollection(String path) {
+    if (!myStickers.remove(path) && !myGifs.remove(path)) return;
+    try {
+      File(path).deleteSync();
+    } catch (_) {}
+    _saveSettings();
+  }
+
+  /// Отправить свой стикер (картинку из коллекции).
+  Future<Message> sendMySticker(String chatId, String path, {Message? replyTo}) async {
+    final meta = await imageMeta(path);
+    return sendFile(
+      chatId,
+      kind: MsgKind.sticker,
+      path: path,
+      name: 'sticker.png',
+      mime: 'image/png',
+      size: await File(path).length(),
+      width: meta.width,
+      height: meta.height,
+      replyTo: replyTo,
+    );
+  }
+
+  /// Отправить GIF: как фото, но без пересжатия — чтобы двигался.
+  Future<Message> sendGif(String chatId, String path, {Message? replyTo}) async {
+    final meta = await imageMeta(path);
+    return sendFile(
+      chatId,
+      kind: MsgKind.photo,
+      path: path,
+      name: 'gif_${DateTime.now().millisecondsSinceEpoch}.gif',
+      mime: 'image/gif',
+      size: await File(path).length(),
+      width: meta.width,
+      height: meta.height,
+      thumb: meta.thumb,
+      replyTo: replyTo,
+    );
+  }
+
+  /// Стикер из набора Veil (по сети уходит только его код).
+  Message sendSticker(String chatId, String id, {Message? replyTo}) =>
+      send(chatId, '', kind: MsgKind.sticker, sticker: id, replyTo: replyTo);
 
   // ───────────────────────── Группы ─────────────────────────
 
@@ -1719,6 +1816,8 @@ class AppState extends ChangeNotifier {
     }
     _timers.clear();
     typing.clear();
+    myStickers.clear();
+    myGifs.clear();
     drafts.clear();
     draftAt.clear();
     _draftTimer?.cancel();

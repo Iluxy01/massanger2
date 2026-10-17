@@ -17,6 +17,7 @@ import '../widgets/attachments.dart';
 import '../widgets/effects.dart';
 import '../utils.dart';
 import '../widgets/visual.dart';
+import 'sticker_maker.dart';
 import 'video_recorder.dart';
 import 'wifi_hint.dart';
 
@@ -50,6 +51,73 @@ class AttachFlows {
       icon: Icons.block_rounded,
     );
     return true;
+  }
+
+  // ── Стикеры и GIF ──
+
+  /// Новый стикер из своего фото (обвести пальцем) — и сразу отправить.
+  Future<void> makeSticker() async {
+    if (await _blocked() || !context.mounted) return;
+    XFile? f;
+    try {
+      f = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+    } catch (_) {
+      if (context.mounted) {
+        showVeilToast(context, 'Нет доступа к фото', icon: Icons.no_photography_rounded);
+      }
+      return;
+    }
+    if (f == null || !context.mounted) return;
+    final saved = await Navigator.of(context).push<String>(StickerMaker.route(f.path));
+    if (saved == null || !context.mounted) return;
+    await app.sendMySticker(chatId, saved, replyTo: replyTo);
+  }
+
+  /// Свой стикер из коллекции.
+  Future<void> sendSticker(String path) async {
+    if (await _blocked() || !context.mounted) return;
+    if (!File(path).existsSync()) return;
+    await app.sendMySticker(chatId, path, replyTo: replyTo);
+  }
+
+  /// Добавить GIF с телефона в коллекцию — и сразу отправить.
+  Future<void> addGif() async {
+    if (await _blocked() || !context.mounted) return;
+    PlatformFile? f;
+    try {
+      f = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: const ['gif']);
+    } catch (_) {
+      if (context.mounted) {
+        showVeilToast(context, 'Не получилось открыть файлы', icon: Icons.error_outline_rounded);
+      }
+      return;
+    }
+    if (f == null || !context.mounted) return;
+    var path = f.path;
+    if (path == null || !File(path).existsSync()) {
+      final tmp = await getTemporaryDirectory();
+      final out = File('${tmp.path}/${DateTime.now().millisecondsSinceEpoch}.gif');
+      final sink = out.openWrite();
+      await sink.addStream(f.readAsByteStream());
+      await sink.close();
+      path = out.path;
+    }
+    final size = await File(path).length();
+    if (!context.mounted || _tooBig(size)) return;
+    final saved = await app.addToCollection(path, gif: true);
+    if (saved == null || !context.mounted) return;
+    await app.sendGif(chatId, saved, replyTo: replyTo);
+  }
+
+  /// GIF из коллекции.
+  Future<void> sendGif(String path) async {
+    if (await _blocked() || !context.mounted) return;
+    if (!File(path).existsSync()) return;
+    await app.sendGif(chatId, path, replyTo: replyTo);
   }
 
   // ── Фото ──
