@@ -13,13 +13,14 @@ import android.net.Uri
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
-class MainActivity : FlutterActivity() {
+// FragmentActivity — для системного окна входа по отпечатку / лицу (local_auth).
+class MainActivity : FlutterFragmentActivity() {
     private fun instant(): Boolean =
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(INSTANT, false)
 

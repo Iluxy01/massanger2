@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/biometric.dart';
 import '../core/relay_pool.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
@@ -310,6 +311,7 @@ class SettingsTab extends StatelessWidget {
                     },
                   ),
                 ),
+                if (app.hasPin) const _BiometricTile(),
                 if (app.hasPin)
                   _Tile(
                     icon: Icons.lock_clock_rounded,
@@ -1986,4 +1988,44 @@ Future<void> openVault(BuildContext context) async {
     LockScreen.verifyRoute(title: 'PIN тайника', subtitle: 'Скрытые чаты', verify: app.checkVault),
   );
   if (ok == true) await nav.push(VaultScreen.route());
+}
+
+/// «Вход по отпечатку / лицу»: виден, только если на телефоне он настроен.
+class _BiometricTile extends StatefulWidget {
+  const _BiometricTile();
+
+  @override
+  State<_BiometricTile> createState() => _BiometricTileState();
+}
+
+class _BiometricTileState extends State<_BiometricTile> {
+  bool? _available;
+
+  @override
+  void initState() {
+    super.initState();
+    Biometric.available().then((v) {
+      if (mounted) setState(() => _available = v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    if (_available != true) return const SizedBox.shrink();
+    return _Tile(
+      icon: Icons.fingerprint_rounded,
+      title: 'Вход по отпечатку или лицу',
+      subtitle: app.biometric ? 'Вместо ввода PIN — PIN остаётся запасным' : 'Выключен',
+      trailing: VeilSwitch(
+        value: app.biometric,
+        onChanged: (v) async {
+          final ok = await app.setBiometric(v);
+          if (!ok && context.mounted) {
+            showVeilToast(context, 'Не получилось подтвердить', icon: Icons.fingerprint_rounded);
+          }
+        },
+      ),
+    );
+  }
 }

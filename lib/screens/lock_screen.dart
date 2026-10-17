@@ -64,6 +64,47 @@ class _LockScreenState extends State<LockScreen> {
   bool _error = false;
   String? _errorText;
   bool _success = false;
+  AppLifecycleListener? _life;
+
+  /// Экран блокировки приложения (а не ввод нового или чужого PIN).
+  bool get _mainLock => !widget.setup && widget.verify == null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_mainLock) return;
+    // Отпечаток спрашиваем сразу — и каждый раз, когда возвращаемся в Veil.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bio(auto: true));
+    _life = AppLifecycleListener(onResume: () => _bio(auto: true));
+  }
+
+  @override
+  void dispose() {
+    _life?.dispose();
+    super.dispose();
+  }
+
+  DateTime _bioEnd = DateTime(2000);
+  bool _declined = false;
+
+  /// [auto] — сами, без нажатия. Если отказались («Ввести PIN»), сами больше
+  /// не спрашиваем: на части телефонов окно отпечатка «сворачивает» Veil, и
+  /// иначе оно открывалось бы снова и снова.
+  Future<void> _bio({bool auto = false}) async {
+    if (!mounted || _success) return;
+    if (auto && (_declined || DateTime.now().difference(_bioEnd).inSeconds < 3)) return;
+    final app = context.appRead;
+    if (!app.biometric || !app.locked) return;
+    final ok = await app.unlockWithBiometric();
+    _bioEnd = DateTime.now();
+    if (!ok) {
+      _declined = true;
+      return;
+    }
+    if (!mounted) return;
+    app.tick(HapticKind.medium);
+    setState(() => _success = true);
+  }
 
   String get _title {
     if (!widget.setup) return widget.title ?? 'Введите PIN';
@@ -245,7 +286,11 @@ class _LockScreenState extends State<LockScreen> {
                 ),
               ),
               const Spacer(flex: 2),
-              _Keypad(onDigit: _press, onBackspace: _backspace),
+              _Keypad(
+                onDigit: _press,
+                onBackspace: _backspace,
+                onBio: _mainLock && context.app.biometric ? _bio : null,
+              ),
               const Spacer(),
             ],
           ),
@@ -256,10 +301,13 @@ class _LockScreenState extends State<LockScreen> {
 }
 
 class _Keypad extends StatelessWidget {
-  const _Keypad({required this.onDigit, required this.onBackspace});
+  const _Keypad({required this.onDigit, required this.onBackspace, this.onBio});
 
   final ValueChanged<String> onDigit;
   final VoidCallback onBackspace;
+
+  /// Войти по отпечатку / лицу (если включено).
+  final VoidCallback? onBio;
 
   static const _letters = {
     '2': 'ABC',
@@ -296,7 +344,17 @@ class _Keypad extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(width: 108),
+              SizedBox(
+                width: 108,
+                child: onBio == null
+                    ? null
+                    // Без tooltip: экран блокировки лежит над навигатором, и
+                    // всплывающей подсказке там негде показаться.
+                    : IconButton(
+                        onPressed: onBio,
+                        icon: const GradientIcon(Icons.fingerprint_rounded, size: 34),
+                      ),
+              ),
               key('0'),
               SizedBox(
                 width: 108,

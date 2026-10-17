@@ -76,4 +76,6 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     // FileProvider — открыть вложение в другом приложении.
     implementation("androidx.core:core:1.13.1")
+    // Темы AppCompat — окно входа по отпечатку (local_auth) на старых Android.
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }

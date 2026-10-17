@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/biometric.dart';
 import '../core/protocol.dart';
 import '../core/relay_pool.dart';
 import '../models/models.dart';
@@ -53,6 +54,9 @@ class AppState extends ChangeNotifier {
   bool hasPin = false;
   String? _demoPin;
   bool locked = false;
+
+  /// Разблокировка по отпечатку / лицу (вместе с PIN-кодом, не вместо него).
+  bool biometric = false;
 
   // ── Тайник ──
 
@@ -420,6 +424,7 @@ class AppState extends ChangeNotifier {
     'hidePrev': hidePreviews,
     'confirmDel': confirmDelete,
     if (wifiHintShown) 'wifiHint': true,
+    if (biometric) 'bio': true,
     'pinned': pinned.toList(),
     'muted': muted.toList(),
     if (archived.isNotEmpty) 'archived': archived.toList(),
@@ -458,6 +463,7 @@ class AppState extends ChangeNotifier {
       ..clear()
       ..addAll((s['notes'] as List? ?? const []).whereType<String>());
     wifiHintShown = s['wifiHint'] == true;
+    biometric = s['bio'] == true;
     noteCamera = ((s['noteCam'] as num?)?.toInt() ?? 0).clamp(0, 1);
     msgFont = ((s['font'] as num?)?.toInt() ?? 1).clamp(0, 2);
     enterSends = s['enter'] == true;
@@ -738,7 +744,32 @@ class AppState extends ChangeNotifier {
 
   void saveCoverNotes() => _saveSettings();
 
+  /// Включить вход по отпечатку — только подтвердив его прямо сейчас.
+  Future<bool> setBiometric(bool v) async {
+    if (v && !await Biometric.check('Подтверди, чтобы входить в Veil по отпечатку')) {
+      return false;
+    }
+    biometric = v;
+    _saveSettings();
+    return true;
+  }
+
+  /// Разблокировать по отпечатку / лицу. Тайник так не открывается — только
+  /// обычный вход (тайник — своим PIN).
+  Future<bool> unlockWithBiometric() async {
+    if (!biometric || !hasPin || !locked || covered) return false;
+    if (!await Biometric.check('Войти в Veil')) return false;
+    decoy = false;
+    unlocked();
+    return true;
+  }
+
   Future<void> setPin(String? value) async {
+    // Без PIN нет и входа по отпечатку.
+    if (value == null && biometric) {
+      biometric = false;
+      _saveSettings();
+    }
     if (live != null) {
       await live!.setPin(value);
     } else {
