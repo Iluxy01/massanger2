@@ -1327,7 +1327,9 @@ class AppState extends ChangeNotifier {
   String previewOf(String chatId, Message m) {
     if (m.kind == MsgKind.event) return eventText(chatId, m);
     final text = Fmt.plain(m.preview);
-    if (!m.mine && m.from != null) return '${memberName(chatId, m.from!)}: $text';
+    // В канале пишет один автор — его имя не нужно.
+    final channel = contact(chatId)?.isChannel ?? false;
+    if (!m.mine && m.from != null && !channel) return '${memberName(chatId, m.from!)}: $text';
     return text;
   }
 
@@ -1365,7 +1367,83 @@ class AppState extends ChangeNotifier {
     return g;
   }
 
-  /// Добавить друзей в группу (только администратор).
+  // ───────────────────────── Каналы ─────────────────────────
+
+  /// Только читаю: я подписчик канала (писать и реагировать может лишь автор).
+  bool readOnly(Contact c) => c.isChannel && c.group!.admin != me;
+
+  /// Создать канал: пишу только я; [pubs] — друзья, которых сразу подписать.
+  Future<Contact> createChannel({
+    required String name,
+    required String emoji,
+    required int colorIndex,
+    List<String> pubs = const [],
+  }) async {
+    final subs = [
+      for (final pub in pubs.take(GroupInfo.maxSubscribers))
+        if (contact(pub) case final c? when !c.isGroup && !c.isNotes) _asMember(c),
+    ];
+    final g =
+        Contact(
+            id: 'g_${randomHex(32).toLowerCase()}',
+            name: name,
+            emoji: emoji,
+            colorIndex: colorIndex,
+          )
+          ..group = GroupInfo(
+            members: [_meAsMember(), ...subs],
+            admin: me,
+            ver: DateTime.now().millisecondsSinceEpoch,
+            channel: true,
+            code: randomHex(16).toLowerCase(),
+          );
+    contacts.add(g);
+    await live?.saveContact(g);
+    if (subs.isNotEmpty) await welcomeToChannel(g, [for (final m in subs) m.pub]);
+    notifyChanged();
+    return g;
+  }
+
+  /// Пригласительная ссылка канала (только у автора).
+  String? channelLink(String id) {
+    final g = contact(id);
+    final info = g?.group;
+    if (g == null || info == null || !info.channel || info.admin != me || info.left) return null;
+    info.code ??= randomHex(16).toLowerCase();
+    return ChannelInvite(
+      id: g.id,
+      admin: me,
+      code: info.code!,
+      name: g.name,
+      emoji: g.emoji,
+    ).encode();
+  }
+
+  /// Новая ссылка: старая перестаёт работать (уже подписанные остаются).
+  Future<void> resetChannelLink(String id) async {
+    final g = contact(id);
+    final info = g?.group;
+    if (g == null || info == null || !info.channel || info.admin != me) return;
+    info.code = randomHex(16).toLowerCase();
+    await live?.saveContact(g);
+    notifyChanged();
+  }
+
+  /// Попроситься в канал по ссылке. Канал появится, когда автор будет в сети.
+  /// false — уже подписан (или это мой канал).
+  bool joinChannel(ChannelInvite inv) {
+    final have = contact(inv.id);
+    if (have != null && !(have.group?.left ?? true)) return false;
+    if (inv.admin == me) return false;
+    live?.joinChannel(inv);
+    return true;
+  }
+
+  /// Прислать канал новым подписчикам (только им, в моей ленте — без следа).
+  Future<void> welcomeToChannel(Contact g, List<String> pubs) =>
+      _groupEvent(g, 'add', 'подписал(а) тебя на канал «${g.name}»', only: pubs, hidden: true);
+
+  /// Добавить друзей в группу (только администратор). В канал — подписать.
   Future<void> addMembers(String groupId, List<String> pubs) async {
     final g = contact(groupId);
     final info = g?.group;
@@ -1373,14 +1451,19 @@ class AppState extends ChangeNotifier {
     final added = <GroupMember>[];
     for (final pub in pubs) {
       final c = contact(pub);
-      if (c == null || c.isGroup || info.has(pub)) continue;
-      if (info.members.length >= GroupInfo.maxMembers) break;
+      if (c == null || c.isGroup || c.isNotes || info.has(pub)) continue;
+      if (info.members.length + added.length >= info.limit) break;
       added.add(_asMember(c));
     }
     if (added.isEmpty) return;
     info.members.addAll(added);
     info.ver = DateTime.now().millisecondsSinceEpoch;
     await live?.saveContact(g);
+    if (info.channel) {
+      await welcomeToChannel(g, [for (final m in added) m.pub]);
+      notifyChanged();
+      return;
+    }
     await _groupEvent(g, 'add', 'добавил(а): ${added.map((m) => m.name).join(', ')}');
   }
 
@@ -1394,6 +1477,12 @@ class AppState extends ChangeNotifier {
     info.members.remove(m);
     info.ver = DateTime.now().millisecondsSinceEpoch;
     await live?.saveContact(g);
+    if (info.channel) {
+      // Отписанному — тихое событие; остальные подписчики ничего не видят.
+      await _groupEvent(g, 'remove', 'отписал(а) тебя от канала', only: [pub], hidden: true);
+      notifyChanged();
+      return;
+    }
     await _groupEvent(g, 'remove', 'удалил(а): ${memberName(groupId, pub)}', extra: [pub]);
   }
 
@@ -1416,6 +1505,19 @@ class AppState extends ChangeNotifier {
     final g = contact(groupId);
     final info = g?.group;
     if (g == null || info == null || info.left) return;
+    if (info.channel) {
+      // Автор закрывает канал для всех; подписчик — просто отписывается.
+      final mine = info.admin == me;
+      await _groupEvent(
+        g,
+        mine ? 'close' : 'leave',
+        mine ? 'закрыл(а) канал' : 'отписался(-ась) от канала',
+      );
+      info.left = true;
+      await live?.saveContact(g);
+      notifyChanged();
+      return;
+    }
     if (info.admin == me) {
       final next = info.members.where((m) => m.pub != me).firstOrNull;
       if (next != null) {
@@ -1431,15 +1533,32 @@ class AppState extends ChangeNotifier {
     notifyChanged();
   }
 
+  /// [only] — только этим участникам; [hidden] — у себя в ленте не оставлять.
   Future<void> _groupEvent(
     Contact g,
     String ev,
     String text, {
     List<String> extra = const [],
+    List<String>? only,
+    bool hidden = false,
   }) async {
+    if (hidden) {
+      // Только в очередь отправки — в моей ленте его нет.
+      final m = Message(
+        id: newMessageId(),
+        mine: true,
+        text: text,
+        time: DateTime.now(),
+        status: MsgStatus.sending,
+        kind: MsgKind.event,
+        ev: ev,
+      );
+      await live?.queueMessage(g.id, m, only: only, detached: true);
+      return;
+    }
     final m = compose(g.id, text, kind: MsgKind.event, ev: ev);
     notifyChanged();
-    await live?.sendMessage(g.id, m, extra: extra);
+    await live?.sendMessage(g.id, m, extra: extra, only: only);
     notifyChanged();
   }
 
@@ -1625,6 +1744,8 @@ class AppState extends ChangeNotifier {
     if (c == null || c.blocked) return;
     final online = c.online;
     _later(online ? 1700 : 3800, () => m.status = MsgStatus.read);
+    // В канал подписчики не отвечают.
+    if (c.isChannel) return;
 
     if (_rnd.nextDouble() < 0.3) {
       _later(online ? 2100 : 4200, () => m.reaction = reactionEmojis[_rnd.nextInt(4)]);

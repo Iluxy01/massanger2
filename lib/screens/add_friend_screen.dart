@@ -46,6 +46,21 @@ class _AddFriendScreenState extends State<AddFriendScreen> {
     if (mounted) setState(() => _added = c);
   }
 
+  /// Отсканирована ссылка канала — просимся в подписчики.
+  void _join(ChannelInvite ci) {
+    final app = context.appRead;
+    app.tick(HapticKind.heavy);
+    final ok = app.joinChannel(ci);
+    showVeilToast(
+      context,
+      ok
+          ? 'Попросились в «${ci.name}». Канал появится в чатах, когда автор будет в сети.'
+          : 'Это твой канал или ты уже подписан(а)',
+      icon: Icons.campaign_rounded,
+    );
+    Navigator.of(context).maybePop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
@@ -95,7 +110,7 @@ class _AddFriendScreenState extends State<AddFriendScreen> {
                       ? _Success(key: const ValueKey('ok'), contact: _added!)
                       : _tab == 0
                       ? const _MyCode(key: ValueKey('code'))
-                      : _Scanner(key: const ValueKey('scan'), onScanned: _add),
+                      : _Scanner(key: const ValueKey('scan'), onScanned: _add, onChannel: _join),
                 ),
               ),
             ],
@@ -298,8 +313,9 @@ Future<void> shareInvite(BuildContext context) async {
 }
 
 class _Scanner extends StatefulWidget {
-  const _Scanner({super.key, required this.onScanned});
+  const _Scanner({super.key, required this.onScanned, required this.onChannel});
   final Future<void> Function(Invite?) onScanned;
+  final void Function(ChannelInvite) onChannel;
 
   @override
   State<_Scanner> createState() => _ScannerState();
@@ -320,6 +336,12 @@ class _ScannerState extends State<_Scanner> with SingleTickerProviderStateMixin 
   void _detected(BarcodeCapture capture) {
     if (_done) return;
     for (final b in capture.barcodes) {
+      final ch = ChannelInvite.parse(b.rawValue ?? '');
+      if (ch != null) {
+        _done = true;
+        widget.onChannel(ch);
+        return;
+      }
       final inv = Invite.parse(b.rawValue ?? '');
       if (inv != null) {
         _done = true;
@@ -331,8 +353,13 @@ class _ScannerState extends State<_Scanner> with SingleTickerProviderStateMixin 
 
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final inv = Invite.parse(data?.text ?? '');
     if (!mounted) return;
+    final ch = ChannelInvite.parse(data?.text ?? '');
+    if (ch != null) {
+      widget.onChannel(ch);
+      return;
+    }
+    final inv = Invite.parse(data?.text ?? '');
     if (inv == null) {
       showVeilToast(
         context,

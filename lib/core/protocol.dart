@@ -20,6 +20,7 @@ import 'dart:convert';
 /// (ключи «t» и «v» заняты: тип и версия конверта — в данных их не использовать)
 /// У msg: oa — капсула времени (откроется не раньше, мс).
 /// В группе у любого сигнала есть g (id группы), у сообщения — ещё gi (состав).
+/// t = join   вступить в канал по ссылке {g, i: код, p} — автору канала
 /// t = typ    печатает (эфемерно)
 /// t = ping   я в сети (эфемерно)
 class Payload {
@@ -44,6 +45,7 @@ class Payload {
   static const pin = 'pin';
   static const opened = 'seen1';
   static const todo = 'todo';
+  static const join = 'join';
 
   Map<String, dynamic> toMap() => {...data, 'v': 1, 't': type};
 
@@ -134,6 +136,60 @@ class Invite {
         emoji: uri.queryParameters['e'] ?? '🙂',
         color: int.tryParse(uri.queryParameters['c'] ?? '') ?? 0,
       ),
+    );
+  }
+}
+
+/// Пригласительная ссылка канала:
+/// `veil://ch?g=ID&a=КЛЮЧ_АВТОРА&i=КОД&n=Название&e=😀`. По ней любой может
+/// попросить автора добавить его в подписчики.
+class ChannelInvite {
+  ChannelInvite({
+    required this.id,
+    required this.admin,
+    required this.code,
+    required this.name,
+    required this.emoji,
+  });
+
+  final String id;
+  final String admin;
+  final String code;
+  final String name;
+  final String emoji;
+
+  static final _hex = RegExp(r'^[0-9a-f]{64}$');
+  static final _id = RegExp(r'^g_[0-9a-f]{8,36}$');
+  static final _code = RegExp(r'^[0-9a-f]{8,32}$');
+
+  String encode() => Uri(
+    scheme: 'veil',
+    host: 'ch',
+    queryParameters: {'g': id, 'a': admin, 'i': code, 'n': name, 'e': emoji},
+  ).toString();
+
+  static ChannelInvite? parse(String raw) {
+    final s = raw.trim();
+    final start = s.indexOf('veil://ch');
+    if (start < 0) return null;
+    final uri = Uri.tryParse(s.substring(start).split(RegExp(r'\s')).first);
+    if (uri == null || uri.host != 'ch') return null;
+    final q = uri.queryParameters;
+    final g = q['g'], a = q['a']?.toLowerCase(), i = q['i'];
+    if (g == null || !_id.hasMatch(g) || a == null || !_hex.hasMatch(a)) return null;
+    if (i == null || !_code.hasMatch(i)) return null;
+    String clip(String? v, String d, int max) {
+      final t = (v ?? '').trim();
+      if (t.isEmpty) return d;
+      return t.length > max ? t.substring(0, max) : t;
+    }
+
+    return ChannelInvite(
+      id: g,
+      admin: a,
+      code: i,
+      name: clip(q['n'], 'Канал', 40),
+      emoji: clip(q['e'], '📢', 16),
     );
   }
 }

@@ -513,6 +513,10 @@ class _ChatTile extends StatelessWidget {
                                 const SizedBox(width: 4),
                                 const GradientIcon(Icons.verified_rounded, size: 16),
                               ],
+                              if (c.isChannel) ...[
+                                const SizedBox(width: 4),
+                                Icon(Icons.campaign_rounded, size: 16, color: vc.textDim),
+                              ],
                               if (app.muted.contains(c.id)) ...[
                                 const SizedBox(width: 4),
                                 Icon(Icons.volume_off_rounded, size: 15, color: vc.textFaint),
@@ -839,6 +843,15 @@ class _NewChatButton extends StatelessWidget {
                 onTap: () {
                   Navigator.pop(ctx);
                   Navigator.of(context).push(CreateGroupScreen.route());
+                },
+              ),
+              _NewAction(
+                icon: Icons.campaign_rounded,
+                title: 'Новый канал',
+                subtitle: 'Пишешь ты — читают подписчики (до ${GroupInfo.maxSubscribers})',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(CreateGroupScreen.route(channel: true));
                 },
               ),
               _NewAction(

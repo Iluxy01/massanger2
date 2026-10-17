@@ -757,7 +757,9 @@ class _ChatScreenState extends State<ChatScreen> {
               if (c.blocked)
                 _BlockedBar(onUnblock: () => app.toggleBlocked(c.id))
               else if (c.group?.left ?? false)
-                const _LeftGroupBar()
+                _LeftGroupBar(channel: c.isChannel)
+              else if (app.readOnly(c))
+                _ChannelBar(contact: c)
               else
                 _composer(context),
             ],
@@ -1098,6 +1100,16 @@ class _TopBar extends StatelessWidget {
       status = Text(
         'только на этом телефоне',
         key: const ValueKey('n'),
+        style: TextStyle(color: vc.textDim, fontSize: 13),
+      );
+    } else if (group != null && group.channel) {
+      status = Text(
+        group.left
+            ? 'ты не подписан(а)'
+            : group.admin == app.me
+            ? 'канал · ${subscribersLabel(group.subscribers)}'
+            : 'канал',
+        key: const ValueKey('c'),
         style: TextStyle(color: vc.textDim, fontSize: 13),
       );
     } else if (group != null) {
@@ -1506,6 +1518,9 @@ class _EncryptionBanner extends StatelessWidget {
                 contact.isNotes
                     ? 'Заметки для себя: тексты, фото, файлы, списки. Хранятся только на этом '
                           'телефоне и никуда не отправляются.'
+                    : contact.isChannel
+                    ? 'Канал: публикует только автор. Каждый пост шифруется для каждого '
+                          'подписчика отдельно, подписчики не видят друг друга.'
                     : contact.isGroup
                     ? 'Сообщения группы шифруются для каждого участника отдельно и хранятся '
                           'только на ваших телефонах. Нажми, чтобы увидеть участников.'
@@ -1682,7 +1697,11 @@ class _MessageTileState extends State<_MessageTile> with TickerProviderStateMixi
             onTap: m.secret || spoiler ? _toggleSecret : null,
             // У вложений, опросов и голосовых свои касания — без задержки.
             onDoubleTap:
-                m.secret || spoiler || m.kind != MsgKind.text || context.app.quickReaction.isEmpty
+                m.secret ||
+                    spoiler ||
+                    m.kind != MsgKind.text ||
+                    context.app.quickReaction.isEmpty ||
+                    context.app.readOnly(widget.contact)
                 ? null
                 : _doubleTap,
             onLongPress: () {
@@ -1963,7 +1982,8 @@ class BubbleBody extends StatelessWidget {
 
     // В группе — имя автора (цветом его аватарки).
     final from = m.from;
-    final Widget? author = showName && !mine && from != null && contact.isGroup
+    final Widget? author =
+        showName && !mine && from != null && contact.isGroup && !contact.isChannel
         ? Text(
             app.memberName(contact.id, from),
             maxLines: 1,
@@ -2624,7 +2644,9 @@ class _MessageMenu extends StatelessWidget {
                 children: [
                   Padding(
                     padding: hPos,
-                    child: _ReactionBar(m: m, chatId: contact.id),
+                    child: app.readOnly(contact)
+                        ? const SizedBox(height: _barH)
+                        : _ReactionBar(m: m, chatId: contact.id),
                   ),
                   const SizedBox(height: 10),
                   Padding(
@@ -2728,7 +2750,7 @@ class _ActionsMenu extends StatelessWidget {
 
   /// Какие действия доступны: (значок, подпись, код, опасное).
   static List<(IconData, String, String, bool)> actionsFor(AppState app, Message m, Contact c) {
-    final canWrite = !(c.group?.left ?? false) && !c.blocked;
+    final canWrite = !(c.group?.left ?? false) && !c.blocked && !app.readOnly(c);
     final editable =
         m.mine &&
         canWrite &&
@@ -3316,7 +3338,10 @@ class _RequestBar extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              contact.isGroup
+              contact.isChannel
+                  ? 'Тебя подписали на канал «${contact.name}». '
+                        'Если он тебе не нужен — просто удали его.'
+                  : contact.isGroup
                   ? 'Тебя позвали в группу «${contact.name}». '
                         'Если не знаешь этих людей — просто удали её.'
                   : '${contact.name} добавил(а) тебя по твоему коду. '
@@ -3380,9 +3405,50 @@ class _EventChip extends StatelessWidget {
   }
 }
 
+/// Подписчик канала: писать нельзя — только читать и включать / выключать звук.
+class _ChannelBar extends StatelessWidget {
+  const _ChannelBar({required this.contact});
+  final Contact contact;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final muted = app.muted.contains(contact.id);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(12, 0, 12, MediaQuery.paddingOf(context).bottom + 10),
+      child: Glass(
+        radius: 22,
+        padding: const EdgeInsets.fromLTRB(16, 6, 6, 6),
+        child: Row(
+          children: [
+            Icon(Icons.campaign_rounded, color: vc.textDim, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('Публикует только автор канала', style: TextStyle(color: vc.textDim)),
+            ),
+            TextButton.icon(
+              onPressed: () {
+                app.tick(HapticKind.selection);
+                app.toggleMute(contact.id);
+              },
+              icon: Icon(
+                muted ? Icons.notifications_off_rounded : Icons.notifications_active_rounded,
+                size: 18,
+              ),
+              label: Text(muted ? 'Без звука' : 'Со звуком'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Вышли из группы (или удалили) — писать нельзя.
 class _LeftGroupBar extends StatelessWidget {
-  const _LeftGroupBar();
+  const _LeftGroupBar({this.channel = false});
+  final bool channel;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -3396,7 +3462,7 @@ class _LeftGroupBar extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Ты больше не участник этой группы',
+              channel ? 'Ты не подписан(а) на этот канал' : 'Ты больше не участник этой группы',
               style: TextStyle(color: context.vc.textDim),
             ),
           ),

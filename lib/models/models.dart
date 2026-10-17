@@ -119,6 +119,9 @@ class Contact {
   GroupInfo? group;
   bool get isGroup => group != null;
 
+  /// Канал: публикует только автор.
+  bool get isChannel => group?.channel ?? false;
+
   static bool isGroupId(String id) => id.startsWith('g_');
 
   /// «Заметки» — чат с самим собой: живёт только на этом телефоне и никуда
@@ -210,10 +213,32 @@ class GroupMember {
 /// Группа: кто в ней и кто администратор. Каждое сообщение группы несёт эти
 /// сведения — новый участник узнаёт о группе из первого же сообщения.
 class GroupInfo {
-  GroupInfo({required this.members, required this.admin, required this.ver, this.left = false});
+  GroupInfo({
+    required this.members,
+    required this.admin,
+    required this.ver,
+    this.left = false,
+    this.channel = false,
+    this.code,
+  });
 
   /// Больше не шифруем для всех — сообщение уходит каждому участнику отдельно.
   static const maxMembers = 20;
+
+  /// Канал: пишет только автор, подписчиков больше, и друг друга они не видят.
+  /// Каждый пост тоже шифруется для каждого подписчика отдельно.
+  static const maxSubscribers = 100;
+
+  /// Канал (а не группа).
+  final bool channel;
+
+  /// Код пригласительной ссылки канала (знает только автор).
+  String? code;
+
+  int get limit => channel ? maxSubscribers + 1 : maxMembers;
+
+  /// Подписчиков (все, кроме автора).
+  int get subscribers => members.where((m) => m.pub != admin).length;
 
   final List<GroupMember> members;
 
@@ -240,6 +265,8 @@ class GroupInfo {
     'a': admin,
     'v': ver,
     if (left) 'left': true,
+    if (channel) 'ch': true,
+    if (code != null) 'ic': code,
   };
 
   static GroupInfo? fromJson(Object? o) {
@@ -247,8 +274,9 @@ class GroupInfo {
     final raw = o['m'];
     if (raw is! List) return null;
     final seen = <String>{};
+    final channel = o['ch'] == true;
     final members = [
-      for (final x in raw.take(maxMembers))
+      for (final x in raw.take(channel ? maxSubscribers + 1 : maxMembers))
         if (GroupMember.fromJson(x) case final m? when seen.add(m.pub)) m,
     ];
     final a = o['a'];
@@ -258,6 +286,8 @@ class GroupInfo {
       admin: a,
       ver: o['v'] is num ? (o['v'] as num).toInt() : 0,
       left: o['left'] == true,
+      channel: channel,
+      code: o['ic'] is String ? o['ic'] as String : null,
     );
   }
 }

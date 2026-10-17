@@ -618,12 +618,30 @@ class Live {
   }
 
   /// Сведения о группе для сообщения: название, значок, состав.
-  Map<String, dynamic> _groupWire(Contact g) => {
-    'n': g.name,
-    'e': g.emoji,
-    'c': g.colorIndex,
-    ...g.group!.toJson()..remove('left'),
-  };
+  Map<String, dynamic> _groupWire(Contact g) {
+    final info = g.group!;
+    final j = info.toJson()
+      ..remove('left')
+      ..remove('ic');
+    // Канал: подписчики не видят друг друга — в сведениях только автор.
+    if (info.channel) {
+      j['m'] = [
+        for (final m in info.members)
+          if (m.pub == info.admin) m.toJson(),
+      ];
+    }
+    return {'n': g.name, 'e': g.emoji, 'c': g.colorIndex, ...j};
+  }
+
+  /// Вступающие в каналы по ссылке: id канала → когда попросились.
+  final Map<String, DateTime> _joining = {};
+
+  /// Попросить автора канала добавить нас (по пригласительной ссылке).
+  void joinChannel(ChannelInvite inv) {
+    _joining[inv.id] = DateTime.now();
+    _control(inv.admin, Payload(Payload.join, {'g': inv.id, 'i': inv.code, 'p': myCard.toJson()}));
+    log('прошу вступить в канал «${inv.name}»');
+  }
 
   /// Сообщение или служебный сигнал внутри группы.
   Future<void> _handleGroup(String sender, String gid, Payload p, DateTime sentAt) async {
@@ -636,36 +654,56 @@ class Live {
     final info = GroupInfo.fromJson(wire);
     if (g == null) {
       // О группе узнаём из её сообщения — если в составе и мы, и отправитель.
-      if (p.type != Payload.msg || info == null || !info.has(me) || !info.has(sender)) return;
+      // О канале — из сообщения его автора (подписчиков в сведениях нет).
+      if (p.type != Payload.msg || info == null || !info.has(sender)) return;
+      if (info.channel ? info.admin != sender : !info.has(me)) return;
+      // Сами просились в канал по ссылке — спрашивать «принять?» не нужно.
+      final asked = _joining.remove(gid) != null;
       g = Contact(
         id: gid,
-        name: _clip(wire!['n'], 'Группа'),
-        emoji: _clip(wire['e'], '👥', 16),
+        name: _clip(wire!['n'], info.channel ? 'Канал' : 'Группа'),
+        emoji: _clip(wire['e'], info.channel ? '📢' : '👥', 16),
         colorIndex: wire['c'] is num ? (wire['c'] as num).toInt() : 0,
         // Позвал не друг — сначала спросим, хочешь ли в эту группу.
-        request: sc == null || sc.request,
+        request: !asked && (sc == null || sc.request),
       )..group = info;
       app.contacts.add(g);
       await saveContact(g);
-      log('новая группа «${g.name}» от ${who(sender)}');
+      log('${info.channel ? 'новый канал' : 'новая группа'} «${g.name}» от ${who(sender)}');
     } else if (g.group == null) {
       return;
-    } else if (info != null && sender == g.group!.admin && info.ver > g.group!.ver) {
+    } else if (info != null &&
+        sender == g.group!.admin &&
+        info.ver > g.group!.ver &&
+        info.channel == g.group!.channel) {
       // Администратор изменил группу: состав, название, значок.
       final was = g.group!.left;
       g
         ..name = _clip(wire!['n'], g.name)
         ..emoji = _clip(wire['e'], g.emoji, 16)
         ..colorIndex = wire['c'] is num ? (wire['c'] as num).toInt() : g.colorIndex
-        ..group = (info..left = !info.has(me));
+        // В канале подписчиков в сведениях нет: «отписан ли я» — по событиям.
+        ..group = (info..left = info.channel ? was : !info.has(me));
       if (was != info.left) {
         log('группа «${g.name}»: ${info.left ? 'меня удалили' : 'я снова в ней'}');
       }
       await saveContact(g);
     }
     final group = g.group!;
+    // Просьба вступить в мой канал по ссылке.
+    if (p.type == Payload.join) return _joinRequest(g, sender, p);
     final member = group.member(sender);
     if (member == null) return; // не участник (или уже вышел)
+    // В канале пишет только автор. От подписчиков принимаем лишь служебное:
+    // отчёты, голоса, «не могу скачать» и «я отписался».
+    if (group.channel && sender != group.admin) {
+      final ok = switch (p.type) {
+        Payload.receipt || Payload.vote || Payload.need => true,
+        Payload.msg => p.str('ev') == 'leave',
+        _ => false,
+      };
+      if (!ok) return;
+    }
     // Свежая визитка отправителя — имя в группе обновится.
     final card = VeilCard.fromJson(p.data['p']);
     if (card != null &&
@@ -682,6 +720,37 @@ class Live {
     }
     if (group.left && p.type != Payload.msg) return;
     await _apply(gid, sender, g, p, sentAt);
+  }
+
+  /// Просьба вступить в мой канал по пригласительной ссылке. Код верный —
+  /// добавляю в подписчики и присылаю ему канал (он появится у него сразу).
+  Future<void> _joinRequest(Contact g, String sender, Payload p) async {
+    final info = g.group!;
+    if (!info.channel || info.admin != keys?.pub || info.left) return;
+    final code = info.code;
+    if (code == null || p.str('i') != code) {
+      log('просьба вступить в «${g.name}» по старой ссылке — отклонена');
+      return;
+    }
+    if (!info.has(sender)) {
+      if (info.subscribers >= GroupInfo.maxSubscribers) {
+        log('канал «${g.name}» полон — ${short(sender)} не добавлен');
+        return;
+      }
+      final card = VeilCard.fromJson(p.data['p']);
+      info.members.add(
+        GroupMember(
+          pub: sender,
+          name: card?.name ?? 'Подписчик',
+          emoji: card?.emoji ?? '🙂',
+          color: card?.color ?? 0,
+        ),
+      );
+      info.ver = DateTime.now().millisecondsSinceEpoch;
+      await saveContact(g);
+      log('новый подписчик «${g.name}»: ${card?.name ?? short(sender)}');
+    }
+    await app.welcomeToChannel(g, [sender]);
   }
 
   /// Участник вышел из группы (по своему сообщению).
@@ -746,6 +815,27 @@ class Live {
         if (group && c.group!.left && kind != MsgKind.event) return;
         final ev = kind == MsgKind.event ? _clip(p.data['ev'], 'info', 12) : null;
         if (group && ev == 'leave') await _memberLeft(c, sender);
+        if (c.isChannel) {
+          final info = c.group!;
+          // Подписчик отписался — автору в ленту канала это не пишем.
+          if (ev == 'leave' && sender != info.admin) {
+            _reply(
+              sender,
+              chat,
+              Payload(Payload.receipt, {
+                'ids': [id],
+                's': 'd',
+              }),
+            );
+            return;
+          }
+          // Автор подписал / отписал меня, закрыл канал.
+          if (sender == info.admin && (ev == 'add' || ev == 'remove' || ev == 'close')) {
+            final was = info.left;
+            info.left = ev != 'add';
+            if (was != info.left) await saveContact(c);
+          }
+        }
         final replyId = p.str('reply');
         Message? reply;
         if (replyId != null) {
@@ -1066,6 +1156,7 @@ class Live {
     Message m, {
     bool silent = false,
     List<String> extra = const [],
+    List<String>? only,
   }) async {
     await saveMessage(chat, m);
     if (silent) _silent.add(m.id);
@@ -1075,7 +1166,7 @@ class Live {
       unawaited(media.send(chat, m));
       return;
     }
-    await queueMessage(chat, m, extra: extra);
+    await queueMessage(chat, m, extra: extra, only: only);
   }
 
   /// Сообщения, отправленные «без звука» (до ухода из очереди).
@@ -1084,9 +1175,17 @@ class Live {
   /// Сообщение лежит в очереди, пока друг не пришлёт «доставлено» (до 3 дней).
   /// В группе — отдельная запись для каждого участника (`id@ключ`).
   /// [extra] — ещё кому (например, удалённому из группы — чтобы он узнал).
-  Future<void> queueMessage(String chat, Message m, {List<String> extra = const []}) async {
+  /// [only] — только им (например, новым подписчикам канала).
+  Future<void> queueMessage(
+    String chat,
+    Message m, {
+    List<String> extra = const [],
+    List<String>? only,
+    bool detached = false,
+  }) async {
     // Успели удалить (например, запланированное) — не отправляем.
-    if (!app.messagesOf(chat).any((x) => x.id == m.id)) return;
+    // [detached] — служебное, которого и не должно быть в ленте.
+    if (!detached && !app.messagesOf(chat).any((x) => x.id == m.id)) return;
     // «Заметки» никуда не уходят.
     if (Contact.isLocalId(chat)) {
       m.status = MsgStatus.read;
@@ -1103,11 +1202,11 @@ class Live {
     // Отложенная отправка: в очереди, но не раньше назначенного времени.
     final next = m.sendAt == null ? 0 : m.sendAt!.millisecondsSinceEpoch ~/ 1000;
     if (Contact.isGroupId(chat)) {
-      final to = {...targets(chat), ...extra};
+      final to = only?.toSet() ?? {...targets(chat), ...extra};
       for (final pub in to) {
         await store.queue('${m.id}@$pub', pub, payload, next: next);
       }
-      if (to.isEmpty && m.status == MsgStatus.sending) {
+      if (to.isEmpty && m.status == MsgStatus.sending && !detached) {
         // В группе больше никого — отправлять некому.
         m.status = MsgStatus.sent;
         await saveMessage(chat, m);
@@ -1321,8 +1420,8 @@ class Live {
     final now = DateTime.now();
     if (now.difference(_lastTyping).inSeconds < 4) return;
     _lastTyping = now;
-    // В большой группе «печатает» не рассылаем — лишняя работа для батареи.
-    if (targets(chat).length > 8) return;
+    // В большой группе и в канале «печатает» не рассылаем — лишняя работа.
+    if (targets(chat).length > 8 || (app.contact(chat)?.isChannel ?? false)) return;
     _toChat(chat, Payload(Payload.typing), ephemeral: true);
   }
 

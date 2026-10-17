@@ -57,7 +57,10 @@ class TodoContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.app;
     final todo = m.todo!;
-    final group = app.contact(chatId)?.isGroup ?? false;
+    final chat = app.contact(chatId);
+    final group = chat?.isGroup ?? false;
+    // Подписчик канала список только видит.
+    final readOnly = chat != null && app.readOnly(chat);
     return SizedBox(
       width: 260,
       child: Column(
@@ -77,10 +80,12 @@ class TodoContent extends StatelessWidget {
           for (final it in todo.items)
             InkWell(
               borderRadius: BorderRadius.circular(10),
-              onTap: () {
-                app.tick(HapticKind.selection);
-                app.todoToggle(chatId, m, it.id);
-              },
+              onTap: readOnly
+                  ? null
+                  : () {
+                      app.tick(HapticKind.selection);
+                      app.todoToggle(chatId, m, it.id);
+                    },
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 child: Row(
@@ -128,7 +133,7 @@ class TodoContent extends StatelessWidget {
             ),
           Row(
             children: [
-              if (todo.items.length < Todo.maxItems)
+              if (todo.items.length < Todo.maxItems && !readOnly)
                 TextButton.icon(
                   style: TextButton.styleFrom(
                     foregroundColor: fg,

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/models.dart';
 import '../state/app_state.dart';
@@ -9,6 +12,7 @@ import '../widgets/visual.dart';
 import 'chat_screen.dart';
 
 const _groupEmojis = ['👥', '🏕️', '🎉', '💼', '🎮', '📚', '⚽', '🎵', '🍕', '✈️', '🏠', '❤️'];
+const _channelEmojis = ['📢', '📰', '💡', '🎨', '🎬', '🎵', '📷', '🧠', '💻', '🌍', '⚡', '❤️'];
 
 /// Выбрать друзей (несколько). null — передумали.
 Future<List<String>?> pickFriends(
@@ -137,9 +141,13 @@ class _FriendPickerState extends State<_FriendPicker> {
 // ───────────────────────────── Новая группа ─────────────────────────────
 
 class CreateGroupScreen extends StatefulWidget {
-  const CreateGroupScreen({super.key});
+  const CreateGroupScreen({super.key, this.channel = false});
 
-  static Route<void> route() => MaterialPageRoute(builder: (_) => const CreateGroupScreen());
+  /// Канал: пишу только я, подписчиков можно добавить и позже.
+  final bool channel;
+
+  static Route<void> route({bool channel = false}) =>
+      MaterialPageRoute(builder: (_) => CreateGroupScreen(channel: channel));
 
   @override
   State<CreateGroupScreen> createState() => _CreateGroupScreenState();
@@ -147,7 +155,7 @@ class CreateGroupScreen extends StatefulWidget {
 
 class _CreateGroupScreenState extends State<CreateGroupScreen> {
   final _name = TextEditingController();
-  String _emoji = _groupEmojis.first;
+  late String _emoji = (widget.channel ? _channelEmojis : _groupEmojis).first;
   int _color = 1;
   final _members = <String>{};
   bool _busy = false;
@@ -160,16 +168,24 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
 
   Future<void> _create() async {
     final name = _name.text.trim();
-    if (name.isEmpty || _members.isEmpty || _busy) return;
+    if (name.isEmpty || (_members.isEmpty && !widget.channel) || _busy) return;
     setState(() => _busy = true);
     final app = context.appRead;
     app.tick(HapticKind.medium);
-    final g = await app.createGroup(
-      name: name.length > 40 ? name.substring(0, 40) : name,
-      emoji: _emoji,
-      colorIndex: _color,
-      pubs: _members.toList(),
-    );
+    final title = name.length > 40 ? name.substring(0, 40) : name;
+    final g = widget.channel
+        ? await app.createChannel(
+            name: title,
+            emoji: _emoji,
+            colorIndex: _color,
+            pubs: _members.toList(),
+          )
+        : await app.createGroup(
+            name: title,
+            emoji: _emoji,
+            colorIndex: _color,
+            pubs: _members.toList(),
+          );
     if (!mounted) return;
     Navigator.of(context).pushReplacement(ChatScreen.route(g));
   }
@@ -183,7 +199,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       for (final c in app.friends)
         if (!c.blocked && !c.request) c,
     ]..sort((a, b) => a.name.compareTo(b.name));
-    final ready = _name.text.trim().isNotEmpty && _members.isNotEmpty;
+    final channel = widget.channel;
+    final ready = _name.text.trim().isNotEmpty && (_members.isNotEmpty || channel);
+    final max = channel ? GroupInfo.maxSubscribers : GroupInfo.maxMembers - 1;
+    final emojis = channel ? _channelEmojis : _groupEmojis;
 
     return Scaffold(
       backgroundColor: vc.bg,
@@ -191,7 +210,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
         backgroundColor: vc.bg,
         foregroundColor: vc.text,
         elevation: 0,
-        title: const Text('Новая группа'),
+        title: Text(channel ? 'Новый канал' : 'Новая группа'),
       ),
       body: SafeArea(
         top: false,
@@ -212,7 +231,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     textCapitalization: TextCapitalization.sentences,
                     style: TextStyle(color: vc.text, fontSize: 18, fontWeight: FontWeight.w600),
                     decoration: InputDecoration(
-                      hintText: 'Название группы',
+                      hintText: channel ? 'Название канала' : 'Название группы',
                       hintStyle: TextStyle(color: vc.textFaint),
                       filled: true,
                       fillColor: vc.surface,
@@ -229,7 +248,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     runSpacing: 8,
                     alignment: WrapAlignment.center,
                     children: [
-                      for (final e in _groupEmojis)
+                      for (final e in emojis)
                         Pressable(
                           onTap: () => setState(() => _emoji = e),
                           child: Container(
@@ -267,8 +286,23 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     ],
                   ),
                   const SizedBox(height: 22),
+                  if (channel) ...[
+                    Glass(
+                      radius: 18,
+                      padding: const EdgeInsets.all(14),
+                      child: Text(
+                        'Публикуешь только ты. Подписчики не видят друг друга и не могут '
+                        'писать в канал. Позвать можно друзей сейчас, а остальных — '
+                        'по пригласительной ссылке из описания канала.',
+                        style: TextStyle(color: vc.textDim, fontSize: 13, height: 1.4),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   Text(
-                    'Участники · ${_members.length}',
+                    channel
+                        ? 'Подписать друзей · ${_members.length}'
+                        : 'Участники · ${_members.length}',
                     style: TextStyle(color: vc.textDim, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
@@ -276,7 +310,9 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 20),
                       child: Text(
-                        'Сначала добавь друзей по QR-коду — потом их можно позвать в группу.',
+                        channel
+                            ? 'Друзей пока нет — пригласи подписчиков ссылкой после создания.'
+                            : 'Сначала добавь друзей по QR-коду — потом их можно позвать в группу.',
                         style: TextStyle(color: vc.textDim),
                       ),
                     ),
@@ -285,7 +321,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                       contentPadding: EdgeInsets.zero,
                       value: _members.contains(c.id),
                       onChanged: (v) => setState(() {
-                        if (v == true && _members.length < GroupInfo.maxMembers - 1) {
+                        if (v == true && _members.length < max) {
                           _members.add(c.id);
                         } else {
                           _members.remove(c.id);
@@ -305,8 +341,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
               child: AccentButton(
-                label: 'Создать группу',
-                icon: Icons.group_add_rounded,
+                label: channel ? 'Создать канал' : 'Создать группу',
+                icon: channel ? Icons.campaign_rounded : Icons.group_add_rounded,
                 onTap: ready && !_busy ? _create : null,
               ),
             ),
@@ -338,7 +374,7 @@ class GroupInfoScreen extends StatelessWidget {
         builder: (ctx, set) => AlertDialog(
           backgroundColor: vc.elevated,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          title: Text('Группа', style: TextStyle(color: vc.text)),
+          title: Text(group.isChannel ? 'Канал' : 'Группа', style: TextStyle(color: vc.text)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -352,7 +388,7 @@ class GroupInfoScreen extends StatelessWidget {
               Wrap(
                 spacing: 4,
                 children: [
-                  for (final e in _groupEmojis)
+                  for (final e in group.isChannel ? _channelEmojis : _groupEmojis)
                     InkWell(
                       borderRadius: BorderRadius.circular(10),
                       onTap: () => set(() => emoji = e),
@@ -390,9 +426,9 @@ class GroupInfoScreen extends StatelessWidget {
     final picked = await pickFriends(
       context,
       exclude: {for (final m in info.members) m.pub},
-      title: 'Добавить в группу',
-      action: 'Добавить',
-      max: GroupInfo.maxMembers - info.members.length,
+      title: info.channel ? 'Подписать друзей' : 'Добавить в группу',
+      action: info.channel ? 'Подписать' : 'Добавить',
+      max: info.limit - info.members.length,
     );
     if (picked != null && picked.isNotEmpty) await app.addMembers(group.id, picked);
   }
@@ -435,6 +471,10 @@ class GroupInfoScreen extends StatelessWidget {
         return app.memberName(g.id, a.pub).compareTo(app.memberName(g.id, b.pub));
       });
     final muted = app.muted.contains(g.id);
+    final channel = info.channel;
+    // В канале подписчиков видит только автор.
+    final showMembers = !channel || admin;
+    final listed = channel ? members.where((m) => m.pub != info.admin).toList() : members;
 
     return Scaffold(
       backgroundColor: vc.bg,
@@ -468,7 +508,15 @@ class GroupInfoScreen extends StatelessWidget {
           const SizedBox(height: 4),
           Center(
             child: Text(
-              info.left ? 'ты больше не участник' : membersLabel(info.members.length),
+              channel
+                  ? (info.left
+                        ? 'ты не подписан(а)'
+                        : admin
+                        ? 'канал · ${subscribersLabel(info.subscribers)}'
+                        : 'канал · автор: ${app.memberName(g.id, info.admin)}')
+                  : info.left
+                  ? 'ты больше не участник'
+                  : membersLabel(info.members.length),
               style: TextStyle(color: vc.textDim),
             ),
           ),
@@ -482,32 +530,45 @@ class GroupInfoScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Сообщение уходит каждому участнику отдельным зашифрованным конвертом. '
-                    'Сервера с перепиской нет.',
+                    channel
+                        ? 'Каждый пост уходит каждому подписчику отдельным зашифрованным '
+                              'конвертом. Сервера нет, подписчики не видят друг друга.'
+                        : 'Сообщение уходит каждому участнику отдельным зашифрованным конвертом. '
+                              'Сервера с перепиской нет.',
                     style: TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.35),
                   ),
                 ),
               ],
             ),
           ),
+          if (channel && admin) ...[const SizedBox(height: 18), _ChannelInvite(channel: g)],
           const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Участники',
-                  style: TextStyle(color: vc.textDim, fontWeight: FontWeight.w700),
+          if (showMembers)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    channel ? 'Подписчики · ${info.subscribers}' : 'Участники',
+                    style: TextStyle(color: vc.textDim, fontWeight: FontWeight.w700),
+                  ),
                 ),
+                if (admin && info.members.length < info.limit)
+                  TextButton.icon(
+                    onPressed: () => _add(context),
+                    icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                    label: Text(channel ? 'Подписать' : 'Добавить'),
+                  ),
+              ],
+            ),
+          if (showMembers && channel && listed.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                'Пока никого. Подпиши друзей или отправь ссылку.',
+                style: TextStyle(color: vc.textDim),
               ),
-              if (admin && info.members.length < GroupInfo.maxMembers)
-                TextButton.icon(
-                  onPressed: () => _add(context),
-                  icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
-                  label: const Text('Добавить'),
-                ),
-            ],
-          ),
-          for (final m in members)
+            ),
+          for (final m in showMembers ? listed : const <GroupMember>[])
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Avatar(emoji: m.emoji, colors: m.colors, size: 42),
@@ -523,15 +584,17 @@ class GroupInfoScreen extends StatelessWidget {
                   : null,
               trailing: admin && m.pub != app.me
                   ? IconButton(
-                      tooltip: 'Удалить из группы',
+                      tooltip: channel ? 'Отписать' : 'Удалить из группы',
                       icon: Icon(Icons.remove_circle_outline_rounded, color: vc.textDim),
                       onPressed: () async {
                         final name = app.memberName(g.id, m.pub);
                         if (await _confirm(
                           context,
-                          'Удалить $name?',
-                          '$name больше не будет получать сообщения группы.',
-                          'Удалить',
+                          channel ? 'Отписать $name?' : 'Удалить $name?',
+                          channel
+                              ? '$name больше не будет получать посты канала.'
+                              : '$name больше не будет получать сообщения группы.',
+                          channel ? 'Отписать' : 'Удалить',
                         )) {
                           await app.removeMember(g.id, m.pub);
                         }
@@ -551,11 +614,14 @@ class GroupInfoScreen extends StatelessWidget {
           TextButton.icon(
             onPressed: () async {
               final nav = Navigator.of(context);
+              final what = channel ? 'канал' : 'группу';
               if (info.left) {
                 if (await _confirm(
                   context,
-                  'Удалить группу?',
-                  'Переписка группы будет стёрта с этого телефона.',
+                  'Удалить $what?',
+                  channel
+                      ? 'Посты канала будут стёрты с этого телефона.'
+                      : 'Переписка группы будет стёрта с этого телефона.',
                   'Удалить',
                 )) {
                   await app.deleteContact(g.id);
@@ -563,12 +629,25 @@ class GroupInfoScreen extends StatelessWidget {
                 }
                 return;
               }
-              if (await _confirm(
-                context,
-                'Выйти из группы?',
-                'Остальные увидят, что ты вышел(а). Переписка останется у тебя.',
-                'Выйти',
-              )) {
+              final (title, text, action) = channel
+                  ? admin
+                        ? (
+                            'Закрыть канал?',
+                            'Подписчики увидят, что канал закрыт, и новых постов не будет. '
+                                'Посты останутся у всех.',
+                            'Закрыть',
+                          )
+                        : (
+                            'Отписаться?',
+                            'Новые посты больше не придут. Уже полученные останутся.',
+                            'Отписаться',
+                          )
+                  : (
+                      'Выйти из группы?',
+                      'Остальные увидят, что ты вышел(а). Переписка останется у тебя.',
+                      'Выйти',
+                    );
+              if (await _confirm(context, title, text, action)) {
                 await app.leaveGroup(g.id);
               }
             },
@@ -577,9 +656,113 @@ class GroupInfoScreen extends StatelessWidget {
               color: VeilColors.danger,
             ),
             label: Text(
-              info.left ? 'Удалить группу' : 'Выйти из группы',
+              info.left
+                  ? 'Удалить ${channel ? 'канал' : 'группу'}'
+                  : channel
+                  ? (admin ? 'Закрыть канал' : 'Отписаться')
+                  : 'Выйти из группы',
               style: const TextStyle(color: VeilColors.danger),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// «3 подписчика», «5 подписчиков».
+String subscribersLabel(int n) {
+  final d = n % 10, h = n % 100;
+  final word = d == 1 && h != 11
+      ? 'подписчик'
+      : d >= 2 && d <= 4 && (h < 12 || h > 14)
+      ? 'подписчика'
+      : 'подписчиков';
+  return '$n $word';
+}
+
+/// Пригласительная ссылка канала: QR, «поделиться», «новая ссылка».
+class _ChannelInvite extends StatelessWidget {
+  const _ChannelInvite({required this.channel});
+  final Contact channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final vc = app.colors;
+    final link = app.channelLink(channel.id);
+    if (link == null) return const SizedBox.shrink();
+    return Glass(
+      radius: 22,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Text(
+            'Пригласительная ссылка',
+            style: TextStyle(color: vc.text, fontWeight: FontWeight.w700, fontSize: 16),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'По ней подпишется любой, у кого есть Veil: отсканирует QR в «Добавить друга» '
+            'или вставит ссылку. Ты при этом должен(на) хоть иногда быть в сети.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: vc.textDim, fontSize: 12.5, height: 1.35),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
+            child: QrImageView(
+              data: link,
+              size: 180,
+              padding: EdgeInsets.zero,
+              gapless: true,
+              errorCorrectionLevel: QrErrorCorrectLevel.M,
+              backgroundColor: Colors.white,
+              eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Color(0xFF0F0F18)),
+              dataModuleStyle: const QrDataModuleStyle(
+                dataModuleShape: QrDataModuleShape.square,
+                color: Color(0xFF0F0F18),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () async {
+                    final text = 'Подписывайся на канал «${channel.name}» в Veil: $link';
+                    try {
+                      await SharePlus.instance.share(ShareParams(text: text));
+                    } catch (_) {
+                      await Clipboard.setData(ClipboardData(text: text));
+                      if (context.mounted) {
+                        showVeilToast(context, 'Ссылка скопирована', icon: Icons.copy_rounded);
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.ios_share_rounded, size: 18),
+                  label: const Text('Поделиться'),
+                ),
+              ),
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () async {
+                    await app.resetChannelLink(channel.id);
+                    if (context.mounted) {
+                      showVeilToast(
+                        context,
+                        'Новая ссылка готова — старая больше не работает',
+                        icon: Icons.link_rounded,
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('Новая ссылка'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
