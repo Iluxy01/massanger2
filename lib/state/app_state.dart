@@ -1678,6 +1678,19 @@ class AppState extends ChangeNotifier {
   /// Повторить отправку файла после ошибки.
   void retrySend(String chatId, Message m) => live?.media.send(chatId, m);
 
+  /// Ответили из шторки, не открывая приложение.
+  void replyFromNotification(String chatId, String text) {
+    final c = contact(chatId);
+    final t = text.trim();
+    if (c == null || t.isEmpty || c.blocked || readOnly(c) || (c.group?.left ?? false)) return;
+    unread.remove(chatId);
+    live?.markRead(chatId, sendReceipt: readReceipts);
+    send(chatId, t);
+  }
+
+  /// Открыть чат (нажали на уведомление). Слушает главный экран.
+  final openRequest = ValueNotifier<String?>(null);
+
   /// Новое входящее сообщение (из сети). [silent] — отправитель попросил без звука.
   Future<void> onIncoming(Contact c, Message m, {bool silent = false}) async {
     final onScreen = foreground && openChat == c.id && !locked;
@@ -1824,6 +1837,7 @@ class AppState extends ChangeNotifier {
     _notifyTimer?.cancel();
     _draftTimer?.cancel();
     themeTick.dispose();
+    openRequest.dispose();
     for (final t in _timers) {
       t.cancel();
     }

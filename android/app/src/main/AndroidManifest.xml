@@ -77,6 +77,10 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity-alias>
+        <!-- «Ответить» прямо в шторке уведомления (flutter_local_notifications). -->
+        <receiver
+            android:exported="false"
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
         <service
             android:name=".VeilService"
             android:exported="false"

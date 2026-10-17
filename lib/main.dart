@@ -28,13 +28,18 @@ void main() {
 
 Future<void> _boot(AppState state) async {
   final live = await Live.boot(state);
-  live.notify = SystemNotify(() => state.notificationText, () => state.disguise);
+  live.notify = SystemNotify(() => state.notificationText, () => state.disguise, state.readOnly);
   state.applyScreenshotProtection();
   // Повторный запуск того же приложения (окно закрывали, а служба держала его
   // живым) сюда не попадает; при обычном запуске — включаем службу, если надо.
   await state.syncInstantService();
   try {
+    // Нажатие на уведомление — открыть чат; «Ответить» в шторке — отправить.
+    SystemNotify.onOpen = (chat) => state.openRequest.value = chat;
+    listenNotificationReplies(state);
     await SystemNotify.init();
+    final launched = await SystemNotify.launchChat();
+    if (launched != null) state.openRequest.value = launched;
     await scheduleBackgroundSync();
   } catch (e) {
     debugPrint('background sync: $e');

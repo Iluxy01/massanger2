@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
+import 'chat_screen.dart';
 import 'chats_tab.dart';
 import 'contacts_tab.dart';
 import 'settings_tab.dart';
@@ -17,6 +18,20 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0;
+  late final AppState _app = context.appRead;
+
+  @override
+  void initState() {
+    super.initState();
+    _app.openRequest.addListener(_openRequested);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openRequested());
+  }
+
+  @override
+  void dispose() {
+    _app.openRequest.removeListener(_openRequested);
+    super.dispose();
+  }
 
   static const _tabs = [ChatsTab(), ContactsTab(), SettingsTab()];
 
@@ -25,9 +40,28 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _tab = i);
   }
 
+  /// Нажали на уведомление — открыть тот чат (после разблокировки).
+  void _openRequested() {
+    if (!mounted) return;
+    final app = context.appRead;
+    final id = app.openRequest.value;
+    if (id == null || app.locked || app.covered) return;
+    app.openRequest.value = null;
+    final c = app.contact(id);
+    if (c == null || !app.visible(c) || app.openChat == id) return;
+    final nav = Navigator.of(context);
+    nav.popUntil((r) => r.isFirst);
+    nav.push(ChatScreen.route(c));
+  }
+
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final app = context.app;
+    // Ждали разблокировки, чтобы открыть чат из уведомления.
+    if (app.openRequest.value != null && !app.locked && !app.covered) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openRequested());
+    }
     return Scaffold(
       backgroundColor: vc.bg,
       resizeToAvoidBottomInset: false,

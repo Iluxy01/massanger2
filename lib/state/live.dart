@@ -901,7 +901,7 @@ class Live {
         final id = p.str('id');
         final raw = p.data['o'];
         if (id == null || raw is! List) return;
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           final poll = m.poll;
           if (m.id == id && poll != null) {
             poll.votes[sender] = Poll.cleanVote(raw, poll.options.length);
@@ -916,7 +916,7 @@ class Live {
         final id = p.str('id');
         final where = Contact.cleanRelays(p.data['r']);
         if (id == null || where.isEmpty) return;
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.id == id && m.mine && m.att != null) {
             log('  друг не может скачать ${m.att!.name} — делаю копию');
             unawaited(
@@ -932,7 +932,7 @@ class Live {
         final id = p.str('id');
         final where = Contact.cleanRelays(p.data['r']);
         if (id == null || where.isEmpty) return;
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.id == id && !m.mine && m.att != null && !background) {
             log('  друг положил копию ${m.att!.name} — качаю');
             unawaited(media.gotMirror(chat, m, where));
@@ -943,7 +943,7 @@ class Live {
         final st = p.str('s') == 'r' ? MsgStatus.read : MsgStatus.delivered;
         // Друг получил — больше не переотправляем (в группе — именно ему).
         await store.dequeueMessages(group ? ids.map((i) => '$i@$sender') : ids);
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.mine && ids.contains(m.id) && m.status.index < st.index) {
             m.status = st;
             m.sendAt = null;
@@ -952,7 +952,7 @@ class Live {
         }
       case Payload.react:
         final id = p.str('id');
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.id == id) {
             m.reaction = p.str('e');
             await saveMessage(chat, m);
@@ -965,7 +965,7 @@ class Live {
         // Править можно только своё: в группе — автор, в личном — собеседник.
         final id = p.str('id'), text = p.str('text');
         if (id == null || text == null) return;
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.id == id && !m.mine && (!group || m.from == sender)) {
             m
               ..text = text.length > 20000 ? text.substring(0, 20000) : text
@@ -991,7 +991,7 @@ class Live {
         // Общий список: отметить пункт или добавить новый — может любой в чате.
         final id = p.str('id'), op = p.str('op'), item = p.str('i');
         if (id == null || item == null || item.length > 16) return;
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           final todo = m.todo;
           if (m.id != id || todo == null) continue;
           if (op == 't') {
@@ -1013,7 +1013,7 @@ class Live {
       case Payload.opened:
         // Друг открыл наше одноразовое — отмечаем «просмотрено».
         final id = p.str('id');
-        for (final m in app.messagesOf(chat)) {
+        for (final m in [...app.messagesOf(chat)]) {
           if (m.id == id && m.mine && m.once && !m.opened) {
             m.opened = true;
             await saveMessage(chat, m);
@@ -1245,7 +1245,7 @@ class Live {
     if (background || _closed) return;
     final cutoff = DateTime.now().subtract(const Duration(days: 7));
     for (final c in app.contacts) {
-      for (final m in app.messagesOf(c.id)) {
+      for (final m in [...app.messagesOf(c.id)]) {
         final att = m.att;
         if (att == null || media.busy(m.id) || m.time.isBefore(cutoff)) continue;
         if (m.mine && !att.uploaded && m.status == MsgStatus.sending) {
@@ -1296,8 +1296,8 @@ class Live {
   Future<void> _requeueUnconfirmed() async {
     final queued = await store.outboxIds();
     final cutoff = DateTime.now().subtract(const Duration(days: 3));
-    for (final c in app.contacts) {
-      for (final m in app.messagesOf(c.id)) {
+    for (final c in [...app.contacts]) {
+      for (final m in [...app.messagesOf(c.id)]) {
         if (!m.mine ||
             m.status.index >= MsgStatus.delivered.index ||
             !m.time.isAfter(cutoff) ||
@@ -1378,7 +1378,7 @@ class Live {
   }
 
   Future<void> _sent(String chat, String msgId) async {
-    for (final m in app.messagesOf(chat)) {
+    for (final m in [...app.messagesOf(chat)]) {
       if (m.id != msgId) continue;
       // Отложенное ушло (отчёт о доставке мог прийти даже раньше этой отметки).
       final wasScheduled = m.sendAt != null;
@@ -1467,7 +1467,7 @@ class Live {
   Future<void> markRead(String chat, {required bool sendReceipt}) async {
     // Кому что прочитано: в группе у каждого сообщения свой автор.
     final ids = <String, List<String>>{};
-    for (final m in app.messagesOf(chat)) {
+    for (final m in [...app.messagesOf(chat)]) {
       if (!m.mine && m.status == MsgStatus.delivered) {
         m.status = MsgStatus.read;
         (ids[m.from ?? chat] ??= []).add(m.id);
