@@ -13,6 +13,7 @@ import '../state/app_state.dart';
 import '../state/mock_data.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
+import '../theme/sky.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
@@ -133,9 +134,23 @@ class _ChatScreenState extends State<ChatScreen> {
     _seen = _app.messagesOf(c.id).length;
     _app.openChat = c.id;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _app.markRead(c.id);
+      if (!mounted) return;
       final j = widget.jumpTo;
       if (j != null) _jumpTo(j);
+      // «Прочитано» — когда экран доехал: отметка перестраивает и список
+      // чатов под ним, и посреди анимации это давало рывок.
+      final anim = ModalRoute.of(context)?.animation;
+      if (anim == null || anim.isCompleted) {
+        _app.markRead(c.id);
+        return;
+      }
+      void done(AnimationStatus st) {
+        if (st != AnimationStatus.completed) return;
+        anim.removeStatusListener(done);
+        if (mounted) _app.markRead(c.id);
+      }
+
+      anim.addStatusListener(done);
     });
     _scroll.addListener(_onScroll);
     _focus.addListener(() {
@@ -1321,41 +1336,66 @@ class _PinnedBar extends StatelessWidget {
 class _ChatBackground extends StatelessWidget {
   const _ChatBackground();
 
+  static const _still = AlwaysStoppedAnimation<double>(0.18);
+
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
     final acc = context.accent;
     final skin = context.skin;
-    // У стилей — их фон, но неподвижный и приглушённый: поверх — переписка.
-    if (skin.id != 0) {
-      const still = AlwaysStoppedAnimation<double>(0.18);
-      return RepaintBoundary(
-        child: CustomPaint(
-          painter: skinPainter(skin, vc, acc, still, live: false, dim: 0.75),
-          foregroundPainter: skin.stillLayer
-              ? skinPainter(skin, vc, acc, still, live: true, dim: 0.75)
-              : null,
-          child: const SizedBox.expand(),
-        ),
-      );
-    }
+    final mq = MediaQuery.of(context);
+    // Готовая картинка размером с экран: прокрутка, анимации и выезжающая
+    // клавиатура её не перерисовывают. У стилей — их фон (тот же, что на
+    // главной), но неподвижный: поверх — переписка.
     return RepaintBoundary(
-      child: CustomPaint(painter: _PatternPainter(vc.bg, vc.text, acc.a, acc.b, vc.dark)),
+      child: CustomPaint(
+        painter: skin.id != 0
+            ? SkyPainter(
+                Sky(skin: skin, c: vc, acc: acc, dim: 0.8),
+                t: _still,
+                screen: mq.size,
+                dpr: mq.devicePixelRatio,
+              )
+            : _PatternPainter(vc.bg, vc.text, acc.a, acc.b, vc.dark, mq.size, mq.devicePixelRatio),
+        child: const SizedBox.expand(),
+      ),
     );
   }
 }
 
 class _PatternPainter extends CustomPainter {
-  _PatternPainter(this.bg, this.ink, this.a, this.b, this.dark);
+  _PatternPainter(this.bg, this.ink, this.a, this.b, this.dark, this.screen, this.dpr);
 
   final Color bg;
   final Color ink;
   final Color a;
   final Color b;
   final bool dark;
+  final Size screen;
+  final double dpr;
 
   @override
-  void paint(Canvas canvas, Size s) {
+  void paint(Canvas canvas, Size size) {
+    final img = SkyCache.get(
+      'pattern|${bg.toARGB32()}|${ink.toARGB32()}|${a.toARGB32()}|${b.toARGB32()}',
+      screen,
+      dpr,
+      _draw,
+    );
+    canvas.drawRect(Offset.zero & size, Paint()..color = bg);
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+      Rect.fromLTWH(0, 0, img.width / dpr, img.height / dpr),
+      Paint()..filterQuality = FilterQuality.low,
+    );
+    canvas.restore();
+  }
+
+  void _draw(Canvas canvas) {
+    final s = screen;
     canvas.drawRect(Offset.zero & s, Paint()..color = bg);
     for (final (center, color) in [
       (Offset(s.width * 1.1, s.height * 0.15), a),
@@ -1387,7 +1427,12 @@ class _PatternPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PatternPainter old) =>
-      old.bg != bg || old.a != a || old.b != b || old.ink != ink;
+      old.bg != bg ||
+      old.a != a ||
+      old.b != b ||
+      old.ink != ink ||
+      old.screen != screen ||
+      old.dpr != dpr;
 }
 
 // ───────────────────────────── Служебные элементы ленты ─────────────────────────────
@@ -2080,7 +2125,23 @@ class BubbleBody extends StatelessWidget {
         content = textBlock(m.text);
     }
 
-    return Container(
+    // Лёгкая тень только у своих пузырей (тени дороги при прокрутке).
+    // Космос — свечение вокруг, Лимонад — мягкая тень и у чужих.
+    final shadow = mine && !skin.outlineMine
+        ? [
+            skin.glow
+                ? BoxShadow(color: acc.mid.withValues(alpha: 0.35), blurRadius: 16)
+                : BoxShadow(
+                    color: acc.mid.withValues(alpha: skin.shadow ? 0.25 : 0.18),
+                    blurRadius: skin.shadow ? 10 : 8,
+                    offset: Offset(0, skin.shadow ? 4 : 3),
+                  ),
+          ]
+        : !mine && skin.shadow
+        ? _softShadow
+        : null;
+
+    final Widget bubble = Container(
       padding: edge ? const EdgeInsets.all(3) : const EdgeInsets.fromLTRB(14, 9, 12, 8),
       decoration: BoxDecoration(
         // «Терминал»: свои — контуром на тёмной подложке, а не заливкой.
@@ -2100,21 +2161,6 @@ class BubbleBody extends StatelessWidget {
         border: mine
             ? (skin.outlineMine ? Border.all(color: acc.a.withValues(alpha: 0.6)) : null)
             : (skin.border > 0 ? Border.all(color: vc.border) : null),
-        // Лёгкая тень только у своих пузырей (тени дороги при прокрутке).
-        // Космос — свечение вокруг, Лимонад — мягкая тень и у чужих.
-        boxShadow: mine && !skin.outlineMine
-            ? [
-                skin.glow
-                    ? BoxShadow(color: acc.mid.withValues(alpha: 0.35), blurRadius: 16)
-                    : BoxShadow(
-                        color: acc.mid.withValues(alpha: skin.shadow ? 0.25 : 0.18),
-                        blurRadius: skin.shadow ? 10 : 8,
-                        offset: Offset(0, skin.shadow ? 4 : 3),
-                      ),
-              ]
-            : !mine && skin.shadow
-            ? _softShadow
-            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2166,6 +2212,13 @@ class BubbleBody extends StatelessWidget {
           content,
         ],
       ),
+    );
+    if (shadow == null) return bubble;
+    // Тень — отдельно, с одинаковыми углами: такую тень видеочип рисует
+    // готовой формулой, без размытия (у пузыря с «хвостиком» углы разные).
+    return DecoratedBox(
+      decoration: BoxDecoration(borderRadius: BorderRadius.all(r), boxShadow: shadow),
+      child: bubble,
     );
   }
 }

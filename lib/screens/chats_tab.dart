@@ -67,7 +67,6 @@ class _ChatsTabState extends State<ChatsTab> {
 
     return Stack(
       children: [
-        const Positioned.fill(child: AuroraBackground(intensity: 0.55)),
         CustomScrollView(
           controller: _scroll,
           physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),

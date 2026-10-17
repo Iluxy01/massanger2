@@ -431,10 +431,24 @@ class _NoteBubbleState extends State<NoteBubble> {
     final ready = state == Xfer.ready || state == Xfer.uploading;
     final path = att.path;
     if (ready && path != null && !app.demo && _path != path) {
-      // Файл появился (скачался) — открываем плеер после кадра.
+      // Файл появился (скачался) — открываем плеер после кадра, а если экран
+      // чата ещё выезжает — после того, как доедет: запуск видео посреди
+      // анимации даёт рывок.
       _path = path;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _open(path);
+        if (!mounted) return;
+        final anim = ModalRoute.of(context)?.animation;
+        if (anim == null || anim.isCompleted) {
+          _open(path);
+          return;
+        }
+        void go(AnimationStatus s) {
+          if (s != AnimationStatus.completed) return;
+          anim.removeStatusListener(go);
+          if (mounted && _path == path) _open(path);
+        }
+
+        anim.addStatusListener(go);
       });
     }
     final c = _c;

@@ -275,6 +275,17 @@ class _Placeholder extends StatelessWidget {
   final String? thumb;
   final bool video;
 
+  /// Раскодированные превью: одни и те же байты — картинка берётся из кэша, а
+  /// не раскодируется заново при каждой перерисовке чата.
+  static final _bytes = <String, Uint8List>{};
+
+  static Uint8List _decode(String t) {
+    final hit = _bytes.remove(t);
+    if (hit != null) return _bytes[t] = hit;
+    if (_bytes.length > 64) _bytes.remove(_bytes.keys.first);
+    return _bytes[t] = base64.decode(t);
+  }
+
   @override
   Widget build(BuildContext context) {
     final acc = context.accent;
@@ -283,7 +294,7 @@ class _Placeholder extends StatelessWidget {
       try {
         return ImageFiltered(
           imageFilter: ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.clamp),
-          child: Image.memory(base64.decode(t), fit: BoxFit.cover, gaplessPlayback: true),
+          child: Image.memory(_decode(t), fit: BoxFit.cover, gaplessPlayback: true),
         );
       } catch (_) {}
     }

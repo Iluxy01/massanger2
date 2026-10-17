@@ -145,7 +145,20 @@ class RelayPool {
     for (final r in _relays.values) {
       if (r.state == RelayState.offline) _connect(r);
     }
-    _health = Timer.periodic(const Duration(seconds: 5), (_) => _checkHealth());
+    _health = Timer.periodic(_healthEvery, (_) => _checkHealth());
+  }
+
+  Duration _healthEvery = const Duration(seconds: 5);
+
+  /// Как часто будить проверку соединений. В свёрнутом приложении — реже:
+  /// каждое пробуждение процессора стоит батареи, а молчание там и так
+  /// проверяется раз в несколько минут.
+  set healthEvery(Duration d) {
+    if (d == _healthEvery) return;
+    _healthEvery = d;
+    if (_health == null || _closed) return;
+    _health!.cancel();
+    _health = Timer.periodic(d, (_) => _checkHealth());
   }
 
   /// После выхода из фона: переподключить отвалившиеся и сразу проверить

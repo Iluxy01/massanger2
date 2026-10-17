@@ -12,6 +12,7 @@ import 'screens/onboarding_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/avatar.dart';
 import 'widgets/effects.dart';
+import 'widgets/slow_clock.dart';
 import 'widgets/visual.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
@@ -41,6 +42,8 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
   /// Свернул приложение — оно блокируется (если задан PIN).
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
+    // Декоративные анимации (фон, точки) стоят, пока приложение не на экране.
+    Activity.setResumed(s == AppLifecycleState.resumed);
     if (s == AppLifecycleState.paused) {
       widget.state.lock();
       widget.state.setForeground(false);
@@ -80,15 +83,22 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
               // Анимации выключены — аватарки между экранами тоже не «летают».
               child: HeroMode(
                 enabled: s.effMotion > 0,
-                child: Stack(
-                  children: [
-                    child!,
-                    const _InAppBanner(),
-                    // Экран блокировки — поверх всего, включая открытые чаты.
-                    const _LockLayer(),
-                    // Маскировка («Калькулятор» / «Заметки») — ещё выше.
-                    const _CoverLayer(),
-                  ],
+                // Любое касание «будит» живой фон; без касаний он замирает.
+                child: Listener(
+                  behavior: HitTestBehavior.translucent,
+                  onPointerDown: (_) => Activity.poke(),
+                  onPointerMove: (_) => Activity.poke(),
+                  onPointerSignal: (_) => Activity.poke(),
+                  child: Stack(
+                    children: [
+                      child!,
+                      const _InAppBanner(),
+                      // Экран блокировки — поверх всего, включая открытые чаты.
+                      const _LockLayer(),
+                      // Маскировка («Калькулятор» / «Заметки») — ещё выше.
+                      const _CoverLayer(),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -183,11 +193,14 @@ class _SkinTransitions extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
+    // Прозрачность — самая дорогая часть перехода (весь экран рисуется в
+    // отдельный слой), поэтому экран проявляется за первую половину пути, а
+    // дальше движется уже непрозрачным.
     switch (skin) {
       case 1:
         final a = CurvedAnimation(parent: animation, curve: Curves.easeOutQuart);
         return FadeTransition(
-          opacity: a,
+          opacity: CurvedAnimation(parent: animation, curve: const Interval(0, 0.45)),
           child: SlideTransition(
             position: Tween(begin: const Offset(0.06, 0), end: Offset.zero).animate(a),
             child: child,
@@ -203,7 +216,10 @@ class _SkinTransitions extends PageTransitionsBuilder {
         return ScaleTransition(
           scale: Tween(begin: 1.0, end: 1.05).animate(out),
           child: FadeTransition(
-            opacity: a,
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0, 0.55, curve: Curves.easeOut),
+            ),
             child: ScaleTransition(scale: Tween(begin: 0.9, end: 1.0).animate(a), child: child),
           ),
         );
@@ -214,7 +230,7 @@ class _SkinTransitions extends PageTransitionsBuilder {
           reverseCurve: Curves.easeInCubic,
         );
         return FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: const Interval(0, 0.6)),
+          opacity: CurvedAnimation(parent: animation, curve: const Interval(0, 0.45)),
           child: SlideTransition(
             position: Tween(begin: const Offset(0, 0.08), end: Offset.zero).animate(a),
             child: child,

@@ -66,6 +66,7 @@ class Live {
   Timer? _resend;
   Timer? _resub;
   final Map<String, RelayState> _relayStates = {};
+  String _relaySig = '';
 
   /// Журнал для диагностики (Профиль → Сеть → Журнал). Только в памяти.
   final List<String> journal = [];
@@ -179,7 +180,8 @@ class Live {
     // проверка не запускается и не пишет в базу одновременно с приложением.
     if (network) {
       await store.set('alive', '${nowSec()}');
-      _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
+      // Раз в 40 с (порог фоновой проверки — 75 с): реже пишем в базу.
+      _heartbeat = Timer.periodic(const Duration(seconds: 40), (_) {
         store.set('alive', '${nowSec()}');
       });
       final bg = await store.get('bg_last');
@@ -361,6 +363,15 @@ class Live {
     p.onSynced = _synced;
     _events = p.events.listen((e) => _queue = _queue.then((_) => _safely(e)));
     _changes = p.changes.listen((_) {
+      // Перерисовываем экран, только если что-то видимое поменялось (состояние
+      // или ошибка ретранслятора), а не на каждое служебное событие сети.
+      final sig = StringBuffer();
+      for (final url in p.urls) {
+        sig
+          ..write(p.stateOf(url).index)
+          ..write(p.errorOf(url) ?? '')
+          ..write('|');
+      }
       for (final url in p.urls) {
         final st = p.stateOf(url);
         if (_relayStates[url] != st && st != RelayState.connecting) {
@@ -377,7 +388,11 @@ class Live {
         if (_lastOnline == 0) resumeMedia();
       }
       _lastOnline = n;
-      app.notifyChanged();
+      final now = sig.toString();
+      if (now != _relaySig) {
+        _relaySig = now;
+        app.notifyChanged();
+      }
     });
     p.subscribe(_filters);
     p.start();
@@ -453,6 +468,7 @@ class Live {
 
   /// Как часто проверять молчащие соединения: в фоне и в «Ультра» — реже.
   void tuneProbe() {
+    pool?.healthEvery = Duration(seconds: _paused ? 15 : 5);
     pool?.idleProbe = switch ((_paused, app.ultra)) {
       (true, true) => const Duration(minutes: 8),
       (true, false) => const Duration(minutes: 4),

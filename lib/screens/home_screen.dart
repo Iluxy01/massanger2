@@ -33,6 +33,9 @@ class _HomeScreenState extends State<HomeScreen> {
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
+          // Один общий фон на все вкладки: при переключении он не меняется и не
+          // перерисовывается — плавно сменяется только содержимое.
+          const Positioned.fill(child: AuroraBackground(intensity: 0.5)),
           for (var i = 0; i < _tabs.length; i++)
             // Анимация исчезновения должна быть СНАРУЖИ TickerMode: иначе выключенный
             // тикер замораживает её, и старая вкладка остаётся видна поверх новой.
@@ -49,7 +52,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: TickerMode(
                     enabled: i == _tab,
                     // Аватары с Hero есть на нескольких вкладках — оставляем только активную.
-                    child: HeroMode(enabled: i == _tab, child: _tabs[i]),
+                    child: HeroMode(
+                      enabled: i == _tab,
+                      // Своя «плёнка» у вкладки: при её появлении и уходе
+                      // остальной экран не перерисовывается.
+                      child: RepaintBoundary(child: _tabs[i]),
+                    ),
                   ),
                 ),
               ),

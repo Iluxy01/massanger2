@@ -35,7 +35,6 @@ class ContactsTab extends StatelessWidget {
 
     return Stack(
       children: [
-        const Positioned.fill(child: AuroraBackground(intensity: 0.4)),
         ListView(
           padding: EdgeInsets.fromLTRB(20, top + 12, 20, 140),
           physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),

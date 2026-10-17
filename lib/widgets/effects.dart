@@ -1,20 +1,19 @@
 import 'dart:math';
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 
 import '../state/app_state.dart';
-import '../theme/skin.dart';
+import '../theme/sky.dart';
+import 'slow_clock.dart';
 import 'visual.dart';
 
-/// Северное сияние на фоне (у других стилей — их фон: сетка, космос, пятна).
+/// Фон экрана: северное сияние (у других стилей — их фон: сетка, космос, пятна).
 ///
-/// По умолчанию статичное: рисуется один раз и кэшируется (RepaintBoundary), так
-/// что прокрутка поверх него не перерисовывает фон. Живое движение ([animate])
-/// — только там, где экран виден недолго (приветствие). У стилей фон движется
-/// и на «Балансе», но реже (20 кадров в секунду) — чтобы не греть телефон.
+/// Неподвижное рисуется один раз в готовую картинку (см. [Sky]). Движение —
+/// по [SlowClock]: обычным таймером 20–30 кадров в секунду, только пока экран
+/// виден, и на «Балансе»/«Максимуме» — только пока экран трогают (потом фон
+/// замирает до следующего касания). На приветствии ([animate]) — всегда.
 class AuroraBackground extends StatefulWidget {
   const AuroraBackground({super.key, this.child, this.intensity = 1, this.animate = false});
 
@@ -26,102 +25,70 @@ class AuroraBackground extends StatefulWidget {
   State<AuroraBackground> createState() => _AuroraBackgroundState();
 }
 
-class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerProviderStateMixin {
-  Ticker? _ticker;
-  final _t = ValueNotifier<double>(0);
-  bool _live = false;
-
-  /// Пауза между кадрами (0 — каждый кадр).
-  Duration _gap = Duration.zero;
-  Duration _last = Duration.zero;
-  Duration _period = const Duration(seconds: 24);
-
-  static const _still = AlwaysStoppedAnimation<double>(0.18);
+class _AuroraBackgroundState extends State<AuroraBackground> {
+  final _clock = SlowClock(start: 0.18);
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _sync();
+    _configure();
+    _clock.attach(context);
   }
 
   @override
   void didUpdateWidget(AuroraBackground old) {
     super.didUpdateWidget(old);
-    _sync();
+    _configure();
+    _clock.sync();
   }
 
-  /// Движется ли сияние: на приветствии — всегда; на «Максимуме» — везде;
-  /// с выключенными анимациями — нигде.
-  void _sync() {
+  Sky _sky() {
+    final v = context.visual;
+    final vc = context.vc;
+    return Sky(
+      skin: v.skin,
+      c: vc,
+      acc: context.accent,
+      dim: 0.6 + 0.4 * widget.intensity,
+      // «Минимум» — чистый фон без сияния.
+      aurora: v.look == 0 ? 0 : widget.intensity * (vc.dark ? 1 : 0.6),
+    );
+  }
+
+  /// Движется ли фон: на приветствии — всегда; у стилей — и на «Балансе»;
+  /// у классики — только на «Максимуме»; с выключенными анимациями — нигде.
+  void _configure() {
     final v = context.visual;
     final full = widget.animate || v.look == 2;
     final skinned = v.skin.id != 0;
-    final live = v.motion > 0 && v.look > 0 && (full || skinned);
-    _gap = full ? Duration.zero : const Duration(milliseconds: 50);
-    _period = Duration(seconds: skinned ? 60 : 24);
-    if (live == _live) return;
-    _live = live;
-    final ticker = _ticker ??= createTicker(_tick);
-    if (live) {
-      _last = Duration.zero;
-      _t.value = 0;
-      ticker.start();
-    } else {
-      ticker.stop();
-    }
-  }
-
-  void _tick(Duration elapsed) {
-    if (_gap > Duration.zero && elapsed - _last < _gap) return;
-    _last = elapsed;
-    _t.value = (elapsed.inMicroseconds % _period.inMicroseconds) / _period.inMicroseconds;
+    _clock
+      ..wanted = v.motion > 0 && v.look > 0 && (full || skinned) && _sky().moves
+      ..fps = full ? 30 : 20
+      ..idle = widget.animate ? null : Duration(seconds: full ? 30 : 8)
+      ..period = Duration(seconds: skinned ? 60 : 24);
   }
 
   @override
   void dispose() {
-    _ticker?.dispose();
-    _t.dispose();
+    _clock.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final vc = context.vc;
-    final acc = context.accent;
-    final v = context.visual;
-    final look = v.look;
-    final ValueListenable<double> anim = _live ? _t : _still;
-    final Widget bg;
-    if (v.skin.id != 0) {
-      final dim = 0.6 + 0.4 * widget.intensity;
-      bg = Stack(
-        fit: StackFit.expand,
-        children: [
-          RepaintBoundary(
-            child: CustomPaint(
-              painter: skinPainter(v.skin, vc, acc, _still, live: false, dim: dim),
-            ),
-          ),
-          if (_live || v.skin.stillLayer)
-            RepaintBoundary(
-              child: CustomPaint(painter: skinPainter(v.skin, vc, acc, anim, live: true, dim: dim)),
-            ),
-        ],
-      );
-    } else {
-      bg = RepaintBoundary(
-        child: CustomPaint(
-          size: Size.infinite,
-          painter: _AuroraPainter(
-            anim,
-            bg: vc.bg,
-            colors: [acc.a, acc.b, Color.lerp(acc.a, const Color(0xFFFF4F8B), 0.5)!],
-            // «Минимум» — чистый фон без сияния.
-            intensity: look == 0 ? 0 : widget.intensity * (vc.dark ? 1 : 0.6),
-          ),
+    final mq = MediaQuery.of(context);
+    final bg = RepaintBoundary(
+      child: CustomPaint(
+        size: Size.infinite,
+        painter: SkyPainter(
+          _sky(),
+          t: _clock,
+          moving: _clock.running,
+          screen: mq.size,
+          dpr: mq.devicePixelRatio,
         ),
-      );
-    }
+      ),
+    );
     final child = widget.child;
     if (child == null) return bg;
     return Stack(
@@ -132,46 +99,6 @@ class _AuroraBackgroundState extends State<AuroraBackground> with SingleTickerPr
       ],
     );
   }
-}
-
-class _AuroraPainter extends CustomPainter {
-  _AuroraPainter(this.anim, {required this.bg, required this.colors, required this.intensity})
-    : super(repaint: anim);
-
-  final ValueListenable<double> anim;
-  final Color bg;
-  final List<Color> colors;
-  final double intensity;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = bg);
-    if (intensity <= 0) return;
-    final t = anim.value * 2 * pi;
-    const speeds = [1.0, 2.0, 1.0];
-    const phases = [0.0, 2.1, 4.2];
-    for (var i = 0; i < colors.length; i++) {
-      final cx = size.width * (0.5 + 0.38 * sin(t * speeds[i] + phases[i]));
-      final cy = size.height * (0.32 + 0.28 * cos(t * speeds[i] * 0.7 + phases[i]) + i * 0.12);
-      final r = size.width * (0.75 + 0.15 * sin(t + i));
-      final rect = Rect.fromCircle(center: Offset(cx, cy), radius: r);
-      final paint = Paint()
-        ..shader = RadialGradient(
-          colors: [
-            colors[i].withValues(alpha: 0.30 * intensity),
-            colors[i].withValues(alpha: 0),
-          ],
-        ).createShader(rect);
-      canvas.drawCircle(Offset(cx, cy), r, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_AuroraPainter old) =>
-      old.bg != bg ||
-      old.intensity != intensity ||
-      old.anim != anim ||
-      !listEquals(old.colors, colors);
 }
 
 /// Матовая панель.
@@ -329,14 +256,51 @@ class GradientIcon extends StatelessWidget {
   final IconData icon;
   final double size;
 
+  // Без ShaderMask: тот отрисовывал каждый значок в отдельный слой, а их на
+  // экране настроек десятки — это и тормозило переключение вкладок. Здесь
+  // глиф рисуется сразу градиентной «краской». Сам Icon остаётся в дереве
+  // (невидимым) — для размеров и поиска значков.
   @override
   Widget build(BuildContext context) {
-    return ShaderMask(
-      blendMode: BlendMode.srcIn,
-      shaderCallback: (r) => context.accent.gradient.createShader(r),
-      child: Icon(icon, size: size),
+    return CustomPaint(
+      foregroundPainter: _GlyphPainter(icon, size, context.accent.gradient),
+      child: Opacity(opacity: 0, child: Icon(icon, size: size)),
     );
   }
+}
+
+class _GlyphPainter extends CustomPainter {
+  _GlyphPainter(this.icon, this.size, this.gradient);
+
+  final IconData icon;
+  final double size;
+  final Gradient gradient;
+
+  @override
+  void paint(Canvas canvas, Size box) {
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          inherit: false,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          fontFamilyFallback: icon.fontFamilyFallback,
+          fontSize: size,
+          height: 1,
+          leadingDistribution: TextLeadingDistribution.even,
+          foreground: Paint()..shader = gradient.createShader(Offset.zero & box),
+        ),
+      ),
+    )..layout();
+    tp.paint(canvas, Offset((box.width - tp.width) / 2, (box.height - tp.height) / 2));
+    tp.dispose();
+  }
+
+  @override
+  bool shouldRepaint(_GlyphPainter old) =>
+      old.icon != icon || old.size != size || old.gradient != gradient;
 }
 
 /// Главная кнопка с градиентом и мягким свечением.
@@ -476,9 +440,18 @@ class TypingDots extends StatefulWidget {
   State<TypingDots> createState() => _TypingDotsState();
 }
 
-class _TypingDotsState extends State<TypingDots> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))
-    ..repeat();
+class _TypingDotsState extends State<TypingDots> {
+  // 30 кадров в секунду таймером, а не на каждом кадре экрана (120 Гц).
+  final _c = SlowClock()
+    ..wanted = true
+    ..fps = 30
+    ..period = const Duration(milliseconds: 1100);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _c.attach(context);
+  }
 
   @override
   void dispose() {

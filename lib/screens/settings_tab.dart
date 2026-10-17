@@ -6,6 +6,7 @@ import '../core/relay_pool.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
+import '../theme/sky.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
@@ -28,7 +29,6 @@ class SettingsTab extends StatelessWidget {
 
     return Stack(
       children: [
-        const Positioned.fill(child: AuroraBackground(intensity: 0.5)),
         ListView(
           padding: EdgeInsets.fromLTRB(20, top + 20, 20, 140),
           physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
@@ -853,11 +853,15 @@ class _SkinTile extends StatelessWidget {
                       ),
                     )
                   else
-                    CustomPaint(
-                      painter: skinPainter(skin, c, a, still, live: false),
-                      foregroundPainter: skin.stillLayer
-                          ? skinPainter(skin, c, a, still, live: true)
-                          : null,
+                    LayoutBuilder(
+                      builder: (context, box) => CustomPaint(
+                        painter: SkyPainter(
+                          Sky(skin: skin, c: c, acc: a),
+                          t: still,
+                          screen: box.biggest,
+                          dpr: MediaQuery.devicePixelRatioOf(context),
+                        ),
+                      ),
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(7, 6, 7, 8),
