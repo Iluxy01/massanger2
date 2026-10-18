@@ -12,9 +12,7 @@ import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
-import io.flutter.embedding.engine.dart.DartExecutor
 
 /**
  * «Мгновенные уведомления»: держит приложение запущенным, пока оно свёрнуто или
@@ -32,6 +30,7 @@ class VeilService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        VeilLink.installCrashLog(this)
         running = true
     }
 
@@ -96,16 +95,10 @@ class VeilService : Service() {
 
     /** Приложения нет в памяти — поднять его без окна. */
     private fun ensureApp() {
-        val cache = FlutterEngineCache.getInstance()
-        if (cache.get(MainActivity.ENGINE) != null) return
+        if (FlutterEngineCache.getInstance().get(MainActivity.ENGINE) != null) return
         try {
             VeilLink.hold(this, 20_000L)
-            val engine = FlutterEngine(applicationContext)
-            VeilLink.register(engine, applicationContext)
-            engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
-            // Окна нет: приложение «свёрнуто» — без кадров и анимаций, с уведомлениями.
-            engine.lifecycleChannel.appIsPaused()
-            cache.put(MainActivity.ENGINE, engine)
+            VeilLink.engine(this, run = true)
         } catch (_: Exception) {
         }
     }

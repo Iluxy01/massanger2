@@ -58,6 +58,15 @@ class Link {
     }
   }
 
+  /// Причина прошлого вылета Android-части (null — не падал). Читается один раз.
+  static Future<String?> lastCrash() async {
+    try {
+      return await _ch.invokeMethod<String>('lastCrash');
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Открыть настройки уведомлений Veil в Android.
   static Future<bool> notificationSettings() async {
     try {

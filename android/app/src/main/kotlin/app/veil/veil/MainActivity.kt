@@ -21,14 +21,14 @@ class MainActivity : FlutterFragmentActivity() {
     private fun instant(): Boolean =
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(INSTANT, false)
 
-    // С «мгновенными уведомлениями» приложение (Flutter) переживает закрытие окна:
-    // берём уже работающее из кэша и не уничтожаем его вместе с окном.
-    override fun provideFlutterEngine(context: Context): FlutterEngine? =
-        FlutterEngineCache.getInstance().get(ENGINE)
-
-    override fun shouldDestroyEngineWithHost(): Boolean = !instant()
+    // Приложение (Flutter) создаём сами и отдаём окну: уже работающее (его
+    // держит служба «на связи») или новое. Окно его не уничтожает — это решаем
+    // мы в onDestroy.
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        VeilLink.engine(this, run = false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        VeilLink.installCrashLog(this)
         super.onCreate(savedInstanceState)
         // Запрет скриншотов — сразу для нового окна, в том числе когда оно
         // подключается к уже работающему приложению (служба «на связи»).
@@ -38,14 +38,16 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
-        val destroy = shouldDestroyEngineWithHost()
         super.onDestroy()
-        if (destroy) FlutterEngineCache.getInstance().remove(ENGINE)
+        // Без «мгновенных уведомлений» приложение живёт, пока открыто окно (как
+        // обычно); с ними — остаётся работать в фоне.
+        if (!instant() && !isChangingConfigurations) {
+            FlutterEngineCache.getInstance().get(ENGINE)?.destroy()
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        if (instant()) FlutterEngineCache.getInstance().put(ENGINE, flutterEngine)
         // Служба «на связи», заряд, сеть — то, что работает и без окна.
         VeilLink.register(flutterEngine, this)
         // Запрет скриншотов и превью в списке недавних приложений.

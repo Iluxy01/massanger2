@@ -31,6 +31,18 @@ void main() {
 Future<void> _boot(AppState state) async {
   final live = await Live.boot(state);
   live.notify = SystemNotify(() => state.notificationText, () => state.disguise, state.readOnly);
+  // Ошибки — в журнал (Профиль → Сеть → Журнал), чтобы было что прислать.
+  final shown = FlutterError.onError;
+  FlutterError.onError = (d) {
+    live.log('ОШИБКА: ${d.exceptionAsString()}');
+    shown?.call(d);
+  };
+  PlatformDispatcher.instance.onError = (e, st) {
+    live.log('ОШИБКА: $e\n${st.toString().split('\n').take(6).join('\n')}');
+    return true;
+  };
+  final crash = await Link.lastCrash();
+  if (crash != null) live.log('ПРОШЛЫЙ ВЫЛЕТ: $crash');
   // Запущены службой «на связи» без окна (после перезагрузки, обновления или
   // выгрузки системой): ведём себя как свёрнутое приложение — без анимаций,
   // с уведомлениями. Окно откроют — придёт «resumed», и всё оживёт.

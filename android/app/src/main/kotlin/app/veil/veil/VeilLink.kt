@@ -14,7 +14,14 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
+import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Связь Android-части с приложением (Flutter) — то, что нужно и без окна:
@@ -29,6 +36,67 @@ object VeilLink {
         ctx.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
 
     fun instant(ctx: Context): Boolean = prefs(ctx).getBoolean(MainActivity.INSTANT, false)
+
+    /**
+     * Приложение (Flutter) — одно на процесс, и создаём его всегда мы сами, а
+     * не окно: окно со входом по отпечатку уничтожало его вместе с собой, даже
+     * когда служба «на связи» должна была держать его живым (и потом, открываясь,
+     * цеплялось к уже уничтоженному — вылет). Уничтоженное сразу убирается из кэша.
+     *
+     * [run] — запустить сразу (служба, без окна); окно запускает его само.
+     */
+    @Synchronized
+    fun engine(ctx: Context, run: Boolean): FlutterEngine {
+        val cache = FlutterEngineCache.getInstance()
+        cache.get(MainActivity.ENGINE)?.let { return it }
+        val app = ctx.applicationContext
+        val engine = FlutterEngine(app)
+        engine.addEngineLifecycleListener(object : FlutterEngine.EngineLifecycleListener {
+            override fun onPreEngineRestart() {}
+
+            override fun onEngineWillDestroy() {
+                if (cache.get(MainActivity.ENGINE) === engine) cache.remove(MainActivity.ENGINE)
+            }
+        })
+        register(engine, app)
+        cache.put(MainActivity.ENGINE, engine)
+        if (run) {
+            engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
+            // Окна нет: приложение «свёрнуто» — без кадров и анимаций, с уведомлениями.
+            engine.lifecycleChannel.appIsPaused()
+        }
+        return engine
+    }
+
+    // ───────────── журнал вылетов ─────────────
+
+    private var crashLog = false
+
+    /** Если Veil всё же упадёт — записать причину; покажем в журнале при запуске. */
+    @Synchronized
+    fun installCrashLog(ctx: Context) {
+        if (crashLog) return
+        crashLog = true
+        val file = File(ctx.applicationContext.filesDir, "last_crash.txt")
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val sw = StringWriter()
+                error.printStackTrace(PrintWriter(sw))
+                val time = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US).format(Date())
+                file.writeText("$time [${thread.name}] ${sw.toString().take(6000)}")
+            } catch (_: Throwable) {
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    private fun takeCrash(ctx: Context): String? = try {
+        val file = File(ctx.applicationContext.filesDir, "last_crash.txt")
+        if (file.exists()) file.readText().also { file.delete() } else null
+    } catch (_: Exception) {
+        null
+    }
 
     /**
      * Не дать процессору уснуть [ms] миллисекунд (сам отпустится по сроку):
@@ -126,9 +194,9 @@ object VeilLink {
         MethodChannel(messenger, "veil/service").setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
+                    // Окно закроют — приложение останется жить вместе со службой
+                    // (см. MainActivity.onDestroy).
                     prefs(app).edit().putBoolean(MainActivity.INSTANT, true).apply()
-                    // Окно закроют — приложение останется жить вместе со службой.
-                    FlutterEngineCache.getInstance().put(MainActivity.ENGINE, engine)
                     result.success(startService(app))
                 }
                 "stop" -> {
@@ -159,6 +227,7 @@ object VeilLink {
                 )
                 "askUnrestricted" -> result.success(askUnrestricted(app))
                 "notificationSettings" -> result.success(openNotificationSettings(app))
+                "lastCrash" -> result.success(takeCrash(app))
                 else -> result.notImplemented()
             }
         }
