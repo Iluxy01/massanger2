@@ -5,7 +5,14 @@ import '../core/notifier.dart';
 
 /// Что мешает сообщениям приходить, пока Veil закрыт.
 class BackgroundState {
-  const BackgroundState({required this.notifications, required this.unrestricted});
+  const BackgroundState({
+    required this.notifications,
+    required this.unrestricted,
+    required this.running,
+  });
+
+  /// Служба «на связи» сейчас работает.
+  final bool running;
 
   /// Уведомления Veil разрешены в Android.
   final bool notifications;
@@ -29,16 +36,19 @@ class BackgroundStatus extends StatefulWidget {
 
 /// Что можно сделать: разрешить уведомления, снять ограничения батареи.
 class BackgroundActions {
-  const BackgroundActions(this.allowNotifications, this.allowBackground);
+  const BackgroundActions(this.allowNotifications, this.allowBackground, this.refresh);
 
   final Future<void> Function() allowNotifications;
   final Future<void> Function() allowBackground;
+
+  /// Перепроверить состояние.
+  final Future<void> Function() refresh;
 }
 
 class _BackgroundStatusState extends State<BackgroundStatus> {
   BackgroundState? _state;
   late final AppLifecycleListener _life;
-  late final _actions = BackgroundActions(_allowNotifications, _allowBackground);
+  late final _actions = BackgroundActions(_allowNotifications, _allowBackground, _refresh);
 
   @override
   void initState() {
@@ -57,7 +67,13 @@ class _BackgroundStatusState extends State<BackgroundStatus> {
     final link = await Link.status();
     final notes = await SystemNotify.enabled();
     if (!mounted || link == null || notes == null) return;
-    setState(() => _state = BackgroundState(notifications: notes, unrestricted: link.unrestricted));
+    setState(
+      () => _state = BackgroundState(
+        notifications: notes,
+        unrestricted: link.unrestricted,
+        running: link.running,
+      ),
+    );
   }
 
   Future<void> _allowNotifications() async {

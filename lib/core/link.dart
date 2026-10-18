@@ -67,6 +67,16 @@ class Link {
     }
   }
 
+  /// События Android-части (служба, окно, будильник) с прошлого раза.
+  static Future<List<String>> nativeNotes() async {
+    try {
+      final t = await _ch.invokeMethod<String>('notes');
+      return t == null ? const [] : t.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// Открыть настройки уведомлений Veil в Android.
   static Future<bool> notificationSettings() async {
     try {

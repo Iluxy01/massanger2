@@ -90,6 +90,27 @@ void main() {
       await bobLive.close();
     });
 
+    test('журнал переживает перезапуск Veil', () async {
+      final (app, live) = await phone('Алиса');
+      live.log('проверка: до остановки');
+      app.setForeground(false);
+      await live.close();
+      final app2 = AppState();
+      final live2 = await Live.boot(
+        app2,
+        secrets: MemorySecrets(),
+        dbFactory: databaseFactoryFfi,
+        dbPath: '${tmp.path}/Алиса.db',
+        connector: (_) => WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:${relay.port}')),
+        mediaDir: '${tmp.path}/Алиса-media',
+      );
+      final text = app2.journal.join('\n');
+      expect(text, contains('проверка: до остановки'));
+      expect(text, contains('свёрнуто'));
+      expect(app2.journal.last, contains('запуск Veil'));
+      await live2.close();
+    });
+
     test('будильник без сети и после закрытия не зависает', () async {
       final (_, live) = await phone('Алиса');
       await relay.stop();

@@ -413,6 +413,18 @@ class SettingsTab extends StatelessWidget {
                   BackgroundStatus(
                     builder: (context, st, act) {
                       if (st == null) return const SizedBox.shrink();
+                      if (!st.running) {
+                        return _Tile(
+                          icon: Icons.portable_wifi_off_rounded,
+                          title: 'Служба «на связи» не работает',
+                          subtitle: 'Сообщения придут с опозданием. Нажми, чтобы запустить снова',
+                          onTap: () async {
+                            await app.syncInstantService();
+                            await Future<void>.delayed(const Duration(milliseconds: 800));
+                            await act.refresh();
+                          },
+                        );
+                      }
                       if (!st.notifications) {
                         return _Tile(
                           icon: Icons.notifications_off_rounded,

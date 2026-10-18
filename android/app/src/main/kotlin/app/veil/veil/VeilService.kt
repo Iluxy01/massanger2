@@ -35,6 +35,7 @@ class VeilService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        VeilLink.note(this, if (intent == null) "служба: перезапущена системой" else "служба: запуск")
         if (!foreground()) {
             // Система не разрешила (например, запуск из фона) — не работаем.
             running = false
@@ -88,7 +89,8 @@ class VeilService : Service() {
                 startForeground(ID, notification)
             }
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            VeilLink.note(this, "служба: Android не дал работать на виду (${e.javaClass.simpleName})")
             false
         }
     }
@@ -126,7 +128,15 @@ class VeilService : Service() {
         }
     }
 
+    /** Окно смахнули из недавних: служба остаётся, но через пару секунд проверим, жива ли. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        VeilLink.note(this, "окно смахнули из недавних")
+        VeilAlarm.schedule(this, 5_000L)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        VeilLink.note(this, "служба: остановлена")
         running = false
         network?.let {
             try {

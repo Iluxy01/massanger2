@@ -43,6 +43,8 @@ class MainActivity : FlutterFragmentActivity() {
         // обычно); с ними — остаётся работать в фоне.
         if (!instant() && !isChangingConfigurations) {
             FlutterEngineCache.getInstance().get(ENGINE)?.destroy()
+        } else {
+            VeilLink.note(this, "окно закрыто, Veil работает дальше")
         }
     }
 

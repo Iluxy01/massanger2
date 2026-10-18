@@ -17,6 +17,7 @@ class VeilBoot : BroadcastReceiver() {
             "com.htc.intent.action.QUICKBOOT_POWERON" -> {
                 val app = context.applicationContext
                 if (!VeilLink.instant(app)) return
+                VeilLink.note(app, "телефон включён или Veil обновлён — запускаю службу")
                 VeilLink.startService(app)
                 VeilAlarm.schedule(app)
             }

@@ -72,14 +72,64 @@ class Live {
   final Map<String, RelayState> _relayStates = {};
   String _relaySig = '';
 
-  /// Журнал для диагностики (Профиль → Сеть → Журнал). Только в памяти.
+  /// Журнал для диагностики (Профиль → Сеть → Журнал). Хранится и в файле:
+  /// если Android остановит Veil, после перезапуска видно, что было до того.
   final List<String> journal = [];
+  static const _journalMax = 600;
+  File? _journalFile;
+  final _unsaved = StringBuffer();
+  Timer? _journalTimer;
 
   void log(String line) {
     final t = DateTime.now();
     String two(int n) => n.toString().padLeft(2, '0');
-    journal.add('${two(t.hour)}:${two(t.minute)}:${two(t.second)} $line');
-    if (journal.length > 400) journal.removeAt(0);
+    logRaw(
+      '${two(t.day)}.${two(t.month)} ${two(t.hour)}:${two(t.minute)}:${two(t.second)} '
+      '${background ? '[фон] ' : ''}$line',
+    );
+  }
+
+  /// Перенести в журнал события Android-части (служба, окно, будильник).
+  Future<void> pullNativeNotes() async {
+    if (background) return;
+    for (final l in await Link.nativeNotes()) {
+      logRaw(l);
+    }
+  }
+
+  /// Строка с уже готовым временем (например, из журнала Android-части).
+  void logRaw(String line) {
+    journal.add(line);
+    if (journal.length > _journalMax) journal.removeAt(0);
+    _unsaved.writeln(line);
+    _journalTimer ??= Timer(const Duration(seconds: 3), saveJournal);
+  }
+
+  Future<void> saveJournal() async {
+    _journalTimer?.cancel();
+    _journalTimer = null;
+    final f = _journalFile;
+    if (f == null || _unsaved.isEmpty) return;
+    final text = _unsaved.toString();
+    _unsaved.clear();
+    try {
+      await f.writeAsString(text, mode: FileMode.append, flush: true);
+    } catch (_) {}
+  }
+
+  /// Прошлый журнал — из файла (последние строки), файл — обрезать.
+  Future<void> _openJournal() async {
+    try {
+      final f = File('${await media.root()}-journal.txt');
+      if (f.existsSync()) {
+        final old = await f.readAsLines();
+        final keep = old.length > 300 ? old.sublist(old.length - 300) : old;
+        if (!background) await f.writeAsString(keep.isEmpty ? '' : '${keep.join('\n')}\n');
+        journal.insertAll(0, keep);
+        if (journal.length > _journalMax) journal.removeRange(0, journal.length - _journalMax);
+      }
+      _journalFile = f;
+    } catch (_) {}
   }
 
   static String short(String id) => id.length > 8 ? id.substring(0, 8) : id;
@@ -140,6 +190,8 @@ class Live {
   // ───────────────────────── загрузка ─────────────────────────
 
   Future<void> _load({required bool network}) async {
+    await _openJournal();
+    log(background ? 'фоновая проверка: запуск' : 'запуск Veil');
     final settings = await store.getJson('settings');
     if (settings != null) app.applySettings(settings);
     final r = await store.get('relays');
@@ -585,6 +637,8 @@ class Live {
 
   /// Приложение вернулось на экран.
   Future<void> resumed() async {
+    log('на экране');
+    unawaited(pullNativeNotes());
     await store.set('alive', '${nowSec()}');
     await reload();
     // Проверить соединения (мобильная сеть могла их тихо оборвать) и
@@ -608,8 +662,11 @@ class Live {
   void paused() {
     // В фоне (с «мгновенными уведомлениями») проверяем соединения реже — батарея.
     _paused = true;
+    log('свёрнуто (на связи: ${pool?.onlineCount ?? 0})');
     tuneProbe();
     _ping(online: false);
+    // Свёрнутый Veil Android может остановить — журнал на диск сразу.
+    saveJournal();
   }
 
   /// Будильник службы «на связи» или смена сети: проверить соединения,
@@ -620,6 +677,7 @@ class Live {
     try {
       if (p == null || _closed) return;
       Link.hold(const Duration(seconds: 20));
+      await pullNativeNotes();
       await p.verify(timeout: const Duration(seconds: 12));
       await _flushOutbox();
       // Ответы на только что отправленный запрос и пришедшие сообщения.
@@ -1734,6 +1792,7 @@ class Live {
 
   Future<void> close() async {
     _closed = true;
+    await saveJournal();
     await _events?.cancel();
     await _queue.timeout(const Duration(seconds: 5), onTimeout: () {});
     _presence?.cancel();

@@ -43,11 +43,13 @@ Future<void> _boot(AppState state) async {
   };
   final crash = await Link.lastCrash();
   if (crash != null) live.log('ПРОШЛЫЙ ВЫЛЕТ: $crash');
+  await live.pullNativeNotes();
   // Запущены службой «на связи» без окна (после перезагрузки, обновления или
   // выгрузки системой): ведём себя как свёрнутое приложение — без анимаций,
   // с уведомлениями. Окно откроют — придёт «resumed», и всё оживёт.
   if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
     Activity.setResumed(false);
+    live.log('запущен службой «на связи», без окна');
     state.windowless = true;
     state.lock();
     state.setForeground(false);

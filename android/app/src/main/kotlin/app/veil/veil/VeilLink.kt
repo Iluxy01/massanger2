@@ -55,9 +55,11 @@ object VeilLink {
             override fun onPreEngineRestart() {}
 
             override fun onEngineWillDestroy() {
+                note(app, "приложение остановлено")
                 if (cache.get(MainActivity.ENGINE) === engine) cache.remove(MainActivity.ENGINE)
             }
         })
+        note(app, if (run) "служба подняла Veil без окна" else "Veil запущен окном")
         register(engine, app)
         cache.put(MainActivity.ENGINE, engine)
         if (run) {
@@ -68,7 +70,31 @@ object VeilLink {
         return engine
     }
 
-    // ───────────── журнал вылетов ─────────────
+    // ───────────── журнал ─────────────
+
+    /**
+     * Записать событие Android-части (служба, окно, будильник) — приложение
+     * перенесёт его в свой журнал (Профиль → Сеть → Журнал). Так видно, кто и
+     * когда останавливал Veil.
+     */
+    @Synchronized
+    fun note(ctx: Context, text: String) {
+        try {
+            val file = File(ctx.applicationContext.filesDir, "native_log.txt")
+            if (file.exists() && file.length() > 64 * 1024) file.delete()
+            val time = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US).format(Date())
+            file.appendText("$time ⚙ $text\n")
+        } catch (_: Exception) {
+        }
+    }
+
+    @Synchronized
+    private fun takeNotes(ctx: Context): String? = try {
+        val file = File(ctx.applicationContext.filesDir, "native_log.txt")
+        if (file.exists()) file.readText().also { file.delete() } else null
+    } catch (_: Exception) {
+        null
+    }
 
     private var crashLog = false
 
@@ -77,6 +103,7 @@ object VeilLink {
     fun installCrashLog(ctx: Context) {
         if (crashLog) return
         crashLog = true
+        note(ctx, "процесс Veil запущен")
         val file = File(ctx.applicationContext.filesDir, "last_crash.txt")
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
@@ -181,8 +208,9 @@ object VeilLink {
     fun startService(ctx: Context): Boolean = try {
         ContextCompat.startForegroundService(ctx, Intent(ctx, VeilService::class.java))
         true
-    } catch (_: Exception) {
+    } catch (e: Exception) {
         // Android не разрешил запуск из фона — попробуем при следующем случае.
+        note(ctx, "служба: Android не дал запустить (${e.javaClass.simpleName})")
         false
     }
 
@@ -228,6 +256,7 @@ object VeilLink {
                 "askUnrestricted" -> result.success(askUnrestricted(app))
                 "notificationSettings" -> result.success(openNotificationSettings(app))
                 "lastCrash" -> result.success(takeCrash(app))
+                "notes" -> result.success(takeNotes(app))
                 else -> result.notImplemented()
             }
         }

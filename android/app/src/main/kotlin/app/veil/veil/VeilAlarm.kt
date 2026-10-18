@@ -23,6 +23,7 @@ class VeilAlarm : BroadcastReceiver() {
         if (VeilService.running) {
             VeilLink.tick("alarm")
         } else {
+            VeilLink.note(app, "будильник: службы нет — запускаю")
             VeilLink.startService(app)
         }
         schedule(app)
@@ -38,12 +39,12 @@ class VeilAlarm : BroadcastReceiver() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        fun schedule(ctx: Context) {
+        fun schedule(ctx: Context, after: Long = EVERY) {
             try {
                 val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
                 am.setAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + EVERY,
+                    SystemClock.elapsedRealtime() + after,
                     intent(ctx),
                 )
             } catch (_: Exception) {
