@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../state/app_state.dart';
 import '../widgets/avatar.dart';
@@ -20,15 +23,32 @@ class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0;
   late final AppState _app = context.appRead;
 
+  /// Вкладки, которые уже хоть раз были нарисованы.
+  final _painted = <int>{0};
+
+  /// Вкладка, которая прямо сейчас один кадр рисуется невидимо (см. [_warmNext]).
+  int? _warming;
+
+  /// Только что «прогретая» вкладка: прячется обратно мгновенно, без анимации.
+  int? _cooled;
+  Timer? _warmTimer;
+
+  /// Почти ноль: глазу не видно, но вкладка рисуется по-настоящему.
+  static const _ghost = 2 / 255;
+
   @override
   void initState() {
     super.initState();
     _app.openRequest.addListener(_openRequested);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openRequested());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _openRequested();
+      _warmTimer = Timer(const Duration(milliseconds: 700), _warmNext);
+    });
   }
 
   @override
   void dispose() {
+    _warmTimer?.cancel();
     _app.openRequest.removeListener(_openRequested);
     super.dispose();
   }
@@ -37,7 +57,46 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _go(int i) {
     if (i == _tab) return;
-    setState(() => _tab = i);
+    setState(() {
+      _tab = i;
+      _painted.add(i);
+      if (_warming == i) _warming = null;
+      _cooled = null;
+    });
+  }
+
+  /// Скрытая вкладка не рисуется вовсе, поэтому при ПЕРВОМ показе движку
+  /// приходилось разом готовить для неё всё: буквы и эмодзи нужных размеров,
+  /// превью стилей, градиенты, — и переход дёргался (дальше всё уже готово).
+  /// Поэтому вскоре после запуска каждая скрытая вкладка по очереди рисуется
+  /// один кадр почти прозрачной — и к первому нажатию уже готова.
+  void _warmNext() {
+    if (!mounted) return;
+    int? next;
+    for (var i = 0; i < _tabs.length; i++) {
+      if (!_painted.contains(i)) {
+        next = i;
+        break;
+      }
+    }
+    if (next == null) return;
+    final tab = next;
+    setState(() {
+      _warming = tab;
+      _cooled = null;
+    });
+    // Колбэк сработает после кадра, в котором вкладка нарисована.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _painted.add(tab);
+      if (_warming == tab) {
+        setState(() {
+          _warming = null;
+          _cooled = tab;
+        });
+      }
+      _warmTimer = Timer(const Duration(milliseconds: 250), _warmNext);
+    });
   }
 
   /// Нажали на уведомление — открыть тот чат (после разблокировки).
@@ -74,13 +133,22 @@ class _HomeScreenState extends State<HomeScreen> {
             // Анимация исчезновения должна быть СНАРУЖИ TickerMode: иначе выключенный
             // тикер замораживает её, и старая вкладка остаётся видна поверх новой.
             AnimatedOpacity(
-              duration: const Duration(milliseconds: 260).by(context),
+              duration: i == _warming || i == _cooled
+                  ? Duration.zero
+                  : const Duration(milliseconds: 260).by(context),
               curve: Curves.easeOut,
-              opacity: i == _tab ? 1 : 0,
-              child: AnimatedScale(
+              opacity: i == _tab
+                  ? 1
+                  : i == _warming
+                  ? _ghost
+                  : 0,
+              // Вкладка «всплывает» сдвигом, а не масштабом: при каждом новом
+              // масштабе движок заново растрирует все буквы и эмодзи вкладки —
+              // именно это и дёргало первое переключение.
+              child: AnimatedSlide(
                 duration: const Duration(milliseconds: 320).by(context),
                 curve: Curves.easeOutCubic,
-                scale: i == _tab ? 1 : 0.97,
+                offset: i == _tab ? Offset.zero : const Offset(0, 0.012),
                 child: IgnorePointer(
                   ignoring: i != _tab,
                   child: TickerMode(

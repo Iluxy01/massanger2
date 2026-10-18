@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:veil/app.dart';
+import 'package:veil/screens/chat_screen.dart';
+import 'package:veil/screens/contacts_tab.dart';
+import 'package:veil/screens/settings_tab.dart';
 import 'package:veil/state/app_state.dart';
 import 'package:veil/theme/palette.dart';
 import 'package:veil/theme/skin.dart';
@@ -126,6 +131,94 @@ void main() {
         expect(tester.takeException(), isNull, reason: 'стиль $id, оформление $look');
       }
     }
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+  });
+
+  Future<AppState> launch(WidgetTester tester, {int skin = 0}) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.625;
+    addTearDown(tester.view.reset);
+    final state = AppState.demo()..inAppBanner = false;
+    await state.createProfile(name: 'Тест', emoji: '🐼', colorIndex: 1);
+    if (skin > 0) state.setSkin(skin);
+    await tester.pumpWidget(VeilApp(state: state));
+    await tester.pump(const Duration(milliseconds: 100));
+    return state;
+  }
+
+  Future<void> frames(WidgetTester tester, int n) async {
+    for (var i = 0; i < n; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets('скрытые вкладки заранее рисуются невидимо — первое переключение не дёргает', (
+    tester,
+  ) async {
+    final state = await launch(tester);
+    RenderRepaintBoundary boundary(Type tab) => tester.renderObject(
+      find.ancestor(of: find.byType(tab), matching: find.byType(RepaintBoundary)).first,
+    );
+    double opacity(Type tab) => tester
+        .widget<AnimatedOpacity>(
+          find.ancestor(of: find.byType(tab), matching: find.byType(AnimatedOpacity)).first,
+        )
+        .opacity;
+    // Сразу после запуска скрытые вкладки ещё ни разу не рисовались.
+    expect(boundary(SettingsTab).debugLayer, isNull);
+    expect(boundary(ContactsTab).debugLayer, isNull);
+    await frames(tester, 20);
+    expect(boundary(ContactsTab).debugLayer, isNotNull, reason: 'Друзья уже нарисованы');
+    expect(boundary(SettingsTab).debugLayer, isNotNull, reason: 'Профиль уже нарисован');
+    // И снова полностью скрыты.
+    expect(opacity(ContactsTab), 0);
+    expect(opacity(SettingsTab), 0);
+    // Переключение — сдвигом, без масштаба (масштаб заново растрирует весь текст).
+    expect(
+      find.ancestor(of: find.byType(SettingsTab), matching: find.byType(AnimatedScale)),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const ValueKey('nav-2')));
+    await frames(tester, 5);
+    expect(opacity(SettingsTab), 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+  });
+
+  testWidgets('Космос: переход в чат масштабирует готовую картинку, а не текст', (tester) async {
+    final state = await launch(tester, skin: 2);
+    await frames(tester, 15);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 60));
+    // Посреди перехода: экран чата снят в картинку.
+    final snap = tester.widgetList<SnapshotWidget>(find.byType(SnapshotWidget));
+    expect(snap.any((w) => w.controller.allowSnapshotting), isTrue);
+    await frames(tester, 10);
+    expect(find.byType(ChatScreen), findsOneWidget);
+    expect(
+      tester
+          .widgetList<SnapshotWidget>(find.byType(SnapshotWidget))
+          .any((w) => w.controller.allowSnapshotting),
+      isFalse,
+      reason: 'переход закончился — экран живой',
+    );
+    navigatorKey.currentState!.pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(
+      tester
+          .widgetList<SnapshotWidget>(find.byType(SnapshotWidget))
+          .any((w) => w.controller.allowSnapshotting),
+      isTrue,
+      reason: 'и назад — тоже картинкой',
+    );
+    await frames(tester, 10);
+    expect(find.byType(ChatScreen), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     state.dispose();
   });

@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/chat_screen.dart';
@@ -207,22 +209,7 @@ class _SkinTransitions extends PageTransitionsBuilder {
           ),
         );
       case 2:
-        final a = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
-        );
-        final out = CurvedAnimation(parent: secondaryAnimation, curve: Curves.easeInOutCubic);
-        return ScaleTransition(
-          scale: Tween(begin: 1.0, end: 1.05).animate(out),
-          child: FadeTransition(
-            opacity: CurvedAnimation(
-              parent: animation,
-              curve: const Interval(0, 0.55, curve: Curves.easeOut),
-            ),
-            child: ScaleTransition(scale: Tween(begin: 0.9, end: 1.0).animate(a), child: child),
-          ),
-        );
+        return _DepthTransition(animation: animation, secondary: secondaryAnimation, child: child);
       default:
         final a = CurvedAnimation(
           parent: animation,
@@ -237,6 +224,196 @@ class _SkinTransitions extends PageTransitionsBuilder {
           ),
         );
     }
+  }
+}
+
+/// Космос: экран выплывает из глубины (0.9 → 1, проявляясь), прежний уходит
+/// «вперёд» (1 → 1.05).
+///
+/// Пока идёт переход, экран один раз рисуется в картинку, и масштабируется уже
+/// она. Если масштабировать сам экран, движок под каждый промежуточный масштаб
+/// заново растрирует все буквы и эмодзи — на первых открытиях это дёргает.
+class _DepthTransition extends StatefulWidget {
+  const _DepthTransition({required this.animation, required this.secondary, required this.child});
+
+  final Animation<double> animation;
+  final Animation<double> secondary;
+  final Widget child;
+
+  @override
+  State<_DepthTransition> createState() => _DepthTransitionState();
+}
+
+class _DepthTransitionState extends State<_DepthTransition> {
+  final _controller = SnapshotController();
+  late _DepthPainter _painter;
+
+  @override
+  void initState() {
+    super.initState();
+    _attach();
+  }
+
+  @override
+  void didUpdateWidget(_DepthTransition old) {
+    super.didUpdateWidget(old);
+    if (old.animation != widget.animation || old.secondary != widget.secondary) {
+      _detach(old);
+      _painter.dispose();
+      _attach();
+    }
+  }
+
+  /// Сколько ближайших кадров ещё снимать экран заново: в начале перехода на
+  /// нём меняется аватарка, улетающая в шапку (Hero), — без этого она бы на
+  /// миг «двоилась». Дальше масштабируется уже готовая картинка.
+  int _fresh = 0;
+
+  void _attach() {
+    _painter = _DepthPainter(widget.animation, widget.secondary);
+    for (final a in [widget.animation, widget.secondary]) {
+      a.addStatusListener(_status);
+      a.addListener(_tick);
+    }
+    _status(AnimationStatus.completed);
+  }
+
+  void _detach(_DepthTransition w) {
+    for (final a in [w.animation, w.secondary]) {
+      a.removeStatusListener(_status);
+      a.removeListener(_tick);
+    }
+  }
+
+  void _status(AnimationStatus _) {
+    final on = widget.animation.isAnimating || widget.secondary.isAnimating;
+    if (on && !_controller.allowSnapshotting) _fresh = 3;
+    _controller.allowSnapshotting = on;
+  }
+
+  void _tick() {
+    if (_fresh > 0 && _controller.allowSnapshotting) {
+      _fresh--;
+      _controller.clear();
+    }
+  }
+
+  @override
+  void dispose() {
+    _detach(widget);
+    _painter.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SnapshotWidget(
+    controller: _controller,
+    // Видео внутри экрана в картинку не снять — тогда рисуем как обычно.
+    mode: SnapshotMode.permissive,
+    painter: _painter,
+    child: widget.child,
+  );
+}
+
+class _DepthPainter extends SnapshotPainter {
+  _DepthPainter(this.enter, this.exit)
+    : _in = CurvedAnimation(
+        parent: enter,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ),
+      _fade = CurvedAnimation(
+        parent: enter,
+        curve: const Interval(0, 0.55, curve: Curves.easeOut),
+      ),
+      _out = CurvedAnimation(parent: exit, curve: Curves.easeInOutCubic) {
+    enter.addListener(notifyListeners);
+    exit.addListener(notifyListeners);
+  }
+
+  final Animation<double> enter;
+  final Animation<double> exit;
+  final CurvedAnimation _in;
+  final CurvedAnimation _fade;
+  final CurvedAnimation _out;
+  final _transform = LayerHandle<TransformLayer>();
+  final _opacity = LayerHandle<OpacityLayer>();
+
+  double get _scale => (0.9 + 0.1 * _in.value) * (1 + 0.05 * _out.value);
+  int get _alpha => (_fade.value.clamp(0.0, 1.0) * 255).round();
+
+  @override
+  void paintSnapshot(
+    PaintingContext context,
+    Offset offset,
+    Size size,
+    ui.Image image,
+    Size sourceSize,
+    double pixelRatio,
+  ) {
+    final alpha = _alpha;
+    if (alpha == 0) return;
+    final s = _scale;
+    // sourceSize — в физических пикселях; рисуем в логических.
+    final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+    final dst = Rect.fromCenter(
+      center: (offset & size).center,
+      width: size.width * s,
+      height: size.height * s,
+    );
+    context.canvas.drawImageRect(
+      image,
+      src,
+      dst,
+      Paint()
+        ..color = Color.fromARGB(alpha, 0, 0, 0)
+        ..filterQuality = FilterQuality.medium,
+    );
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset, Size size, PaintingContextCallback painter) {
+    final alpha = _alpha;
+    final s = _scale;
+    if (alpha == 255 && s == 1) {
+      _transform.layer = null;
+      _opacity.layer = null;
+      painter(context, offset);
+      return;
+    }
+    if (alpha == 0) {
+      _transform.layer = null;
+      _opacity.layer = null;
+      return;
+    }
+    final c = size.center(Offset.zero);
+    final m = Matrix4.translationValues(c.dx, c.dy, 0)
+      ..multiply(Matrix4.diagonal3Values(s, s, 1))
+      ..multiply(Matrix4.translationValues(-c.dx, -c.dy, 0));
+    _transform.layer = context.pushTransform(
+      true,
+      offset,
+      m,
+      (context, offset) =>
+          _opacity.layer = context.pushOpacity(offset, alpha, painter, oldLayer: _opacity.layer),
+      oldLayer: _transform.layer,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DepthPainter old) => old.enter != enter || old.exit != exit;
+
+  @override
+  void dispose() {
+    enter.removeListener(notifyListeners);
+    exit.removeListener(notifyListeners);
+    _in.dispose();
+    _fade.dispose();
+    _out.dispose();
+    _transform.layer = null;
+    _opacity.layer = null;
+    super.dispose();
   }
 }
 
@@ -278,9 +455,14 @@ class _RootGate extends StatelessWidget {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 700).by(context),
       switchInCurve: Curves.easeOutCubic,
+      // Сдвиг, а не масштаб: масштаб заставлял заново растрировать весь текст
+      // главного экрана на каждом кадре появления.
       transitionBuilder: (c, a) => FadeTransition(
         opacity: a,
-        child: ScaleTransition(scale: Tween(begin: 0.94, end: 1.0).animate(a), child: c),
+        child: SlideTransition(
+          position: Tween(begin: const Offset(0, 0.03), end: Offset.zero).animate(a),
+          child: c,
+        ),
       ),
       child: !app.ready
           ? const _Splash(key: ValueKey('splash'))
