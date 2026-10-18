@@ -7,8 +7,11 @@ import 'package:flutter/services.dart';
 
 import '../core/biometric.dart';
 import '../core/media_tools.dart';
+import '../core/nostr.dart';
 import '../core/protocol.dart';
+import '../core/recovery.dart';
 import '../core/relay_pool.dart';
+import '../core/transfer.dart';
 import '../models/models.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
@@ -48,6 +51,15 @@ class AppState extends ChangeNotifier {
 
   /// Приложение на экране (а не свёрнуто).
   bool foreground = true;
+
+  /// Идёт первая настройка (регистрация или вход): главный экран — только
+  /// после последнего шага, даже если профиль уже создан.
+  bool setupPending = false;
+
+  void finishSetup() {
+    setupPending = false;
+    notifyChanged();
+  }
 
   /// Приложение работает без окна (подняла служба «на связи» или окно
   /// закрыли): следующему окну нужно заново передать оформление.
@@ -357,25 +369,48 @@ class AppState extends ChangeNotifier {
 
   // ───────────────────────── Профиль и настройки ─────────────────────────
 
+  /// Создать профиль. [priv] — вход по ключу восстановления (аккаунт уже
+  /// был), иначе ключ новый.
   Future<void> createProfile({
     required String name,
     required String emoji,
     required int colorIndex,
+    String? priv,
   }) async {
     final l = live;
     if (l != null) {
       await l.createIdentity(
         (pub) => Profile(name: name, emoji: emoji, colorIndex: colorIndex, fingerprint: pub),
+        priv: priv,
       );
     } else {
+      _demoPriv = priv ?? Keys.generate().priv;
       profile = Profile(
         name: name,
         emoji: emoji,
         colorIndex: colorIndex,
-        fingerprint: randomHex(64).toLowerCase(),
+        fingerprint: Keys(_demoPriv!).pub,
       );
     }
+    // Свой ключ знаем и так — записывать его не нужно.
+    if (priv != null) recoverySaved = true;
     notifyChanged();
+  }
+
+  String? _demoPriv;
+
+  /// Ключ восстановления — 24 слова (только после проверки PIN / отпечатка).
+  Future<List<String>?> recoveryWords() async {
+    final priv = live != null ? await live!.secretKey() : _demoPriv;
+    return priv == null ? null : Recovery.toWords(priv);
+  }
+
+  /// Ключ восстановления записан (иначе в профиле висит напоминание).
+  bool recoverySaved = false;
+
+  void markRecoverySaved() {
+    recoverySaved = true;
+    _saveSettings();
   }
 
   /// Сохранить зашифрованную копию (ключ, переписка, по желанию — файлы).
@@ -385,6 +420,19 @@ class AppState extends ChangeNotifier {
   /// Восстановить всё из копии (на новом телефоне, вместо создания профиля).
   Future<void> restoreBackup(String path, String password) async {
     await live!.restoreBackup(path, password);
+    notifyChanged();
+  }
+
+  /// Перенос на новый телефон (здесь — старый): код для QR.
+  Future<TransferTicket> prepareTransfer({ValueNotifier<double>? progress}) =>
+      live!.prepareTransfer(progress: progress);
+
+  /// Перенос закончен или отменён — убрать пакет с ретрансляторов.
+  Future<void> finishTransfer() async => live?.finishTransfer();
+
+  /// Новый телефон: забрать всё по коду со старого.
+  Future<void> receiveTransfer(TransferTicket t, {ValueNotifier<double>? progress}) async {
+    await live!.receiveTransfer(t, progress: progress);
     notifyChanged();
   }
 
@@ -413,6 +461,7 @@ class AppState extends ChangeNotifier {
     if (skinId > 0) 'skin': skinId,
     if (skinOpts.isNotEmpty) 'skinOpt': Map.of(skinOpts),
     'instant': instantNotify,
+    if (recoverySaved) 'rk': true,
     if (ultra) 'ultra': true,
     if (ultraAuto > 0) 'ultraAuto': ultraAuto,
     if (ultraByBattery) 'ultraBat': true,
@@ -464,6 +513,7 @@ class AppState extends ChangeNotifier {
     }
     _skin = null;
     instantNotify = s['instant'] == true;
+    recoverySaved = s['rk'] == true;
     ultra = s['ultra'] == true;
     ultraAuto = ((s['ultraAuto'] as num?)?.toInt() ?? 0).clamp(0, 50);
     ultraByBattery = s['ultraBat'] == true;
@@ -635,7 +685,18 @@ class AppState extends ChangeNotifier {
   /// Запрет скриншотов и превью в списке приложений (FLAG_SECURE на Android).
   void applyScreenshotProtection() {
     if (demo) return;
-    _secure.invokeMethod('setSecure', screenshotProtection).catchError((_) => null);
+    _secure
+        .invokeMethod('setSecure', screenshotProtection || _secureScreens > 0)
+        .catchError((_) => null);
+  }
+
+  int _secureScreens = 0;
+
+  /// Экран с секретом (ключ восстановления, код переноса): пока он открыт —
+  /// без скриншотов, даже если запрет в настройках выключен.
+  void secureScreen(bool on) {
+    _secureScreens = max(0, _secureScreens + (on ? 1 : -1));
+    applyScreenshotProtection();
   }
 
   // ───────────────────────── Тайник ─────────────────────────

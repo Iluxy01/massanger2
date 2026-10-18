@@ -13,7 +13,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('Пропустить'), findsOneWidget);
 
-    state.createProfile(name: 'Тест', emoji: '🦊', colorIndex: 0);
+    await state.createProfile(name: 'Тест', emoji: '🦊', colorIndex: 0);
+    await tester.pump(const Duration(milliseconds: 100));
+    // Профиль есть, но главный экран — только после последнего шага настройки.
+    expect(find.text('Пропустить'), findsOneWidget);
+    state.finishSetup();
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }

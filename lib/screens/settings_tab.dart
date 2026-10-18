@@ -12,6 +12,7 @@ import '../theme/sky.dart';
 import '../widgets/avatar.dart';
 import '../widgets/background_status.dart';
 import '../widgets/effects.dart';
+import 'account_screens.dart';
 import 'add_friend_screen.dart';
 import 'chat_screen.dart';
 import 'favorites_screen.dart';
@@ -147,6 +148,34 @@ class SettingsTab extends StatelessWidget {
                     'Несколько профилей появятся в Veil+ — следи за обновлениями',
                     icon: Icons.switch_account_rounded,
                   ),
+                ),
+              ],
+            ),
+
+            // ── Аккаунт ──
+            const _Section('Аккаунт'),
+            _Group(
+              children: [
+                _Tile(
+                  icon: app.recoverySaved ? Icons.key_rounded : Icons.key_off_rounded,
+                  title: 'Ключ восстановления',
+                  subtitle: app.recoverySaved
+                      ? '24 слова — вход на любом телефоне'
+                      : 'Не записан! Без него аккаунт не вернуть, если телефон потеряется',
+                  trailing: app.recoverySaved ? null : const _Dot(),
+                  onTap: () => RecoveryKeyScreen.open(context),
+                ),
+                _Tile(
+                  icon: Icons.phonelink_ring_rounded,
+                  title: 'Перенести на новый телефон',
+                  subtitle: 'По QR-коду: друзья, переписка, настройки',
+                  onTap: () => MoveOutScreen.open(context),
+                ),
+                _Tile(
+                  icon: Icons.backup_rounded,
+                  title: 'Зашифрованная копия',
+                  subtitle: 'Файл под паролем — вместе с фото и файлами',
+                  onTap: () => showExportBackup(context),
                 ),
               ],
             ),
@@ -424,17 +453,6 @@ class SettingsTab extends StatelessWidget {
             // ── Хранилище ──
             const _Section('Хранилище'),
             const _StorageCard(),
-            const SizedBox(height: 12),
-            _Group(
-              children: [
-                _Tile(
-                  icon: Icons.backup_rounded,
-                  title: 'Зашифрованная копия',
-                  subtitle: 'Файл под паролем — чтобы перенести Veil на новый телефон',
-                  onTap: () => showExportBackup(context),
-                ),
-              ],
-            ),
 
             // ── Опасная зона ──
             const _Section('Опасная зона'),
@@ -2013,6 +2031,18 @@ Future<void> openVault(BuildContext context) async {
     LockScreen.verifyRoute(title: 'PIN тайника', subtitle: 'Скрытые чаты', verify: app.checkVault),
   );
   if (ok == true) await nav.push(VaultScreen.route());
+}
+
+/// Красная точка «нужно внимание».
+class _Dot extends StatelessWidget {
+  const _Dot();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 10,
+    height: 10,
+    decoration: const BoxDecoration(color: Color(0xFFFF5A6E), shape: BoxShape.circle),
+  );
 }
 
 /// «Вход по отпечатку / лицу»: виден, только если на телефоне он настроен.

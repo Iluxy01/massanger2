@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -15,6 +17,7 @@ import '../core/nostr.dart';
 import '../core/protocol.dart';
 import '../core/relay_pool.dart';
 import '../core/store.dart';
+import '../core/transfer.dart';
 import '../models/models.dart';
 import 'app_state.dart';
 import 'media_engine.dart';
@@ -234,23 +237,38 @@ class Live {
 
   // ───────────────────────── личность ─────────────────────────
 
-  Future<void> createIdentity(Profile Function(String pub) build) async {
-    final k = Keys.generate();
+  /// Новый аккаунт — или вход по ключу восстановления [priv]: тогда заодно
+  /// забираем с ретрансляторов то, что там ещё лежит за последний месяц
+  /// (написавшие друзья появятся заявками — переписку хранит только копия).
+  Future<void> createIdentity(Profile Function(String pub) build, {String? priv}) async {
+    if (keys != null) throw StateError('профиль уже есть');
+    final k = priv != null ? Keys(priv) : Keys.generate();
     await secrets.write('priv', k.priv);
     keys = k;
     final p = build(k.pub);
     app.profile = p;
     await store.setJson('profile', p.toJson());
     // Только что созданному ключу нечего забирать из прошлого.
-    _syncedAt = nowSec();
+    _syncedAt = priv != null ? nowSec() - 30 * 24 * 3600 : nowSec();
     await store.set('synced', '$_syncedAt');
     startNetwork();
   }
+
+  /// Секретный ключ аккаунта (для ключа восстановления).
+  Future<String?> secretKey() => secrets.read('priv');
 
   // ───────────────────────── резервная копия ─────────────────────────
 
   /// Сохранить зашифрованную копию в [out]. [withMedia] — вместе с фото и файлами.
   Future<void> exportBackup(String out, String password, {bool withMedia = true}) async {
+    final (manifest, files) = await _collect(withMedia: withMedia);
+    await Backup.write(out, password, manifest, files);
+    log('сохранена резервная копия (файлов: ${files.length})');
+  }
+
+  /// Всё для восстановления (ключ, профиль, друзья, переписка, настройки) и
+  /// файлы вложений (относительный путь → файл), если [withMedia].
+  Future<(Map<String, dynamic>, Map<String, String>)> _collect({required bool withMedia}) async {
     final priv = await secrets.read('priv');
     final profile = await store.getJson('profile');
     if (priv == null || profile == null) throw StateError('нет профиля');
@@ -276,17 +294,19 @@ class Live {
       }
       chats[id] = list;
     }
-    await Backup.write(out, password, {
-      'v': 1,
-      'created': nowSec(),
-      'priv': priv,
-      'profile': profile,
-      'settings': await store.getJson('settings'),
-      'relays': await store.get('relays'),
-      'contacts': await store.contacts(),
-      'messages': chats,
-    }, files);
-    log('сохранена резервная копия (файлов: ${files.length})');
+    return (
+      <String, dynamic>{
+        'v': 1,
+        'created': nowSec(),
+        'priv': priv,
+        'profile': profile,
+        'settings': await store.getJson('settings'),
+        'relays': await store.get('relays'),
+        'contacts': await store.contacts(),
+        'messages': chats,
+      },
+      files,
+    );
   }
 
   /// Восстановить из копии на «чистом» телефоне (до создания профиля).
@@ -294,7 +314,15 @@ class Live {
     if (keys != null) throw StateError('профиль уже есть');
     final root = await media.root();
     final content = await Backup.read(path, password, root);
-    final m = content.manifest;
+    await _restore(content.manifest, root);
+    log(
+      'восстановлено из копии: контактов ${(content.manifest['contacts'] as List?)?.length ?? 0}, '
+      'файлов ${content.files.length}',
+    );
+  }
+
+  /// Записать всё из копии (или пакета переноса) и выйти в сеть.
+  Future<void> _restore(Map<String, dynamic> m, String root) async {
     final priv = m['priv'];
     final profile = m['profile'];
     if (priv is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(priv) || profile is! Map) {
@@ -334,12 +362,78 @@ class Live {
     app.profile = Profile.fromJson(Map<String, dynamic>.from(profile));
     await reload();
     await _requeueUnconfirmed();
-    log(
-      'восстановлено из копии: контактов ${(m['contacts'] as List?)?.length ?? 0}, '
-      'файлов ${content.files.length}',
-    );
     startNetwork();
     resumeMedia();
+  }
+
+  // ───────────────────────── перенос на новый телефон ─────────────────────────
+
+  /// Старый телефон: всё, кроме фото и файлов, — одним зашифрованным пакетом
+  /// на ретрансляторы. Возвращает код для QR.
+  Future<TransferTicket> prepareTransfer({ValueNotifier<double>? progress}) async {
+    if (pool == null) throw TransferError('Нет связи с ретрансляторами');
+    final (manifest, _) = await _collect(withMedia: false);
+    // В отдельном потоке: длинная переписка — это мегабайты текста.
+    final packed = await Isolate.run(() => gzip.encode(utf8.encode(jsonEncode(manifest))));
+    if (packed.length > MediaEngine.maxBytes) {
+      throw TransferError(
+        'Переписки слишком много для переноса по коду — сохрани резервную копию в файл',
+      );
+    }
+    final tmp = File(p.join((await media.tempDir()).path, 'veil-move-${nowSec()}'));
+    await tmp.writeAsBytes(packed, flush: true);
+    try {
+      final att = await media.pushFile(tmp.path, progress: progress);
+      if (att == null) {
+        throw TransferError(
+          'Ретрансляторы не приняли данные — проверь интернет и попробуй ещё раз',
+        );
+      }
+      _moving = att;
+      log('перенос: пакет ${(packed.length / 1024).round()} КБ, кусков ${att.chunks}');
+      return TransferTicket.of(att);
+    } finally {
+      if (tmp.existsSync()) await tmp.delete();
+    }
+  }
+
+  Attachment? _moving;
+
+  /// Перенос закончили (или передумали) — попросить ретрансляторы убрать пакет.
+  Future<void> finishTransfer() async {
+    final att = _moving;
+    _moving = null;
+    if (att != null) await media.unpublish(att);
+  }
+
+  /// Новый телефон: забрать пакет по коду и восстановить всё.
+  Future<void> receiveTransfer(TransferTicket t, {ValueNotifier<double>? progress}) async {
+    if (keys != null) throw StateError('профиль уже есть');
+    final urls = {...t.relays, ...relays}.toList();
+    final pl = RelayPool(urls, connector: _connector)..start();
+    final dst = File(p.join((await media.tempDir()).path, 'veil-move-in-${nowSec()}'));
+    try {
+      if (!await media.pullFile(pl, t.attachment, dst.path, progress: progress)) {
+        throw TransferError(
+          'Не получилось забрать данные. Проверь интернет на обоих телефонах и что '
+          'на старом открыт экран с кодом — и попробуй ещё раз',
+        );
+      }
+      final Map<String, dynamic> m;
+      try {
+        final bytes = await dst.readAsBytes();
+        m = await Isolate.run(
+          () => Map<String, dynamic>.from(jsonDecode(utf8.decode(gzip.decode(bytes))) as Map),
+        );
+      } catch (_) {
+        throw TransferError('Данные повреждены — попробуй ещё раз');
+      }
+      await _restore(m, await media.root());
+      log('перенесено со старого телефона: контактов ${(m['contacts'] as List?)?.length ?? 0}');
+    } finally {
+      await pl.close();
+      if (dst.existsSync()) await dst.delete();
+    }
   }
 
   VeilCard get myCard {

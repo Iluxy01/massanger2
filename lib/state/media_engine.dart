@@ -55,6 +55,9 @@ class MediaEngine {
 
   Future<String> root() async => _rootPath ??= await _root();
 
+  /// Папка для временных файлов.
+  Future<Directory> tempDir() => _temp();
+
   Future<String> pathFor(String chat, String msgId, String ext) async {
     final dir = Directory(p.join(await root(), chat));
     await dir.create(recursive: true);
@@ -192,28 +195,46 @@ class MediaEngine {
       live.log('файл для ${Live.short(m.id)} пропал с телефона');
       return false;
     }
+    final size = await File(path).length();
+    live.log(
+      '↑ файл ${att.name} (${(size / 1024).round()} КБ, '
+      'кусков: ${MediaCodec.chunkCount(size)}) для ${live.who(chat)}',
+    );
+    final sw = Stopwatch()..start();
+    final prefer = (live.app.contact(chat)?.reach ?? const <String>[]).toSet();
+    if (!await _push(path, att, prefer: prefer, progress: _progress(m.id))) return false;
+    if (!await _publishResult(chat, m)) return false;
+    live.log(
+      '  файл залит за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с: '
+      '${att.relays.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
+    );
+    return true;
+  }
+
+  /// Залить файл [path] зашифрованными кусками. Заполняет в [att] размер,
+  /// хэш, ключ, подпись кусков и где они лежат.
+  Future<bool> _push(
+    String path,
+    Attachment att, {
+    Set<String> prefer = const {},
+    ValueNotifier<double>? progress,
+    Duration? ttl,
+  }) async {
     final w = CryptoWorker.shared;
     att.size = await File(path).length();
     att.sha = await w.hashFile(path);
     final signer = Keys.generate();
     final key = base64.encode(randomBytes(32));
     final n = MediaCodec.chunkCount(att.size);
-    final prefer = (live.app.contact(chat)?.reach ?? const <String>[]).toSet();
     final holders = <String, int>{};
-    final progress = _progress(m.id);
     var next = 0, done = 0;
     var failed = false;
-    live.log(
-      '↑ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n) для ${live.who(chat)}',
-    );
-    final sw = Stopwatch()..start();
-
     final sent = <String>[];
 
     Future<void> lane() async {
       while (!failed && next < n) {
         final i = next++;
-        final ev = await w.sealChunk(signer: signer, key: key, path: path, index: i);
+        final ev = await w.sealChunk(signer: signer, key: key, path: path, index: i, ttl: ttl);
         _ours.add(ev.id);
         if (_ours.length > 5000) _ours.remove(_ours.first);
         live.pool?.onReject ??= _onReject;
@@ -248,7 +269,7 @@ class MediaEngine {
         }
         sent.add(ev.id);
         done++;
-        progress.value = done / n;
+        progress?.value = done / n;
       }
     }
 
@@ -271,12 +292,44 @@ class MediaEngine {
       ..relays = (holders.keys.toList()..sort((a, b) => holders[b]!.compareTo(holders[a]!)))
           .take(6)
           .toList();
-    if (!await _publishResult(chat, m)) return false;
-    live.log(
-      '  файл залит за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с: '
-      '${att.relays.map((u) => u.replaceFirst('wss://', '')).join(', ')}',
-    );
+    _sent[att.signer] = sent;
     return true;
+  }
+
+  /// Какие события-куски залиты под каждой подписью (чтобы убрать их потом).
+  final Map<String, List<String>> _sent = {};
+
+  /// Залить файл без чата и сообщения (перенос аккаунта на новый телефон).
+  /// null — не получилось.
+  Future<Attachment?> pushFile(
+    String path, {
+    ValueNotifier<double>? progress,
+    Duration ttl = const Duration(days: 1),
+  }) async {
+    final att = Attachment(name: p.basename(path), mime: 'application/octet-stream', size: 0);
+    try {
+      return await _push(path, att, progress: progress, ttl: ttl) ? att : null;
+    } catch (e) {
+      live.log('ОШИБКА заливки: $e');
+      return null;
+    }
+  }
+
+  /// Попросить ретрансляторы удалить куски (NIP-09, подписано ключом кусков).
+  /// Не все послушают — куски и так зашифрованы и исчезнут по сроку.
+  Future<void> unpublish(Attachment att) async {
+    final ids = _sent.remove(att.signer);
+    final pl = live.pool;
+    if (ids == null || ids.isEmpty || pl == null || att.signerKey.isEmpty) return;
+    final e = Event.signed(
+      Keys(att.signerKey),
+      kind: 5,
+      content: '',
+      tags: [
+        for (final id in ids) ['e', id],
+      ],
+    );
+    await pl.publish(e, timeout: const Duration(seconds: 6), queue: false);
   }
 
   /// Друг не смог забрать куски — кладём их туда, где он на связи. Файл и ключи
@@ -443,19 +496,47 @@ class MediaEngine {
     final pl = live.pool;
     if (att == null || !att.uploaded || pl == null || live.closed) return false;
     if (att.local && File(att.path!).existsSync()) return true;
+    final dst = await pathFor(chat, m.id, att.ext);
+    live.log('↓ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: ${att.chunks})');
+    final sw = Stopwatch()..start();
+    if (!await _pull(pl, att, dst, progress: _progress(m.id))) return false;
+    att.path = dst;
+    await _publishResult(chat, m);
+    live.log('  файл получен за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с');
+    return true;
+  }
+
+  /// Скачать файл без чата и сообщения (перенос аккаунта) — через [pl].
+  Future<bool> pullFile(
+    RelayPool pl,
+    Attachment att,
+    String dst, {
+    ValueNotifier<double>? progress,
+  }) async {
+    try {
+      return await _pull(pl, att, dst, progress: progress);
+    } catch (e) {
+      live.log('ОШИБКА получения: $e');
+      return false;
+    }
+  }
+
+  /// Собрать куски [att] в файл [dst] (с проверкой хэша).
+  Future<bool> _pull(
+    RelayPool pl,
+    Attachment att,
+    String dst, {
+    ValueNotifier<double>? progress,
+  }) async {
     final n = att.chunks;
     final cs = att.chunkSize > 0 ? att.chunkSize : MediaCodec.chunkSize;
-    if (n > maxBytes ~/ cs + 2) return false;
-    final dst = await pathFor(chat, m.id, att.ext);
+    if (n <= 0 || n > maxBytes ~/ cs + 2) return false;
     final part = File('$dst.part');
     final raf = await part.open(mode: FileMode.write);
     final have = <int>{};
     final pending = <int>{};
     var writes = Future<void>.value();
     var lastChunk = DateTime.now();
-    final progress = _progress(m.id);
-    final sw = Stopwatch()..start();
-    live.log('↓ файл ${att.name} (${(att.size / 1024).round()} КБ, кусков: $n)');
 
     void onEvent(Event e) {
       final i = MediaCodec.indexOf(e);
@@ -473,7 +554,7 @@ class MediaEngine {
           await raf.setPosition(i * cs);
           await raf.writeFrom(bytes);
           have.add(i);
-          progress.value = have.length / n;
+          progress?.value = have.length / n;
         }
         pending.remove(i);
       });
@@ -554,9 +635,6 @@ class MediaEngine {
         return false;
       }
       await part.rename(dst);
-      att.path = dst;
-      await _publishResult(chat, m);
-      live.log('  файл получен за ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с');
       return true;
     } finally {
       try {

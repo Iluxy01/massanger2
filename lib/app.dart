@@ -492,7 +492,7 @@ class _RootGate extends StatelessWidget {
       ),
       child: !app.ready
           ? const _Splash(key: ValueKey('splash'))
-          : onboarded
+          : onboarded && !app.setupPending
           ? const HomeScreen(key: ValueKey('home'))
           : const OnboardingScreen(key: ValueKey('onboarding')),
     );
