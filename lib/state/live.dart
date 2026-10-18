@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/backup.dart';
 import '../core/giftwrap.dart';
+import '../core/link.dart';
 import '../core/media_tools.dart';
 import '../core/nostr.dart';
 import '../core/protocol.dart';
@@ -364,7 +365,12 @@ class Live {
     if (pool != null || keys == null || _closed) return;
     final p = pool = RelayPool(activeRelays, connector: _connector);
     p.onSynced = _synced;
-    _events = p.events.listen((e) => _queue = _queue.then((_) => _safely(e)));
+    _events = p.events.listen((e) {
+      // Свёрнуто, телефон спит: пришедшее разбудило его на миг — пусть не
+      // засыпает, пока расшифруем, сохраним и покажем уведомление.
+      if (_paused && !background) Link.hold(const Duration(seconds: 8));
+      _queue = _queue.then((_) => _safely(e));
+    });
     _changes = p.changes.listen((_) {
       // Перерисовываем экран, только если что-то видимое поменялось (состояние
       // или ошибка ретранслятора), а не на каждое служебное событие сети.
@@ -386,6 +392,9 @@ class Live {
         _relayStates[url] = st;
       }
       final n = p.onlineCount;
+      // Связь оборвалась, пока телефон спит: таймеры переподключения во сне
+      // не срабатывают — просим Android подождать, пока подключимся снова.
+      if (n < _lastOnline && _paused && !background) Link.hold(const Duration(seconds: 20));
       if (n > _lastOnline) {
         _flushOutbox();
         if (_lastOnline == 0) resumeMedia();
@@ -507,6 +516,26 @@ class Live {
     _paused = true;
     tuneProbe();
     _ping(online: false);
+  }
+
+  /// Будильник службы «на связи» или смена сети: проверить соединения,
+  /// переподключиться, забрать и отправить накопившееся — и отпустить
+  /// процессор спать.
+  Future<void> keepAlive() async {
+    final p = pool;
+    try {
+      if (p == null || _closed) return;
+      Link.hold(const Duration(seconds: 20));
+      await p.verify(timeout: const Duration(seconds: 12));
+      await _flushOutbox();
+      // Ответы на только что отправленный запрос и пришедшие сообщения.
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      await _queue;
+    } catch (e) {
+      log('проверка связи: $e');
+    } finally {
+      Link.release();
+    }
   }
 
   /// Фоновая проверка: подключиться, забрать накопившееся, выйти.

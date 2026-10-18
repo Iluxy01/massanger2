@@ -3,12 +3,14 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/biometric.dart';
+import '../core/link.dart';
 import '../core/relay_pool.dart';
 import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
 import '../theme/sky.dart';
 import '../widgets/avatar.dart';
+import '../widgets/background_status.dart';
 import '../widgets/effects.dart';
 import 'add_friend_screen.dart';
 import 'chat_screen.dart';
@@ -367,19 +369,42 @@ class SettingsTab extends StatelessWidget {
                       : 'Сейчас — проверка раз в ~15 минут, когда Veil закрыт',
                   trailing: VeilSwitch(
                     value: app.instantNotify,
-                    onChanged: (v) {
-                      app.setInstantNotify(v);
+                    onChanged: (v) async {
+                      await app.setInstantNotify(v);
+                      // Сразу попросить «без ограничений батареи»: иначе Android
+                      // со временем усыпляет службу, и сообщения опаздывают.
                       if (v) {
-                        showVeilToast(
-                          context,
-                          'Veil останется на связи в фоне. Если сообщения всё равно '
-                          'опаздывают — разреши ему работать без ограничений батареи',
-                          icon: Icons.bolt_rounded,
-                        );
+                        final st = await Link.status();
+                        if (st != null && !st.unrestricted) await Link.askUnrestricted();
                       }
                     },
                   ),
                 ),
+                if (app.instantNotify && !app.ultra && app.disguise == 0)
+                  BackgroundStatus(
+                    builder: (context, st, act) {
+                      if (st == null) return const SizedBox.shrink();
+                      if (!st.notifications) {
+                        return _Tile(
+                          icon: Icons.notifications_off_rounded,
+                          title: 'Уведомления выключены в Android',
+                          subtitle: 'Сообщения приходят, но не показываются. Нажми, чтобы включить',
+                          onTap: act.allowNotifications,
+                        );
+                      }
+                      return _Tile(
+                        icon: st.unrestricted
+                            ? Icons.battery_charging_full_rounded
+                            : Icons.battery_alert_rounded,
+                        title: 'Работа в фоне',
+                        subtitle: st.unrestricted
+                            ? 'Без ограничений — Veil на связи и после перезагрузки'
+                            : 'Android может усыплять Veil — сообщения будут опаздывать. '
+                                  'Нажми, чтобы разрешить',
+                        onTap: st.unrestricted ? null : act.allowBackground,
+                      );
+                    },
+                  ),
                 _Tile(
                   icon: Icons.notifications_rounded,
                   title: 'Текст в уведомлениях',

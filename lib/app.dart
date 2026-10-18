@@ -6,12 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import 'core/notifier.dart';
 import 'screens/chat_screen.dart';
 import 'screens/cover_screens.dart';
 import 'screens/home_screen.dart';
 import 'screens/lock_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'state/app_state.dart';
+import 'theme/palette.dart';
 import 'widgets/avatar.dart';
 import 'widgets/effects.dart';
 import 'widgets/slow_clock.dart';
@@ -44,15 +46,46 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
   /// Свернул приложение — оно блокируется (если задан PIN).
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
+    final state = widget.state;
     // Декоративные анимации (фон, точки) стоят, пока приложение не на экране.
     Activity.setResumed(s == AppLifecycleState.resumed);
     if (s == AppLifecycleState.paused) {
-      widget.state.lock();
-      widget.state.setForeground(false);
+      state.lock();
+      state.setForeground(false);
+    } else if (s == AppLifecycleState.detached) {
+      // Окно закрыли, а приложение живёт дальше (служба «на связи»).
+      state.windowless = true;
     } else if (s == AppLifecycleState.resumed) {
-      widget.state.setForeground(true);
+      if (state.windowless) {
+        state.windowless = false;
+        _newWindow();
+      }
+      state.setForeground(true);
     }
   }
+
+  /// Новое окно у уже работающего приложения: системные панели о прежнем
+  /// оформлении не знают — передаём заново; и, если окно открыли нажатием на
+  /// уведомление, открываем тот чат.
+  void _newWindow() {
+    SystemChrome.handleAppLifecycleStateChanged(AppLifecycleState.detached);
+    scheduleMicrotask(() {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(_chrome(widget.state.colors));
+    });
+    if (!widget.state.demo) {
+      SystemNotify.launchChat().then((chat) {
+        if (chat != null) widget.state.openRequest.value = chat;
+      }, onError: (Object _) {});
+    }
+  }
+
+  static SystemUiOverlayStyle _chrome(VeilColors vc) => SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    systemNavigationBarColor: Colors.transparent,
+    statusBarIconBrightness: vc.dark ? Brightness.light : Brightness.dark,
+    systemNavigationBarIconBrightness: vc.dark ? Brightness.light : Brightness.dark,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -65,14 +98,7 @@ class _VeilAppState extends State<VeilApp> with WidgetsBindingObserver {
         builder: (context, _) {
           final s = widget.state;
           final vc = s.colors;
-          SystemChrome.setSystemUIOverlayStyle(
-            SystemUiOverlayStyle(
-              statusBarColor: Colors.transparent,
-              systemNavigationBarColor: Colors.transparent,
-              statusBarIconBrightness: vc.dark ? Brightness.light : Brightness.dark,
-              systemNavigationBarIconBrightness: vc.dark ? Brightness.light : Brightness.dark,
-            ),
-          );
+          SystemChrome.setSystemUIOverlayStyle(_chrome(vc));
           return MaterialApp(
             title: 'Veil',
             debugShowCheckedModeBanner: false,

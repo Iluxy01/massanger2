@@ -15,6 +15,12 @@
     <!-- «Мгновенные уведомления» (по желанию): служба «на связи» -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <!-- …снова на связи после перезагрузки телефона -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- …несколько секунд не спать, пока переподключаемся и забираем новое -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- …спросить «Работать без ограничений батареи» (только по нажатию) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Уведомления о новых сообщениях (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
@@ -86,6 +92,21 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="remoteMessaging" />
+        <!-- После перезагрузки и обновления — снова на связи (если включено). -->
+        <receiver
+            android:name=".VeilBoot"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        <!-- Редкий «будильник»: проверить связь, пока телефон спит. -->
+        <receiver
+            android:name=".VeilAlarm"
+            android:exported="false" />
         <!-- Доступ другим приложениям к файлу, который открываем (только на время просмотра) -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -49,6 +49,10 @@ class AppState extends ChangeNotifier {
   /// Приложение на экране (а не свёрнуто).
   bool foreground = true;
 
+  /// Приложение работает без окна (подняла служба «на связи» или окно
+  /// закрыли): следующему окну нужно заново передать оформление.
+  bool windowless = false;
+
   Profile? profile;
   bool get onboarded => profile != null;
 

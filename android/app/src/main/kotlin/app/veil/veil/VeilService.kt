@@ -4,22 +4,57 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
+import io.flutter.embedding.engine.dart.DartExecutor
 
 /**
- * «Мгновенные уведомления»: держит приложение запущенным, пока оно свёрнуто,
- * чтобы соединения с ретрансляторами не обрывались и сообщения приходили сразу.
- * Сама служба ничего не делает — работу выполняет приложение (Flutter), которое
- * благодаря ей Android не выгружает. Видна как тихий значок в шторке.
+ * «Мгновенные уведомления»: держит приложение запущенным, пока оно свёрнуто или
+ * закрыто, чтобы соединения с ретрансляторами не обрывались и сообщения
+ * приходили сразу. Видна как тихий значок «Veil на связи» в шторке.
+ *
+ * Если приложения нет (телефон перезагрузили, Veil обновили, Android выгрузил
+ * его ради памяти) — служба сама поднимает его без окна. Окно, открытое потом,
+ * подключается к нему же.
  */
 class VeilService : Service() {
+    private var network: ConnectivityManager.NetworkCallback? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        running = true
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foreground()) {
+            // Система не разрешила (например, запуск из фона) — не работаем.
+            running = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!VeilLink.instant(this)) {
+            // Выключили, пока служба перезапускалась.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        ensureApp()
+        watchNetwork()
+        VeilAlarm.schedule(this)
+        // Выгрузили ради памяти — Android перезапустит службу, а она — приложение.
+        return START_STICKY
+    }
+
+    private fun foreground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26 && manager != null) {
             val channel = NotificationChannel(
@@ -47,22 +82,76 @@ class VeilService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setContentIntent(open)
             .build()
-        try {
+        return try {
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
             } else {
                 startForeground(ID, notification)
             }
-        } catch (e: Exception) {
-            // Система не разрешила (например, запуск из фона) — просто не работаем.
-            stopSelf()
+            true
+        } catch (_: Exception) {
+            false
         }
-        // Если Android всё же выгрузит приложение, не перезапускаемся «пустыми».
-        return START_NOT_STICKY
+    }
+
+    /** Приложения нет в памяти — поднять его без окна. */
+    private fun ensureApp() {
+        val cache = FlutterEngineCache.getInstance()
+        if (cache.get(MainActivity.ENGINE) != null) return
+        try {
+            VeilLink.hold(this, 20_000L)
+            val engine = FlutterEngine(applicationContext)
+            VeilLink.register(engine, applicationContext)
+            engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
+            // Окна нет: приложение «свёрнуто» — без кадров и анимаций, с уведомлениями.
+            engine.lifecycleChannel.appIsPaused()
+            cache.put(MainActivity.ENGINE, engine)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Сменилась сеть (Wi-Fi ⇄ мобильная) — сразу переподключиться. */
+    private fun watchNetwork() {
+        if (network != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val app = applicationContext
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                // Сразу при подписке Android сообщает текущую сеть — это не смена.
+                private var last: Network? = cm.activeNetwork
+
+                override fun onAvailable(n: Network) {
+                    if (n == last) return
+                    last = n
+                    VeilLink.hold(app, 15_000L)
+                    VeilLink.tick("net")
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            network = cb
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onDestroy() {
+        running = false
+        network?.let {
+            try {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        network = null
+        if (!VeilLink.instant(this)) VeilAlarm.cancel(this)
+        super.onDestroy()
     }
 
     companion object {
         const val CHANNEL = "veil_link"
         const val ID = 7001
+
+        @Volatile
+        var running = false
     }
 }

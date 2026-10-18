@@ -48,7 +48,21 @@ class SystemNotify implements Notify {
       return;
     }
     final chat = r.payload;
-    if (chat != null && chat.isNotEmpty) onOpen?.call(chat);
+    if (chat != null && chat.isNotEmpty && _fresh(r)) onOpen?.call(chat);
+  }
+
+  /// Одно и то же нажатие может прийти двумя путями (сразу от системы и в
+  /// данных запуска окна) — открываем чат только один раз.
+  static String? _handled;
+  static DateTime _handledAt = DateTime(2000);
+
+  static bool _fresh(NotificationResponse r) {
+    final key = '${r.id}|${r.payload}';
+    final now = DateTime.now();
+    if (key == _handled && now.difference(_handledAt) < const Duration(seconds: 10)) return false;
+    _handled = key;
+    _handledAt = now;
+    return true;
   }
 
   /// Приложение открыли нажатием на уведомление — какой чат показать.
@@ -57,9 +71,21 @@ class SystemNotify implements Notify {
     final d = await _plugin.getNotificationAppLaunchDetails();
     if (!(d?.didNotificationLaunchApp ?? false)) return null;
     final r = d!.notificationResponse;
-    if (r == null || r.actionId != null) return null;
+    if (r == null || r.actionId != null || !_fresh(r)) return null;
     final chat = r.payload;
     return chat == null || chat.isEmpty ? null : chat;
+  }
+
+  /// Разрешены ли уведомления (null — не Android).
+  static Future<bool?> enabled() async {
+    try {
+      await init();
+      return await _plugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.areNotificationsEnabled();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Android 13+ спрашивает разрешение на уведомления.
