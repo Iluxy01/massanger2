@@ -71,7 +71,7 @@ class TransferBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.app;
-    final acc = app.accent;
+    final acc = context.accent;
     final fg = dark ? Colors.white : acc.onAccent;
     final bg = dark ? Colors.black.withValues(alpha: 0.45) : null;
     final progress = app.transfers[m.id];
@@ -610,7 +610,7 @@ class _VoiceMessageState extends State<VoiceMessage> {
     final app = context.app;
     final m = widget.m;
     final fg = widget.fg;
-    final acc = app.accent;
+    final acc = context.accent;
     final state = xferOf(app, m);
     final bars = _bars;
     final secs = m.seconds;
@@ -943,7 +943,7 @@ class PollContent extends StatelessWidget {
     final voted = mine.isNotEmpty;
     final total = poll.voters;
     final friend = app.contact(chatId);
-    final acc = app.accent;
+    final acc = context.accent;
 
     void tap(int i) {
       app.tick(HapticKind.selection);

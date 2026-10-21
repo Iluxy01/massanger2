@@ -6,6 +6,7 @@ import '../theme/palette.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
+import 'chat_look.dart';
 import 'chat_screen.dart';
 import '../widgets/visual.dart';
 
@@ -75,6 +76,16 @@ class ContactScreen extends StatelessWidget {
                   ),
                 ),
               ],
+              if (c.birthday case final bd?) ...[
+                const SizedBox(height: 8),
+                Center(
+                  child: Text(switch (app.birthdayOf(c)) {
+                    0 => '🎂 Сегодня день рождения!',
+                    1 => '🎂 Завтра день рождения — ${fmtBirthday(bd)}',
+                    _ => '🎂 ${fmtBirthday(bd)}',
+                  }, style: TextStyle(color: vc.textDim)),
+                ),
+              ],
               const SizedBox(height: 24),
               Row(
                 children: [
@@ -121,11 +132,18 @@ class ContactScreen extends StatelessWidget {
                     children: [
                       const GradientIcon(Icons.shield_rounded, size: 22),
                       const SizedBox(width: 10),
-                      Text(
-                        'Код безопасности',
-                        style: TextStyle(color: vc.text, fontSize: 17, fontWeight: FontWeight.w700),
+                      Expanded(
+                        child: Text(
+                          'Код безопасности',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: vc.text,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
-                      const Spacer(),
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 300).by(context),
                         transitionBuilder: (ch, a) => ScaleTransition(scale: a, child: ch),
@@ -200,9 +218,17 @@ class ContactScreen extends StatelessWidget {
                     children: [
                       Icon(Icons.timer_outlined, color: vc.text),
                       const SizedBox(width: 10),
-                      Text(
-                        'Исчезающие сообщения',
-                        style: TextStyle(color: vc.text, fontSize: 16, fontWeight: FontWeight.w600),
+                      Flexible(
+                        child: Text(
+                          'Исчезающие сообщения',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: vc.text,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -214,6 +240,42 @@ class ContactScreen extends StatelessWidget {
                     onChanged: (v) => app.setDisappearing(c.id, v),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+              Pressable(
+                key: const ValueKey('chat-look'),
+                scale: 0.98,
+                onTap: () => Navigator.of(context).push(ChatLookScreen.route(c)),
+                child: _Card(
+                  children: [
+                    Row(
+                      children: [
+                        const GradientIcon(Icons.palette_rounded, size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Оформление чата',
+                                style: TextStyle(
+                                  color: vc.text,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                'Свой фон и цвет — только у тебя',
+                                style: TextStyle(color: vc.textDim, fontSize: 12.5),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right_rounded, color: vc.textFaint),
+                      ],
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               _Card(
@@ -410,8 +472,14 @@ class _InfoRow extends StatelessWidget {
         children: [
           Icon(icon, size: 20, color: vc.textDim),
           const SizedBox(width: 12),
-          Text(label, style: TextStyle(color: vc.text)),
-          const Spacer(),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: vc.text),
+            ),
+          ),
           Text(value, style: TextStyle(color: vc.textDim)),
         ],
       ),

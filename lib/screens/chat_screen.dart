@@ -17,7 +17,10 @@ import '../theme/sky.dart';
 import '../utils.dart';
 import '../widgets/avatar.dart';
 import '../widgets/attachments.dart';
+import '../widgets/draw_views.dart';
 import '../widgets/effects.dart';
+import '../widgets/fx_layer.dart';
+import '../widgets/game_views.dart';
 import '../widgets/once_media.dart';
 import '../widgets/todo_list.dart';
 import '../widgets/rich_text.dart';
@@ -25,8 +28,11 @@ import '../widgets/sticker_panel.dart';
 import '../widgets/stickers.dart';
 import '../widgets/video_note.dart';
 import '../widgets/visual.dart';
+import '../widgets/wallpaper.dart';
 import 'attach_flows.dart';
 import 'contact_screen.dart';
+import 'draw_screen.dart';
+import 'game_screen.dart';
 import 'group_screens.dart';
 import 'wifi_hint.dart';
 
@@ -121,6 +127,15 @@ class _ChatScreenState extends State<ChatScreen> {
   /// спрашиваем разрешение, кнопку могли уже отпустить).
   bool _holding = false;
 
+  /// Эффекты к сообщениям: слой поверх чата и «встряска» для «бума». В
+  /// остальное время слоя нет — ничего не рисуется и не считается.
+  final _fx = GlobalKey<FxLayerState>();
+  final _shake = ValueNotifier<Offset>(Offset.zero);
+
+  /// Входящие, уже проверенные на эффект, и доехал ли экран.
+  final Set<String> _fxChecked = {};
+  bool _arrived = false;
+
   Contact get c => widget.contact;
 
   @override
@@ -148,15 +163,17 @@ class _ChatScreenState extends State<ChatScreen> {
       if (j != null) _jumpTo(j);
       // «Прочитано» — когда экран доехал: отметка перестраивает и список
       // чатов под ним, и посреди анимации это давало рывок.
+      // Незаконченные игры: сверить ходы (вдруг ход соперника потерялся).
+      _app.gameCheck(c.id);
       final anim = ModalRoute.of(context)?.animation;
       if (anim == null || anim.isCompleted) {
-        _app.markRead(c.id);
+        _onArrived();
         return;
       }
       void done(AnimationStatus st) {
         if (st != AnimationStatus.completed) return;
         anim.removeStatusListener(done);
-        if (mounted) _app.markRead(c.id);
+        if (mounted) _onArrived();
       }
 
       anim.addStatusListener(done);
@@ -169,6 +186,33 @@ class _ChatScreenState extends State<ChatScreen> {
           _stickersOpen = false;
         });
       }
+    });
+  }
+
+  void _onArrived() {
+    _app.markRead(c.id);
+    _arrived = true;
+    _checkFx(_app.messagesOf(c.id));
+  }
+
+  /// Свежие входящие с эффектом (салют, сердечки, конфетти на «С днём
+  /// рождения») — показать один раз. Смотрим только последние сообщения.
+  void _checkFx(List<Message> msgs) {
+    if (!_arrived || !(ModalRoute.of(context)?.isCurrent ?? true)) return;
+    final now = DateTime.now();
+    final found = <Message>[];
+    for (var i = msgs.length - 1; i >= 0 && i >= msgs.length - 15; i--) {
+      final m = msgs[i];
+      if (m.mine || m.fxSeen || !_fxChecked.add(m.id)) continue;
+      if (now.difference(m.time).inDays < 3 && m.effect != null) found.add(m);
+    }
+    if (found.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final m in found) {
+        _app.markFxSeen(c.id, m);
+      }
+      _fx.currentState?.play(found.first.effect!);
     });
   }
 
@@ -190,6 +234,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _focus.dispose();
     _searchInput.dispose();
     _flashTimer?.cancel();
+    _shake.dispose();
     super.dispose();
   }
 
@@ -198,7 +243,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scroll.animateTo(0, duration: const Duration(milliseconds: 450), curve: Curves.easeOutCubic);
   }
 
-  void _send({bool silent = false}) {
+  void _send({bool silent = false, String? fx}) {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     _app.tick(HapticKind.light);
@@ -209,7 +254,9 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _editing = null);
       return;
     }
-    _app.send(c.id, text, replyTo: _replyTo, secret: _secret, silent: silent);
+    final sent = _app.send(c.id, text, replyTo: _replyTo, secret: _secret, silent: silent, fx: fx);
+    final effect = sent.effect;
+    if (effect != null) _fx.currentState?.play(effect);
     if (silent) {
       showVeilToast(context, 'Отправлено без звука', icon: Icons.notifications_off_rounded);
     }
@@ -250,6 +297,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _focus.requestFocus();
       case 'forward':
         _forward(m);
+      case 'fx':
+        final e = m.effect;
+        if (e != null) _fx.currentState?.play(e);
       case 'pin':
         final pinned = c.pinnedMsg == m.id;
         _app.pinMessage(c.id, pinned ? null : m);
@@ -458,31 +508,41 @@ class _ChatScreenState extends State<ChatScreen> {
             radius: 24,
             color: vc.elevated,
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                option(
-                  ctx,
-                  Icons.notifications_off_rounded,
-                  'Отправить без звука',
-                  'Придёт тихо, без уведомления',
-                  'silent',
-                ),
-                option(
-                  ctx,
-                  Icons.schedule_send_rounded,
-                  'Отправить позже',
-                  'Уйдёт само в выбранное время — даже если Veil закрыт',
-                  'later',
-                ),
-                option(
-                  ctx,
-                  Icons.hourglass_top_rounded,
-                  'Капсула времени',
-                  'Придёт сейчас, но откроется у друга только в выбранный день',
-                  'capsule',
-                ),
-              ],
+            child: Material(
+              type: MaterialType.transparency,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  option(
+                    ctx,
+                    Icons.auto_awesome_rounded,
+                    'С эффектом',
+                    'Салют, сердечки, снег или бум — на весь экран и у друга',
+                    'fx',
+                  ),
+                  option(
+                    ctx,
+                    Icons.notifications_off_rounded,
+                    'Отправить без звука',
+                    'Придёт тихо, без уведомления',
+                    'silent',
+                  ),
+                  option(
+                    ctx,
+                    Icons.schedule_send_rounded,
+                    'Отправить позже',
+                    'Уйдёт само в выбранное время — даже если Veil закрыт',
+                    'later',
+                  ),
+                  option(
+                    ctx,
+                    Icons.hourglass_top_rounded,
+                    'Капсула времени',
+                    'Придёт сейчас, но откроется у друга только в выбранный день',
+                    'capsule',
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -490,6 +550,9 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted || choice == null) return;
     switch (choice) {
+      case 'fx':
+        final kind = await _pickFx();
+        if (kind != null && mounted) _send(fx: kind);
       case 'silent':
         _send(silent: true);
       case 'later':
@@ -499,6 +562,70 @@ class _ChatScreenState extends State<ChatScreen> {
         final at = await pickWhen(context, title: 'Когда открыть?', far: true);
         if (at != null && mounted) _sendSpecial(openAt: at);
     }
+  }
+
+  Future<String?> _pickFx() {
+    final vc = _app.colors;
+    return showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Glass(
+            radius: 24,
+            color: vc.elevated,
+            padding: const EdgeInsets.fromLTRB(8, 16, 8, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Эффект',
+                  style: TextStyle(color: vc.text, fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (final e in FxLayer.names.entries)
+                      Pressable(
+                        key: ValueKey('fx-${e.key}'),
+                        onTap: () => Navigator.pop(ctx, e.key),
+                        child: Column(
+                          children: [
+                            Text(e.value.$1, style: const TextStyle(fontSize: 34)),
+                            const SizedBox(height: 4),
+                            Text(e.value.$2, style: TextStyle(color: vc.textDim, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// У друга сегодня день рождения, а я ещё не поздравил (с конфетти).
+  bool _wantGreet(AppState app) {
+    if (c.isGroup || c.isNotes || app.birthdayOf(c) != 0) return false;
+    final msgs = app.messagesOf(c.id);
+    final now = DateTime.now();
+    for (var i = msgs.length - 1; i >= 0 && i >= msgs.length - 40; i--) {
+      final m = msgs[i];
+      if (!sameDay(m.time, now)) break;
+      if (m.mine && m.effect == 'confetti') return false;
+    }
+    return true;
+  }
+
+  void _congratulate() {
+    _app.send(c.id, 'С днём рождения! 🎉', fx: 'confetti');
+    _fx.currentState?.play('confetti');
+    _toBottom();
   }
 
   /// Отложенная отправка или капсула времени.
@@ -711,6 +838,15 @@ class _ChatScreenState extends State<ChatScreen> {
         await flows.poll();
       case 'todo':
         await flows.todo();
+      case 'draw':
+        final m = _app.sendDrawing(c.id);
+        _toBottom();
+        await Navigator.of(context).push(DrawScreen.route(c.id, m.id));
+        return;
+      case 'game':
+        await pickGame(context, c.id);
+      case 'lot':
+        await pickGame(context, c.id, lots: true);
     }
     if (!mounted) return;
     if (_replyTo != null && _app.lastMessage(c.id)?.replyTo == _replyTo) {
@@ -770,6 +906,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Свой цвет чата — для всего, что внутри экрана переписки.
+    final own = context.app.contact(c.id)?.chatAccent;
+    return ChatAccent(
+      accent: own == null ? null : chatAccents[own.clamp(0, chatAccents.length - 1)],
+      child: Builder(builder: _build),
+    );
+  }
+
+  Widget _build(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
     final msgs = app.messagesOf(c.id);
@@ -778,40 +923,53 @@ class _ChatScreenState extends State<ChatScreen> {
     final pinnedMsg = app.pinnedOf(c.id);
     final top = MediaQuery.paddingOf(context).top;
     final newBelow = _showDown ? max(0, msgs.length - _seen) : 0;
+    _checkFx(msgs);
 
     return Scaffold(
       backgroundColor: vc.bg,
       body: Stack(
         children: [
-          const Positioned.fill(child: _ChatBackground()),
-          Column(
-            children: [
-              Expanded(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _messageList(items, top + (pinnedMsg != null ? 50 : 0)),
-                    if (_noteOpening || _recNote)
-                      NoteRecordingOverlay(
-                        recorder: _noteRec!,
-                        seconds: _recSeconds,
-                        recording: _recNote,
-                        cancel: _cancelArmed,
-                        onFlip: _recNote ? _flipNote : null,
-                      ),
-                  ],
-                ),
+          Positioned.fill(
+            child: switch (app.contact(c.id) ?? c) {
+              Contact(:final wallpaper?, :final wallpaperDim) => ChatWallpaper(
+                wallpaper: wallpaper,
+                dim: wallpaperDim,
               ),
-              if (c.request && !c.blocked) _RequestBar(contact: c),
-              if (c.blocked)
-                _BlockedBar(onUnblock: () => app.toggleBlocked(c.id))
-              else if (c.group?.left ?? false)
-                _LeftGroupBar(channel: c.isChannel)
-              else if (app.readOnly(c))
-                _ChannelBar(contact: c)
-              else
-                _composer(context),
-            ],
+              _ => const ChatBackground(),
+            },
+          ),
+          ValueListenableBuilder<Offset>(
+            valueListenable: _shake,
+            builder: (_, o, child) => Transform.translate(offset: o, child: child),
+            child: Column(
+              children: [
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _messageList(items, top + (pinnedMsg != null ? 50 : 0)),
+                      if (_noteOpening || _recNote)
+                        NoteRecordingOverlay(
+                          recorder: _noteRec!,
+                          seconds: _recSeconds,
+                          recording: _recNote,
+                          cancel: _cancelArmed,
+                          onFlip: _recNote ? _flipNote : null,
+                        ),
+                    ],
+                  ),
+                ),
+                if (c.request && !c.blocked) _RequestBar(contact: c),
+                if (c.blocked)
+                  _BlockedBar(onUnblock: () => app.toggleBlocked(c.id))
+                else if (c.group?.left ?? false)
+                  _LeftGroupBar(channel: c.isChannel)
+                else if (app.readOnly(c))
+                  _ChannelBar(contact: c)
+                else
+                  _composer(context),
+              ],
+            ),
           ),
           Positioned(
             top: 0,
@@ -850,6 +1008,9 @@ class _ChatScreenState extends State<ChatScreen> {
               curve: Curves.easeOutBack,
               child: _ScrollDownButton(count: newBelow, onTap: _toBottom),
             ),
+          ),
+          Positioned.fill(
+            child: FxLayer(key: _fx, shake: _shake),
           ),
         ],
       ),
@@ -894,7 +1055,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _composer(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
-    final acc = app.accent;
+    final acc = context.accent;
     final bottom = MediaQuery.paddingOf(context).bottom;
 
     return Padding(
@@ -902,11 +1063,44 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (!_attachOpen && !_stickersOpen && _wantGreet(app))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Pressable(
+                key: const ValueKey('greet'),
+                onTap: _congratulate,
+                child: Glass(
+                  radius: 18,
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  child: Row(
+                    children: [
+                      const Text('🎂', style: TextStyle(fontSize: 20)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Сегодня день рождения!',
+                          style: TextStyle(color: vc.text, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      ShaderMask(
+                        shaderCallback: acc.gradient.createShader,
+                        child: const Text(
+                          'Поздравить 🎉',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           AnimatedSize(
             duration: const Duration(milliseconds: 280).by(context),
             curve: Curves.easeOutCubic,
             child: _attachOpen
                 ? _AttachMenu(
+                    games: !c.isGroup && !c.isNotes,
+                    drawing: !c.isChannel,
                     onPick: _attach,
                     once: _once,
                     onOnce: (v) => setState(() => _once = v),
@@ -989,6 +1183,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Pressable(
+                    key: const ValueKey('attach'),
                     scale: 0.85,
                     onTap: () {
                       FocusScope.of(context).unfocus();
@@ -1273,6 +1468,11 @@ class _TopBar extends StatelessWidget {
                                   const SizedBox(width: 4),
                                   const GradientIcon(Icons.verified_rounded, size: 16),
                                 ],
+                                if (context.appRead.birthdayOf(c) == 0)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 6),
+                                    child: Text('🎂', style: TextStyle(fontSize: 16)),
+                                  ),
                                 if (c.disappearing > 0) ...[
                                   const SizedBox(width: 6),
                                   Icon(Icons.timer_outlined, size: 15, color: vc.textDim),
@@ -1449,8 +1649,8 @@ class _PinnedBar extends StatelessWidget {
 
 // ───────────────────────────── Фон ─────────────────────────────
 
-class _ChatBackground extends StatelessWidget {
-  const _ChatBackground();
+class ChatBackground extends StatelessWidget {
+  const ChatBackground({super.key});
 
   static const _still = AlwaysStoppedAnimation<double>(0.18);
 
@@ -2001,12 +2201,12 @@ class BubbleBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
-    final acc = app.accent;
+    final acc = context.accent;
     final mine = m.mine;
     // В «Заметках» галочки не нужны: сообщение никуда не уходит.
     final ticks = mine && !contact.isNotes;
     final skin = context.skin;
-    final fg = mine ? app.mineFg : vc.text;
+    final fg = mine ? context.mineFg : vc.text;
     final metaColor = mine ? fg.withValues(alpha: 0.75) : vc.textFaint;
 
     final meta = Row(
@@ -2043,6 +2243,7 @@ class BubbleBody extends StatelessWidget {
         !m.secret &&
         m.replyTo == null &&
         m.fwd == null &&
+        m.story == null &&
         isEmojiOnly(m.text)) {
       return Column(
         crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
@@ -2248,6 +2449,21 @@ class BubbleBody extends StatelessWidget {
         content = CapsuleSealed(m: m, fg: fg, meta: meta);
       case MsgKind.todo when m.todo != null:
         content = TodoContent(m: m, chatId: contact.id, fg: fg, meta: meta);
+      case MsgKind.game when m.game != null:
+        content = GameContent(
+          m: m,
+          chatId: contact.id,
+          fg: fg,
+          meta: meta,
+          onOpen: () => Navigator.of(context).push(GameScreen.route(contact.id, m.id)),
+        );
+      case MsgKind.draw when m.drawing != null:
+        content = DrawingContent(
+          m: m,
+          fg: fg,
+          meta: meta,
+          onOpen: () => Navigator.of(context).push(DrawScreen.route(contact.id, m.id)),
+        );
       case _ when m.once && m.att != null:
         content = OnceContent(m: m, chatId: contact.id, fg: fg, meta: meta);
       case MsgKind.voice:
@@ -2387,6 +2603,11 @@ class BubbleBody extends StatelessWidget {
                 ),
               ),
             ),
+          if (m.story != null)
+            Padding(
+              padding: edge ? const EdgeInsets.fromLTRB(8, 6, 8, 0) : EdgeInsets.zero,
+              child: _StoryQuote(text: m.story!, mine: mine, toMe: !m.mine),
+            ),
           content,
         ],
       ),
@@ -2431,8 +2652,8 @@ class _QuotedReply extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
-    final acc = app.accent;
-    final fg = mine ? app.mineFg : vc.text;
+    final acc = context.accent;
+    final fg = mine ? context.mineFg : vc.text;
     // На контурном пузыре «Терминала» цитата — в цвете акцента, как у чужих.
     final onFill = mine && !context.skin.outlineMine;
     final name = m.mine
@@ -2454,6 +2675,49 @@ class _QuotedReply extends StatelessWidget {
         children: [
           Text(
             name,
+            style: TextStyle(color: onFill ? fg : acc.a, fontWeight: FontWeight.w700, fontSize: 13),
+          ),
+          Text(
+            text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: fg.withValues(alpha: 0.85), fontSize: 13.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Ответ на историю: какая это была история.
+class _StoryQuote extends StatelessWidget {
+  const _StoryQuote({required this.text, required this.mine, required this.toMe});
+
+  final String text;
+  final bool mine;
+
+  /// Ответили на мою историю (иначе — я ответил на чужую).
+  final bool toMe;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.app;
+    final acc = context.accent;
+    final fg = mine ? context.mineFg : app.colors.text;
+    final onFill = mine && !context.skin.outlineMine;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+      decoration: BoxDecoration(
+        color: onFill ? Colors.white.withValues(alpha: 0.16) : acc.a.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: onFill ? fg : acc.a, width: 3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            toMe ? '✨ Ответ на вашу историю' : '✨ Ответ на историю',
             style: TextStyle(color: onFill ? fg : acc.a, fontWeight: FontWeight.w700, fontSize: 13),
           ),
           Text(
@@ -2822,7 +3086,7 @@ class _ReactionBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.appRead;
     final vc = app.colors;
-    final acc = app.accent;
+    final acc = context.accent;
     return Material(
       type: MaterialType.transparency,
       child: Glass(
@@ -2899,14 +3163,24 @@ class _ActionsMenu extends StatelessWidget {
       if (m.kind == MsgKind.sticker && local)
         (Icons.bookmark_add_rounded, 'В мои стикеры', 'saveSticker', false),
       if (gif && local) (Icons.gif_box_rounded, 'В мои GIF', 'saveGif', false),
-      if (m.once || sealed || (m.kind == MsgKind.sticker && m.att == null))
+      if (m.once ||
+          sealed ||
+          (m.kind == MsgKind.sticker && m.att == null) ||
+          m.kind == MsgKind.game ||
+          m.kind == MsgKind.draw)
         ...[]
       else if (m.att?.local ?? false)
         (Icons.ios_share_rounded, 'Поделиться', 'share', false)
       else
         (Icons.copy_rounded, 'Копировать', 'copy', false),
-      if (!m.once && !sealed && m.kind != MsgKind.todo)
+      if (!m.once &&
+          !sealed &&
+          m.kind != MsgKind.todo &&
+          m.kind != MsgKind.game &&
+          m.kind != MsgKind.draw)
         (Icons.forward_rounded, 'Переслать', 'forward', false),
+      if (m.effect != null && !sealed)
+        (Icons.auto_awesome_rounded, 'Повторить эффект', 'fx', false),
       if (editable) (Icons.edit_rounded, 'Изменить', 'edit', false),
       if (canWrite)
         c.pinnedMsg == m.id
@@ -3234,7 +3508,7 @@ class _ReplyPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
-    final acc = app.accent;
+    final acc = context.accent;
     final text = Fmt.plain(m.preview);
     final title = editing
         ? 'Редактирование'
@@ -3288,8 +3562,18 @@ class _ReplyPreview extends StatelessWidget {
 }
 
 class _AttachMenu extends StatelessWidget {
-  const _AttachMenu({required this.onPick, required this.once, required this.onOnce});
+  const _AttachMenu({
+    required this.onPick,
+    required this.once,
+    required this.onOnce,
+    this.games = true,
+    this.drawing = true,
+  });
   final ValueChanged<String> onPick;
+
+  /// Игры и жребий — только в личном чате; рисунок — не в канале.
+  final bool games;
+  final bool drawing;
 
   /// «🔥 Одноразово» — для следующего фото, видео, голосового или квадратика.
   final bool once;
@@ -3303,13 +3587,22 @@ class _AttachMenu extends StatelessWidget {
     (Icons.location_on_rounded, 'Место', 'geo', [Color(0xFFFFC145), Color(0xFFFF7A45)]),
     (Icons.poll_rounded, 'Опрос', 'poll', [Color(0xFFB06AB3), Color(0xFF4568DC)]),
     (Icons.checklist_rounded, 'Список', 'todo', [Color(0xFF11998E), Color(0xFF38EF7D)]),
+    (Icons.brush_rounded, 'Рисунок', 'draw', [Color(0xFFFF6FA8), Color(0xFF8E5CFF)]),
+    (Icons.sports_esports_rounded, 'Игры', 'game', [Color(0xFF3A5BFF), Color(0xFF00C2FF)]),
+    (Icons.casino_rounded, 'Жребий', 'lot', [Color(0xFFFF9500), Color(0xFFFF3D5A)]),
   ];
 
   @override
   Widget build(BuildContext context) {
     final vc = context.vc;
+    final items = [
+      for (final it in _items)
+        if ((games || (it.$3 != 'game' && it.$3 != 'lot')) && (drawing || it.$3 != 'draw')) it,
+    ];
+    // По 5 в ряд, если пунктов много; иначе по 4.
+    final perRow = items.length > 8 ? 5 : 4;
     Widget item(int i) {
-      final (icon, label, key, colors) = _items[i];
+      final (icon, label, key, colors) = items[i];
       return TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
         duration: Duration(milliseconds: 350 + i * 50).by(context),
@@ -3319,15 +3612,16 @@ class _AttachMenu extends StatelessWidget {
           child: Opacity(opacity: t.clamp(0, 1), child: c),
         ),
         child: Pressable(
+          key: ValueKey('attach-$key'),
           onTap: () => onPick(key),
           child: SizedBox(
-            width: 70,
+            width: perRow == 5 ? 64 : 70,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 50,
-                  height: 50,
+                  width: perRow == 5 ? 48 : 50,
+                  height: perRow == 5 ? 48 : 50,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: LinearGradient(colors: colors),
@@ -3353,15 +3647,18 @@ class _AttachMenu extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
         child: Column(
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [for (var i = 0; i < 4; i++) item(i)],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [for (var i = 4; i < _items.length; i++) item(i)],
-            ),
+            for (var r = 0; r * perRow < items.length; r++) ...[
+              if (r > 0) const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  for (var i = r * perRow; i < min(items.length, (r + 1) * perRow); i++) item(i),
+                  // Неполный ряд — пустые места, чтобы кнопки стояли по сетке.
+                  for (var i = items.length; i < (r + 1) * perRow; i++)
+                    SizedBox(width: perRow == 5 ? 64 : 70),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),

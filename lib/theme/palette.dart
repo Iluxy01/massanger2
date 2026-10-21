@@ -26,6 +26,16 @@ const accents = <Accent>[
   Accent('Лёд', Color(0xFFA6C8FF), Color(0xFFE2D1FF), onAccent: Color(0xFF16162A)),
 ];
 
+/// Цвета для отдельного чата: общая палитра и ещё несколько.
+const chatAccents = <Accent>[
+  ...accents,
+  Accent('Роза', Color(0xFFFF6FA8), Color(0xFF8E5CFF)),
+  Accent('Океан', Color(0xFF3A5BFF), Color(0xFF00C2FF)),
+  Accent('Солнце', Color(0xFFFFB300), Color(0xFFFF5F6D), onAccent: Color(0xFF221500)),
+  Accent('Лес', Color(0xFF2E8B57), Color(0xFF9ACD32)),
+  Accent('Графит', Color(0xFF5B6270), Color(0xFF2B2F38)),
+];
+
 /// Цвета поверхностей для тёмной и светлой темы.
 class VeilColors {
   const VeilColors({

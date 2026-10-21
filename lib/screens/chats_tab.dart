@@ -9,6 +9,7 @@ import '../widgets/effects.dart';
 import 'chat_screen.dart';
 import 'group_screens.dart';
 import 'settings_tab.dart' show openVault;
+import 'stories.dart';
 import '../widgets/visual.dart';
 
 class ChatsTab extends StatefulWidget {
@@ -140,8 +141,7 @@ class _ChatsTabState extends State<ChatsTab> {
                     : const SizedBox(width: double.infinity),
               ),
             ),
-            if (!_searching && online.isNotEmpty)
-              SliverToBoxAdapter(child: _OnlineRow(contacts: online)),
+            if (!_searching) SliverToBoxAdapter(child: StoriesRow(online: online)),
             if (!_searching && app.archivedChats.isNotEmpty)
               SliverToBoxAdapter(child: _ArchiveRow(count: app.archivedChats.length)),
             if (chats.isEmpty)
@@ -275,85 +275,6 @@ class _RoundIcon extends StatelessWidget {
             child: Icon(icon, key: ValueKey(icon), color: context.vc.text, size: 22),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// Друзья в сети — горизонтальная лента с «сторис»-кольцами.
-class _OnlineRow extends StatelessWidget {
-  const _OnlineRow({required this.contacts});
-
-  final List<Contact> contacts;
-
-  @override
-  Widget build(BuildContext context) {
-    final vc = context.vc;
-    return Padding(
-      padding: const EdgeInsets.only(top: 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 20, bottom: 10),
-            child: Row(
-              children: [
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: const BoxDecoration(
-                    color: VeilColors.success,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'СЕЙЧАС В СЕТИ',
-                  style: TextStyle(
-                    color: vc.textFaint,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(
-            height: 92,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: contacts.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 10),
-              itemBuilder: (_, i) {
-                final c = contacts[i];
-                return Reveal(
-                  index: i,
-                  offset: 12,
-                  child: Pressable(
-                    onTap: () => Navigator.of(context).push(ChatScreen.route(c)),
-                    child: SizedBox(
-                      width: 68,
-                      child: Column(
-                        children: [
-                          Avatar.contact(c, size: 58, ring: true),
-                          const SizedBox(height: 6),
-                          Text(
-                            c.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: vc.textDim, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -513,6 +434,11 @@ class _ChatTile extends StatelessWidget {
                                 const SizedBox(width: 4),
                                 const GradientIcon(Icons.verified_rounded, size: 16),
                               ],
+                              if (context.appRead.birthdayOf(c) == 0)
+                                const Padding(
+                                  padding: EdgeInsets.only(left: 4),
+                                  child: Text('🎂', style: TextStyle(fontSize: 15)),
+                                ),
                               if (c.isChannel) ...[
                                 const SizedBox(width: 4),
                                 Icon(Icons.campaign_rounded, size: 16, color: vc.textDim),

@@ -32,6 +32,8 @@ void backgroundDispatcher() {
       if (nowSec() - alive < 75) return true;
       live.notify = SystemNotify(() => app.notificationText, () => app.disguise, app.readOnly);
       final got = await live.syncOnce();
+      // Напомнить о днях рождения — в ту же проверку, без своих задач.
+      await app.checkBirthdays();
       final t = DateTime.now();
       await live.store.set(
         'bg_last',

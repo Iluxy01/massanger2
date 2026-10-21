@@ -9,6 +9,7 @@ import '../theme/palette.dart';
 import '../widgets/avatar.dart';
 import '../widgets/effects.dart';
 import '../widgets/visual.dart';
+import 'chat_look.dart';
 import 'chat_screen.dart';
 
 const _groupEmojis = ['👥', '🏕️', '🎉', '💼', '🎮', '📚', '⚽', '🎵', '🍕', '✈️', '🏠', '❤️'];
@@ -609,6 +610,17 @@ class GroupInfoScreen extends StatelessWidget {
             onChanged: (_) => app.toggleMute(g.id),
             title: Text('Уведомления', style: TextStyle(color: vc.text)),
             activeThumbColor: context.accent.mid,
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const GradientIcon(Icons.palette_rounded, size: 22),
+            title: Text('Оформление чата', style: TextStyle(color: vc.text)),
+            subtitle: Text(
+              'Свой фон и цвет — только у тебя',
+              style: TextStyle(color: vc.textDim, fontSize: 12.5),
+            ),
+            trailing: Icon(Icons.chevron_right_rounded, color: vc.textFaint),
+            onTap: () => Navigator.of(context).push(ChatLookScreen.route(g)),
           ),
           const SizedBox(height: 8),
           TextButton.icon(

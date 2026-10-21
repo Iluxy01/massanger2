@@ -12,6 +12,8 @@ import '../core/protocol.dart';
 import '../core/recovery.dart';
 import '../core/relay_pool.dart';
 import '../core/transfer.dart';
+import '../games/lots.dart';
+import '../games/ttt.dart';
 import '../models/models.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
@@ -464,6 +466,7 @@ class AppState extends ChangeNotifier {
     if (skinId > 0) 'skin': skinId,
     if (skinOpts.isNotEmpty) 'skinOpt': Map.of(skinOpts),
     'instant': instantNotify,
+    if (_birthdayNoted.isNotEmpty) 'bdn': _birthdayNoted,
     if (recoverySaved) 'rk': true,
     if (ultra) 'ultra': true,
     if (ultraAuto > 0) 'ultraAuto': ultraAuto,
@@ -516,6 +519,13 @@ class AppState extends ChangeNotifier {
     }
     _skin = null;
     instantNotify = s['instant'] == true;
+    _birthdayNoted
+      ..clear()
+      ..addAll({
+        if (s['bdn'] is Map)
+          for (final e in (s['bdn'] as Map).entries)
+            if (e.key is String && e.value is String) e.key as String: e.value as String,
+      });
     recoverySaved = s['rk'] == true;
     ultra = s['ultra'] == true;
     ultraAuto = ((s['ultraAuto'] as num?)?.toInt() ?? 0).clamp(0, 50);
@@ -1275,11 +1285,19 @@ class AppState extends ChangeNotifier {
     DateTime? sendAt,
     Todo? todo,
     String? sticker,
+    Game? game,
+    Drawing? drawing,
+    String? fx,
+    String? story,
   }) {
     final m = compose(
       chatId,
       text,
       sticker: sticker,
+      game: game,
+      drawing: drawing,
+      fx: fx,
+      story: story,
       replyTo: replyTo,
       secret: secret,
       kind: kind,
@@ -1322,6 +1340,131 @@ class AppState extends ChangeNotifier {
 
   /// Создать общий список дел.
   Message sendTodo(String chatId, Todo todo) => send(chatId, '', kind: MsgKind.todo, todo: todo);
+
+  // ───────────────────────── игры ─────────────────────────
+
+  /// Новая игра или жребий (только в личном чате).
+  Message sendGame(String chatId, Game game) {
+    final m = send(chatId, '', kind: MsgKind.game, game: game);
+    if (demo) _demoOpponent(m);
+    return m;
+  }
+
+  /// Демо: «соперник» отвечает сам — жребий и крестики-нолики.
+  void _demoOpponent(Message m) {
+    final g = m.game;
+    if (g == null) return;
+    final other = m.mine ? 1 : 0;
+    _later(900, () {
+      final s = g.state;
+      if (s is Lot && g.type == 'rps' && s.awaitingSecond) {
+        g.moves.add('$other${'rps'[_rnd.nextInt(3)]}');
+      } else if (s is Ttt && s.winner == null && s.turn == other) {
+        final free = [
+          for (var i = 0; i < 9; i++)
+            if (s.cells[i] < 0) i,
+        ];
+        if (free.isNotEmpty) g.moves.add('$other${free[_rnd.nextInt(free.length)]}');
+      }
+      g.autoMoves(other);
+      g.autoMoves(1 - other);
+    });
+  }
+
+  /// Свой ход: [move] без роли — роль подставится. false — так нельзя.
+  bool gameMove(String chatId, Message m, String move) {
+    final g = m.game;
+    if (g == null) return false;
+    final full = '${m.mine ? 0 : 1}$move';
+    if (!g.validList([...g.moves, full])) return false;
+    g.moves.add(full);
+    tick(HapticKind.light);
+    notifyChanged();
+    if (live != null) {
+      live!.gameMoved(chatId, m).then((_) => notifyChanged());
+    } else {
+      // Демо: телефон «соперника» отвечает сам (жребий, выстрелы).
+      g.autoMoves(m.mine ? 0 : 1);
+      _demoOpponent(m);
+    }
+    return true;
+  }
+
+  /// Открыли чат — сверить ходы незаконченных игр.
+  void gameCheck(String chatId) => live?.gameCheck(chatId);
+
+  /// Сохранить свой секрет игры (расстановку кораблей) и сделать ход.
+  bool gameSetup(String chatId, Message m, String secret, String move) {
+    final g = m.game;
+    if (g == null) return false;
+    final old = g.secret;
+    g.secret = secret;
+    if (gameMove(chatId, m, move)) return true;
+    g.secret = old;
+    return false;
+  }
+
+  /// Соперник сходил — мой ход (если чат не на экране — уведомление).
+  Future<void> onGameTurn(Contact c, Message m) async {
+    final onScreen = foreground && openChat == c.id && !locked;
+    if (onScreen || muted.contains(c.id) || !visible(c)) return;
+    final turn = Message(
+      id: 'turn-${m.id}',
+      mine: false,
+      text: 'Твой ход: ${m.game!.emoji} ${m.game!.title}',
+      time: DateTime.now(),
+    );
+    if (foreground && !locked) {
+      _incoming.add(Incoming(c, turn));
+    } else {
+      await live?.notify?.message(c, turn);
+    }
+  }
+
+  // ───────────────────────── рисунок ─────────────────────────
+
+  Message sendDrawing(String chatId) => send(chatId, '', kind: MsgKind.draw, drawing: Drawing());
+
+  /// Меняется, когда в каком-то рисунке появился или исчез штрих.
+  final drawUpdates = ValueNotifier<int>(0);
+
+  void drawingChanged(String id) {
+    drawUpdates.value++;
+    notifyChanged();
+  }
+
+  String get myKey => profile?.fingerprint ?? 'me';
+
+  void drawAdd(String chatId, Message m, Stroke st) {
+    final d = m.drawing;
+    if (d == null || d.strokes.length >= Drawing.maxStrokes) return;
+    d.strokes.add(st);
+    drawingChanged(m.id);
+    live?.drawOp(chatId, m, {
+      'op': 'a',
+      's': {'i': st.id, 'c': st.color, 'w': st.width, 'p': st.pts},
+    });
+  }
+
+  /// Отменить свой последний штрих.
+  void drawUndo(String chatId, Message m) {
+    final d = m.drawing;
+    if (d == null) return;
+    final i = d.strokes.lastIndexWhere((s) => s.by == myKey);
+    if (i < 0) return;
+    final st = d.strokes.removeAt(i);
+    drawingChanged(m.id);
+    live?.drawOp(chatId, m, {'op': 'u', 'i': st.id});
+  }
+
+  // ───────────────────────── эффекты ─────────────────────────
+
+  /// Эффект сообщения показан — второй раз не показывать.
+  void markFxSeen(String chatId, Message m) {
+    if (m.fxSeen) return;
+    m.fxSeen = true;
+    live?.saveMessage(chatId, m);
+  }
 
   /// Отметить / снять пункт общего списка — у всех в чате.
   void todoToggle(String chatId, Message m, String itemId) {
@@ -1375,6 +1518,10 @@ class AppState extends ChangeNotifier {
     DateTime? openAt,
     Todo? todo,
     String? sticker,
+    Game? game,
+    Drawing? drawing,
+    String? fx,
+    String? story,
   }) {
     // Время строго больше предыдущего — чтобы порядок не «прыгал» после перезапуска.
     // (в базе время хранится с точностью до миллисекунды).
@@ -1402,6 +1549,12 @@ class AppState extends ChangeNotifier {
       openAt: openAt,
       todo: todo,
       sticker: sticker,
+      game: game,
+      drawing: drawing,
+      fx: fx,
+      // Свой эффект показываем сразу при отправке — второй раз не нужно.
+      fxSeen: fx != null,
+      story: story,
     );
     messagesOf(chatId).add(m);
     return m;
@@ -1858,6 +2011,222 @@ class AppState extends ChangeNotifier {
   final openRequest = ValueNotifier<String?>(null);
 
   /// Новое входящее сообщение (из сети). [silent] — отправитель попросил без звука.
+  // ───────────────────────── истории ─────────────────────────
+
+  /// Истории за сутки: автор (ключ) → по порядку.
+  final Map<String, List<Story>> stories = {};
+
+  /// Кому уходят мои истории: друзья (не группы, не заявки, не заблокированные).
+  List<Contact> get storyAudience => [
+    for (final c in contacts)
+      if (!c.isGroup && !c.blocked && !c.request && !c.isNotes) c,
+  ];
+
+  List<Story> storiesOf(String author) => [
+    for (final st in stories[author] ?? const <Story>[])
+      if (!st.expired) st,
+  ];
+
+  List<Story> get myStories => storiesOf(myKey);
+
+  /// Друзья с историями: сначала с непросмотренными, свежие — первыми.
+  List<Contact> get storyContacts {
+    final last = <String, DateTime>{};
+    for (final c in contacts) {
+      if (c.isGroup || c.blocked || c.request || !c.hasStory || !visible(c)) continue;
+      final list = storiesOf(c.id);
+      if (list.isNotEmpty) last[c.id] = list.last.time;
+    }
+    final out = [
+      for (final c in contacts)
+        if (last.containsKey(c.id)) c,
+    ];
+    out.sort((a, b) {
+      if (a.storyUnseen != b.storyUnseen) return a.storyUnseen ? -1 : 1;
+      return last[b.id]!.compareTo(last[a.id]!);
+    });
+    return out;
+  }
+
+  /// Обновить кольца историй у аватаров.
+  void refreshStories() {
+    _storyFlags();
+    notifyChanged();
+  }
+
+  void _storyFlags() {
+    for (final c in contacts) {
+      final list = storiesOf(c.id);
+      c.hasStory = list.isNotEmpty;
+      c.storyUnseen = list.any((st) => !st.seen);
+    }
+  }
+
+  /// Опубликовать историю (null — не получилось: нет связи).
+  Future<Story?> postStory({
+    required String kind,
+    String text = '',
+    int bg = 0,
+    String? path,
+    Attachment? meta,
+    ValueNotifier<double>? progress,
+  }) async {
+    if (live != null) {
+      return live!.publishStory(
+        kind: kind,
+        text: text,
+        bg: bg,
+        path: path,
+        meta: meta,
+        progress: progress,
+      );
+    }
+    final st = Story(
+      id: newMessageId(),
+      author: myKey,
+      kind: kind,
+      time: DateTime.now(),
+      text: text,
+      bg: bg,
+      att: meta?..path = path,
+    );
+    stories.putIfAbsent(myKey, () => []).add(st);
+    refreshStories();
+    return st;
+  }
+
+  Future<void> viewStory(Story st) async {
+    if (st.author == myKey || st.seen) return;
+    if (live != null) {
+      await live!.storyViewed(st);
+    } else {
+      st.seen = true;
+      refreshStories();
+    }
+  }
+
+  Future<void> deleteStory(Story st) async {
+    if (live != null) {
+      await live!.deleteStory(st);
+    } else {
+      stories[st.author]?.remove(st);
+      refreshStories();
+    }
+  }
+
+  /// Файл фото / видео истории (скачать, если ещё нет).
+  Future<String?> storyFile(Story st) async {
+    if (live != null) return live!.storyFile(st);
+    return st.att?.path;
+  }
+
+  // ───────────────────────── дни рождения ─────────────────────────
+
+  /// Свой день рождения («ММ-ДД» или null) — друзья узнают из профиля.
+  void setBirthday(String? v) {
+    final p = profile;
+    if (p == null) return;
+    p.birthday = cleanBirthday(v);
+    live?.saveProfile();
+    notifyChanged();
+  }
+
+  static String _md(DateTime d) =>
+      '${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  /// 0 — сегодня день рождения, 1 — завтра, null — нет. 29 февраля в
+  /// невисокосный год отмечаем 28-го.
+  static int? birthdayIn(String? bd, [DateTime? now]) {
+    if (bd == null) return null;
+    final today = now ?? DateTime.now();
+    String norm(DateTime d) {
+      final md = _md(d);
+      final leap = DateTime(d.year, 2, 29).month == 2;
+      return !leap && md == '02-28' && bd == '02-29' ? '02-29' : md;
+    }
+
+    if (norm(today) == bd) return 0;
+    if (norm(today.add(const Duration(days: 1))) == bd) return 1;
+    return null;
+  }
+
+  int? birthdayOf(Contact c) => c.isGroup || c.blocked ? null : birthdayIn(c.birthday);
+
+  /// Кому уже напомнили (ключ → «год-ММ-ДД») — один раз в день.
+  final Map<String, String> _birthdayNoted = {};
+
+  /// Напомнить о днях рождения друзей: накануне и в сам день. Вызывается при
+  /// запуске, возвращении в приложение и при фоновой проверке — без своих задач.
+  Future<void> checkBirthdays() async {
+    if (profile == null) return;
+    final today = DateTime.now();
+    final stamp = '${today.year}-${_md(today)}';
+    var changed = false;
+    for (final c in contacts) {
+      final when = birthdayOf(c);
+      if (when == null || c.request || !visible(c) || muted.contains(c.id)) continue;
+      final key = '${c.id}:$when';
+      if (_birthdayNoted[key] == stamp) continue;
+      _birthdayNoted[key] = stamp;
+      changed = true;
+      final m = Message(
+        id: 'bd-${c.id}',
+        mine: false,
+        text: when == 0
+            ? 'Сегодня день рождения 🎂 — поздравь!'
+            : 'Завтра день рождения 🎂 — не забудь поздравить',
+        time: today,
+      );
+      await live?.notify?.message(c, m);
+    }
+    if (changed) {
+      // Дождаться записи: в фоновой проверке база закрывается сразу после.
+      await live?.saveSettings(_settings);
+      notifyChanged();
+    }
+  }
+
+  // ───────────────────────── оформление чата ─────────────────────────
+
+  /// Фон и цвет чата (только у себя).
+  void setChatLook(
+    Contact c, {
+    String? wallpaper,
+    int? dim,
+    int? accent,
+    bool resetAccent = false,
+  }) {
+    if (wallpaper != null) {
+      final old = c.wallpaper;
+      c.wallpaper = wallpaper == 'auto' ? null : wallpaper;
+      // Прежнее своё фото больше не нужно (в демо это файл из галереи — не трогаем).
+      if (live != null && old != null && old.startsWith('f:') && old != c.wallpaper) {
+        File(old.substring(2)).delete().ignore();
+      }
+    }
+    if (dim != null) c.wallpaperDim = dim.clamp(0, 80);
+    if (accent != null || resetAccent) c.chatAccent = resetAccent ? null : accent;
+    live?.saveContact(c);
+    notifyChanged();
+  }
+
+  /// Своё фото фоном чата: копия в папке приложения (оригинал могут удалить).
+  /// Имя файла каждый раз новое — чтобы не показалась старая картинка из кеша.
+  Future<void> setChatWallpaperPhoto(Contact c, String src) async {
+    var path = src;
+    final l = live;
+    if (l != null) {
+      final id = c.id.length > 16 ? c.id.substring(0, 16) : c.id;
+      path = await l.media.pathFor(
+        'wallpapers',
+        '${id}_${DateTime.now().millisecondsSinceEpoch}',
+        'jpg',
+      );
+      await File(src).copy(path);
+    }
+    setChatLook(c, wallpaper: 'f:$path');
+  }
+
   Future<void> onIncoming(Contact c, Message m, {bool silent = false}) async {
     final onScreen = foreground && openChat == c.id && !locked;
     if (onScreen) {
@@ -1887,6 +2256,8 @@ class AppState extends ChangeNotifier {
     typing.clear();
     myStickers.clear();
     myGifs.clear();
+    stories.clear();
+    _birthdayNoted.clear();
     drafts.clear();
     draftAt.clear();
     _draftTimer?.cancel();
@@ -1941,6 +2312,10 @@ class AppState extends ChangeNotifier {
     pinned
       ..clear()
       ..add('alice');
+    stories
+      ..clear()
+      ..addAll(demoStories());
+    _storyFlags();
     // Катя «печатает» при первом запуске — чтобы было видно индикатор.
     _later(2500, () => typing.add('kate'));
     _later(6000, () {
@@ -2029,6 +2404,19 @@ class AppScope extends InheritedNotifier<AppState> {
       context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
 }
 
+/// Свой цвет чата: внутри экрана переписки акцент — его (у себя).
+class ChatAccent extends InheritedWidget {
+  const ChatAccent({super.key, required this.accent, required super.child});
+
+  final Accent? accent;
+
+  static Accent? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ChatAccent>()?.accent;
+
+  @override
+  bool updateShouldNotify(ChatAccent old) => old.accent != accent;
+}
+
 extension AppContext on BuildContext {
   /// Подписывается на изменения состояния.
   AppState get app => AppScope.of(this);
@@ -2037,5 +2425,14 @@ extension AppContext on BuildContext {
   AppState get appRead => AppScope.read(this);
 
   VeilColors get vc => app.colors;
-  Accent get accent => app.accent;
+
+  /// Акцент: свой цвет чата (если задан), иначе — общий.
+  Accent get accent => ChatAccent.of(this) ?? app.accent;
+
+  /// Цвет текста на своих пузырях с учётом цвета чата.
+  Color get mineFg {
+    final a = app;
+    final own = ChatAccent.of(this);
+    return own == null || a.skin.outlineMine ? a.mineFg : own.onAccent;
+  }
 }

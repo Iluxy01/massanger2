@@ -24,8 +24,9 @@ void main() {
     expect(find.text('Veil'), findsWidgets);
     expect(find.text('Алиса'), findsWidgets);
 
-    // Открываем чат и вкладку профиля.
-    await tester.tap(find.text('Алиса').first);
+    // Открываем чат (первое «Алиса» — её история в ленте сверху).
+    expect(find.byKey(const ValueKey('story-alice')), findsOneWidget);
+    await tester.tap(find.byWidgetPredicate((w) => w is Hero && w.tag == 'avatar-alice').first);
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
@@ -66,7 +67,7 @@ void main() {
     for (final (tab, visible, hidden) in [
       (2, 'Мой QR-код', 'Добавить друга'),
       (1, 'Добавить друга', 'Мой QR-код'),
-      (0, 'Сейчас в сети'.toUpperCase(), 'Добавить друга'),
+      (0, 'ИСТОРИИ', 'Добавить друга'),
     ]) {
       await tester.tap(find.byKey(ValueKey('nav-$tab')));
       await settle();

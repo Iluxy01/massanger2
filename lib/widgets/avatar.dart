@@ -20,6 +20,7 @@ class Avatar extends StatelessWidget {
     this.size = 52,
     this.online = false,
     this.ring = false,
+    this.ringSeen = false,
   });
 
   factory Avatar.contact(
@@ -33,6 +34,7 @@ class Avatar extends StatelessWidget {
     size: size,
     online: showOnline && c.online,
     ring: ring && c.hasStory,
+    ringSeen: !c.storyUnseen,
   );
 
   final String emoji;
@@ -40,6 +42,9 @@ class Avatar extends StatelessWidget {
   final double size;
   final bool online;
   final bool ring;
+
+  /// Все истории уже просмотрены — кольцо тусклое.
+  final bool ringSeen;
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +81,7 @@ class Avatar extends StatelessWidget {
         children: [
           if (ring)
             Positioned.fill(
-              child: _StoryRing(colors: colors, round: round),
+              child: _StoryRing(colors: colors, round: round, seen: ringSeen),
             ),
           core,
           if (online)
@@ -92,9 +97,10 @@ class Avatar extends StatelessWidget {
 }
 
 class _StoryRing extends StatelessWidget {
-  const _StoryRing({required this.colors, required this.round});
+  const _StoryRing({required this.colors, required this.round, this.seen = false});
   final List<Color> colors;
   final double round;
+  final bool seen;
 
   @override
   Widget build(BuildContext context) {
@@ -107,7 +113,8 @@ class _StoryRing extends StatelessWidget {
           decoration: BoxDecoration(
             shape: circle ? BoxShape.circle : BoxShape.rectangle,
             borderRadius: r,
-            gradient: SweepGradient(colors: [acc.a, acc.b, colors.last, acc.a]),
+            color: seen ? context.vc.textFaint.withValues(alpha: 0.45) : null,
+            gradient: seen ? null : SweepGradient(colors: [acc.a, acc.b, colors.last, acc.a]),
           ),
           padding: const EdgeInsets.all(2),
           child: Container(

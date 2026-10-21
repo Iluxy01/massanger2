@@ -71,7 +71,7 @@ class _StickerPanelState extends State<StickerPanel> {
   Widget build(BuildContext context) {
     final app = context.app;
     final vc = app.colors;
-    final acc = app.accent;
+    final acc = context.accent;
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
     Widget tab(int i, String label) => Expanded(

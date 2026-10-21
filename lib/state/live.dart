@@ -18,6 +18,7 @@ import '../core/protocol.dart';
 import '../core/relay_pool.dart';
 import '../core/store.dart';
 import '../core/transfer.dart';
+import '../utils.dart' show randomHex;
 import '../models/models.dart';
 import 'app_state.dart';
 import 'media_engine.dart';
@@ -214,6 +215,7 @@ class Live {
 
     final drafts = await store.getJson('drafts');
     if (drafts != null) app.loadDrafts(drafts);
+    await _loadStories();
 
     final synced = int.tryParse(await store.get('synced') ?? '');
     final legacy = int.tryParse(await store.get('since') ?? '');
@@ -284,7 +286,8 @@ class Live {
       if (n > 0 && c.id != open) app.unread[c.id] = n;
     }
     _expire();
-    app.notifyChanged();
+    // Контакты перечитаны — кольца историй заново (заодно уберёт истёкшие).
+    app.refreshStories();
   }
 
   // ───────────────────────── личность ─────────────────────────
@@ -490,7 +493,13 @@ class Live {
 
   VeilCard get myCard {
     final p = app.profile!;
-    return VeilCard(name: p.name, emoji: p.emoji, color: p.colorIndex, bio: p.bio);
+    return VeilCard(
+      name: p.name,
+      emoji: p.emoji,
+      color: p.colorIndex,
+      bio: p.bio,
+      birthday: p.birthday,
+    );
   }
 
   String get inviteLink => Invite(keys!.pub, myCard).encode();
@@ -650,6 +659,8 @@ class Live {
     unawaited(_flushOutbox());
     resumeMedia();
     _ping();
+    // Новый день — напомнить о днях рождения (истории обновил reload).
+    unawaited(app.checkBirthdays());
     // Чат был открыт, пока приложение было свёрнуто — теперь его видно.
     final open = app.openChat;
     if (open != null && !app.locked) {
@@ -762,7 +773,7 @@ class Live {
         colorIndex: card?.color ?? 0,
         bio: card?.bio ?? '',
         request: true,
-      );
+      )..birthday = card?.birthday;
       app.contacts.add(c);
       await saveContact(c);
     } else if (card != null && (p.type == Payload.hello || p.type == Payload.profile)) {
@@ -770,7 +781,8 @@ class Live {
         ..name = card.name
         ..emoji = card.emoji
         ..colorIndex = card.color
-        ..bio = card.bio;
+        ..bio = card.bio
+        ..birthday = card.birthday;
       await saveContact(c);
     }
     // «В сети» — только по живым сигналам, а не по отчётам из фоновой проверки
@@ -962,6 +974,11 @@ class Live {
         final geo = GeoPoint.fromJson(p.data['geo']);
         final poll = Poll.fromJson(p.data['poll'])?..votes.clear();
         final todo = Todo.fromJson(p.data['todo']);
+        // Игра — только в личном чате; секрет соперника не приходит никогда.
+        final game = group ? null : (Game.fromJson(p.data['game'])?..secret = null);
+        final drawing = Drawing.fromJson(p.data['dr']);
+        final fx = Message.effects.contains(p.data['fx']) ? p.data['fx'] as String : null;
+        final storyRef = p.str('sr');
         final oa = p.integer('oa');
         // Стикер из набора — короткий код; свой — небольшая картинка.
         final stk = p.str('stk');
@@ -980,6 +997,8 @@ class Live {
           MsgKind.sticker =>
             sticker != null ||
                 (att != null && att.uploaded && att.size <= MediaEngine.maxStickerBytes),
+          MsgKind.game => game != null && game.validList(game.moves),
+          MsgKind.draw => drawing != null,
         };
         if (!valid) {
           log('  непонятное сообщение ${short(id)} (${p.data['k']}) — пропущено');
@@ -1058,6 +1077,10 @@ class Live {
           once: p.flag('once') && att != null,
           todo: todo,
           sticker: kind == MsgKind.sticker ? sticker : null,
+          game: kind == MsgKind.game ? game : null,
+          drawing: kind == MsgKind.draw ? drawing : null,
+          fx: kind == MsgKind.text ? fx : null,
+          story: storyRef == null ? null : _clip(storyRef, 'История', 80),
           // Капсула времени — не дальше, чем на 10 лет вперёд.
           openAt: oa == null || oa > DateTime.now().millisecondsSinceEpoch + 315360000000
               ? null
@@ -1078,6 +1101,8 @@ class Live {
             's': 'd',
           }),
         );
+        // Жребий: телефон второго сразу бросает свою половину.
+        if (m.game != null) await _gameAuto(chat, m);
         // События группы — тихо, без уведомления.
         if (kind != MsgKind.event) await app.onIncoming(c, m, silent: p.flag('sl'));
         if (!background && !c.request && app.autoDownload(m)) {
@@ -1198,6 +1223,70 @@ class Live {
           }
           await saveMessage(chat, m);
         }
+      case Payload.game:
+        // Ходы игры: весь список — потерянный по дороге ход догоняется.
+        final id = p.str('id');
+        final raw = p.data['mv'];
+        if (id == null || group) return;
+        for (final m in [...app.messagesOf(chat)]) {
+          final g = m.game;
+          if (m.id != id || g == null) continue;
+          final me = m.mine ? 0 : 1;
+          final before = g.status().turn;
+          final got = raw is List && g.merge(raw.whereType<String>().toList(), 1 - me);
+          if (got) {
+            await saveMessage(chat, m);
+            await _gameAuto(chat, m, sync: false);
+            _gameSync(chat, m);
+            if (before != me && g.status().turn == me) await app.onGameTurn(c, m);
+          } else if (p.flag('q') && raw is List && g.moves.length > raw.length) {
+            // Соперник просит прислать ходы — у нас их больше.
+            _gameSync(chat, m);
+          }
+        }
+      case Payload.draw:
+        // Совместный рисунок: штрих добавили или отменили.
+        final id = p.str('id'), op = p.str('op');
+        for (final m in [...app.messagesOf(chat)]) {
+          final d = m.drawing;
+          if (m.id != id || d == null) continue;
+          if (op == 'a') {
+            final st = Stroke.fromJson(p.data['s'], by: sender);
+            if (st == null || d.strokes.length >= Drawing.maxStrokes) continue;
+            if (d.strokes.any((x) => x.id == st.id)) continue;
+            d.strokes.add(st);
+          } else if (op == 'u') {
+            final i = p.str('i');
+            d.strokes.removeWhere((x) => x.id == i && x.by == sender);
+          } else {
+            continue;
+          }
+          await saveMessage(chat, m);
+          app.drawingChanged(m.id);
+        }
+      case Payload.story:
+        // История друга на сутки (только от друзей, не от заявок).
+        if (group || c.request) return;
+        final st = Story.fromJson({...p.data, 'a': sender});
+        if (st == null || st.expired) return;
+        await _addStory(st..att?.path = null);
+      case Payload.storySeen:
+        final id = p.str('i');
+        final list = app.stories[keys?.pub];
+        if (id == null || list == null || group) return;
+        for (final st in list) {
+          if (st.id == id && !st.viewers.containsKey(sender)) {
+            st.viewers[sender] = DateTime.now().millisecondsSinceEpoch;
+            await saveStories();
+          }
+        }
+      case Payload.storyDel:
+        final id = p.str('i');
+        final list = app.stories[sender];
+        if (id == null || list == null) return;
+        list.removeWhere((st) => st.id == id);
+        await saveStories();
+        app.refreshStories();
       case Payload.opened:
         // Друг открыл наше одноразовое — отмечаем «просмотрено».
         final id = p.str('id');
@@ -1247,7 +1336,12 @@ class Live {
   Future<void> saveDrafts(Map<String, dynamic> j) => store.setJson('drafts', j);
 
   /// Служебное сообщение (отчёт, реакция, «печатает»). Не хранится в outbox.
-  void _control(String to, Payload p, {bool ephemeral = false}) {
+  void _control(
+    String to,
+    Payload p, {
+    bool ephemeral = false,
+    Duration ttl = const Duration(days: 3),
+  }) {
     final k = keys, pl = pool;
     // Только настоящим собеседникам («Заметки» никуда не отправляются).
     if (k == null || pl == null || to == k.pub || !_pubHex.hasMatch(to)) return;
@@ -1256,7 +1350,7 @@ class Live {
           recipientPub: to,
           content: p.encode(),
           ephemeral: ephemeral,
-          ttl: const Duration(days: 3),
+          ttl: ttl,
         )
         .then((wrap) {
           if (!_closed) pl.publish(wrap, queue: !ephemeral);
@@ -1326,6 +1420,10 @@ class Live {
     if (m.openAt != null) 'oa': m.openAt!.millisecondsSinceEpoch,
     if (m.todo != null) 'todo': m.todo!.toJson(wire: true),
     if (m.sticker != null) 'stk': m.sticker,
+    if (m.game != null) 'game': m.game!.toJson(wire: true),
+    if (m.drawing != null) 'dr': m.drawing!.toJson(),
+    if (m.fx != null) 'fx': m.fx,
+    if (m.story != null) 'sr': m.story,
     'id': m.id,
     'ts': m.time.millisecondsSinceEpoch,
     'text': m.text,
@@ -1427,6 +1525,221 @@ class Live {
   void todoOp(String chat, Message m, Map<String, dynamic> op) {
     saveMessage(chat, m);
     _toChat(chat, Payload(Payload.todo, {'id': m.id, ...op}));
+  }
+
+  // ───────────────────────── игры ─────────────────────────
+
+  /// Отправить сопернику весь список ходов. [ask] — «пришли свои, если у
+  /// тебя больше» (открыли чат, а ход соперника, похоже, потерялся).
+  void _gameSync(String chat, Message m, {bool ask = false}) {
+    final g = m.game;
+    if (g == null || Contact.isGroupId(chat)) return;
+    _toChat(chat, Payload(Payload.game, {'id': m.id, 'mv': g.moves, if (ask) 'q': true}));
+  }
+
+  /// Что телефон делает сам (ответ на выстрел, своя половина жребия,
+  /// раскрытие) — и отправить.
+  Future<void> _gameAuto(String chat, Message m, {bool sync = true}) async {
+    final g = m.game;
+    if (g == null) return;
+    final added = g.autoMoves(m.mine ? 0 : 1);
+    if (added.isEmpty) return;
+    await saveMessage(chat, m);
+    if (sync) _gameSync(chat, m);
+  }
+
+  /// Свой ход (уже добавлен в список) — сохранить и отправить.
+  Future<void> gameMoved(String chat, Message m) async {
+    await saveMessage(chat, m);
+    await _gameAuto(chat, m, sync: false);
+    _gameSync(chat, m);
+  }
+
+  /// Открыли чат: по незаконченным играм, где ход не наш, — сверить ходы.
+  void gameCheck(String chat) {
+    for (final m in app.messagesOf(chat)) {
+      final g = m.game;
+      if (g == null) continue;
+      final st = g.status();
+      if (st.over && !(g.type == 'sea' && st.winner != null)) continue;
+      if (st.turn == (m.mine ? 0 : 1)) continue;
+      _gameSync(chat, m, ask: true);
+    }
+  }
+
+  // ───────────────────────── рисунок ─────────────────────────
+
+  void drawOp(String chat, Message m, Map<String, dynamic> op) {
+    saveMessage(chat, m);
+    _toChat(chat, Payload(Payload.draw, {'id': m.id, ...op}));
+  }
+
+  // ───────────────────────── истории ─────────────────────────
+
+  Future<void> _loadStories() async {
+    final j = await store.getJson('stories');
+    app.stories.clear();
+    if (j != null) {
+      for (final e in j.entries) {
+        final list = [
+          for (final x in (e.value as List? ?? const []))
+            if (Story.fromJson(x) case final st? when !st.expired) st,
+        ];
+        if (list.isNotEmpty) app.stories[e.key] = list;
+      }
+    }
+    app.refreshStories();
+    unawaited(_dropOldStoryFiles());
+  }
+
+  Future<void> saveStories() async {
+    // Просроченные — долой.
+    for (final list in app.stories.values) {
+      list.removeWhere((st) => st.expired);
+    }
+    app.stories.removeWhere((_, list) => list.isEmpty);
+    await store.setJson('stories', {
+      for (final e in app.stories.entries) e.key: [for (final st in e.value) st.toJson()],
+    });
+    app.refreshStories();
+  }
+
+  /// Файлы историй, которых больше нет.
+  Future<void> _dropOldStoryFiles() async {
+    if (background) return;
+    try {
+      final dir = Directory(p.join(await media.root(), 'stories'));
+      if (!dir.existsSync()) return;
+      final keep = {
+        for (final list in app.stories.values)
+          for (final st in list)
+            if (st.att?.path != null) st.att!.path!,
+      };
+      await for (final f in dir.list()) {
+        if (f is File && !keep.contains(f.path)) await f.delete();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _addStory(Story st) async {
+    final list = app.stories.putIfAbsent(st.author, () => []);
+    if (list.any((x) => x.id == st.id)) return;
+    list
+      ..add(st)
+      ..sort((a, b) => a.time.compareTo(b.time));
+    await saveStories();
+    // Фото — сразу (небольшое), чтобы открывалось мгновенно; видео — по нажатию.
+    if (st.kind == 'p' && !background && !app.ultra) unawaited(storyFile(st));
+  }
+
+  /// Истории, которые сейчас скачиваются: второй запрос ждёт первый, а не
+  /// качает тот же файл в то же место (заранее и по нажатию одновременно).
+  final _storyPulls = <String, Future<String?>>{};
+
+  /// Файл истории: свой — уже есть, чужой — скачать (null — не вышло).
+  Future<String?> storyFile(Story st) async {
+    final att = st.att;
+    if (att == null) return null;
+    if (att.path != null && File(att.path!).existsSync()) return att.path;
+    // Блок, а не стрелка: remove() вернул бы эту же загрузку, и whenComplete
+    // ждал бы сам себя.
+    return _storyPulls[st.id] ??= _pullStory(st, att).whenComplete(() {
+      _storyPulls.remove(st.id);
+    });
+  }
+
+  Future<String?> _pullStory(Story st, Attachment att) async {
+    final pl = pool;
+    if (pl == null) return null;
+    final dst = await media.pathFor('stories', st.id, att.ext);
+    if (!await media.pullFile(pl, att, dst)) return null;
+    att.path = dst;
+    await saveStories();
+    return dst;
+  }
+
+  /// Опубликовать свою историю всем друзьям. [path] — фото или видео.
+  Future<Story?> publishStory({
+    required String kind,
+    String text = '',
+    int bg = 0,
+    String? path,
+    Attachment? meta,
+    ValueNotifier<double>? progress,
+  }) async {
+    final me = keys?.pub;
+    if (me == null) return null;
+    final id = randomHex(16);
+    Attachment? att;
+    if (path != null && meta != null) {
+      // Куски живут чуть больше суток — потом ретрансляторы их удалят сами.
+      final pushed = await media.pushFile(path, progress: progress, ttl: const Duration(hours: 26));
+      if (pushed == null) return null;
+      final local = await media.pathFor('stories', id, meta.ext);
+      await File(path).copy(local);
+      att = Attachment(
+        name: meta.name,
+        mime: meta.mime,
+        size: pushed.size,
+        sha: pushed.sha,
+        key: pushed.key,
+        signer: pushed.signer,
+        chunks: pushed.chunks,
+        chunkSize: pushed.chunkSize,
+        relays: pushed.relays,
+        width: meta.width,
+        height: meta.height,
+        duration: meta.duration,
+        thumb: meta.thumb,
+        scheme: pushed.scheme,
+        path: local,
+      );
+    }
+    final st = Story(
+      id: id,
+      author: me,
+      kind: kind,
+      time: DateTime.now(),
+      text: text,
+      bg: bg,
+      att: att,
+    );
+    await _addStory(st);
+    final wire = {
+      'i': st.id,
+      'k': st.kind,
+      'ts': st.time.millisecondsSinceEpoch,
+      if (text.isNotEmpty) 'tx': text,
+      if (bg != 0) 'bg': bg,
+      if (att != null) 'att': att.toJson(wire: true),
+    };
+    for (final c in app.storyAudience) {
+      _control(c.id, Payload(Payload.story, wire), ttl: const Duration(hours: 25));
+    }
+    log('история ${short(st.id)} — ${app.storyAudience.length} друзьям');
+    return st;
+  }
+
+  /// Посмотрел историю друга — отметить и сказать автору.
+  Future<void> storyViewed(Story st) async {
+    // Отмечаем ту, что в списке (экран мог держать прежний экземпляр).
+    final cur = app.stories[st.author]?.where((x) => x.id == st.id).firstOrNull ?? st;
+    if (cur.seen) return;
+    cur.seen = st.seen = true;
+    await saveStories();
+    if (app.readReceipts) {
+      _control(st.author, Payload(Payload.storySeen, {'i': st.id}), ttl: const Duration(hours: 25));
+    }
+  }
+
+  /// Удалить свою историю — у всех.
+  Future<void> deleteStory(Story st) async {
+    app.stories[st.author]?.removeWhere((x) => x.id == st.id);
+    await saveStories();
+    for (final c in app.storyAudience) {
+      _control(c.id, Payload(Payload.storyDel, {'i': st.id}), ttl: const Duration(hours: 25));
+    }
+    unawaited(_dropOldStoryFiles());
   }
 
   /// Продолжить прерванное: незалитые файлы и недокачанные фото/голосовые.

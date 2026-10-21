@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -9,6 +11,7 @@ import '../state/app_state.dart';
 import '../theme/palette.dart';
 import '../theme/skin.dart';
 import '../theme/sky.dart';
+import '../utils.dart' show fmtBirthday;
 import '../widgets/avatar.dart';
 import '../widgets/background_status.dart';
 import '../widgets/effects.dart';
@@ -109,6 +112,14 @@ class SettingsTab extends StatelessWidget {
                   title: 'Мой QR-код',
                   subtitle: 'Чтобы друг добавил тебя',
                   onTap: () => Navigator.of(context).push(AddFriendScreen.route()),
+                ),
+                _Tile(
+                  icon: Icons.cake_rounded,
+                  title: 'День рождения',
+                  subtitle: p.birthday == null
+                      ? 'Друзьям напомнят поздравить'
+                      : '${fmtBirthday(p.birthday!)} · видят друзья',
+                  onTap: () => editBirthday(context),
                 ),
                 _Tile(
                   icon: Icons.edit_note_rounded,
@@ -2095,4 +2106,124 @@ class _BiometricTileState extends State<_BiometricTile> {
       ),
     );
   }
+}
+
+/// Свой день рождения: день и месяц (год не нужен).
+Future<void> editBirthday(BuildContext context) async {
+  final app = context.appRead;
+  final vc = app.colors;
+  final cur = app.profile?.birthday;
+  var month = cur == null ? DateTime.now().month : int.parse(cur.substring(0, 2));
+  var day = cur == null ? DateTime.now().day : int.parse(cur.substring(3));
+  const months = [
+    'Январь',
+    'Февраль',
+    'Март',
+    'Апрель',
+    'Май',
+    'Июнь',
+    'Июль',
+    'Август',
+    'Сентябрь',
+    'Октябрь',
+    'Ноябрь',
+    'Декабрь',
+  ];
+  const days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  final dayWheel = FixedExtentScrollController(initialItem: day - 1);
+  final monthWheel = FixedExtentScrollController(initialItem: month - 1);
+  final res = await showModalBottomSheet<String>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    builder: (ctx) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Glass(
+          radius: 24,
+          color: vc.elevated,
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+          child: Builder(
+            builder: (ctx) {
+              Widget wheel(
+                FixedExtentScrollController c,
+                int count,
+                String Function(int) label,
+                void Function(int) on,
+              ) => SizedBox(
+                height: 170,
+                child: ListWheelScrollView.useDelegate(
+                  controller: c,
+                  itemExtent: 40,
+                  physics: const FixedExtentScrollPhysics(),
+                  diameterRatio: 1.6,
+                  overAndUnderCenterOpacity: 0.4,
+                  onSelectedItemChanged: on,
+                  childDelegate: ListWheelChildBuilderDelegate(
+                    childCount: count,
+                    builder: (_, i) => Center(
+                      child: Text(
+                        label(i),
+                        style: TextStyle(color: vc.text, fontSize: 19, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'День рождения',
+                    style: TextStyle(color: vc.text, fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Год не нужен. Друзья увидят дату и получат напоминание',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: vc.textDim, fontSize: 13),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(child: wheel(dayWheel, 31, (i) => '${i + 1}', (i) => day = i + 1)),
+                      Expanded(
+                        flex: 2,
+                        child: wheel(monthWheel, 12, (i) => months[i], (i) => month = i + 1),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      if (cur != null)
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, ''),
+                          child: const Text('Убрать', style: TextStyle(color: VeilColors.danger)),
+                        ),
+                      const Spacer(),
+                      AccentButton(
+                        label: 'Сохранить',
+                        expanded: false,
+                        onTap: () {
+                          final d = min(day, days[month - 1]);
+                          Navigator.pop(
+                            ctx,
+                            '${month.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}',
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    ),
+  );
+  dayWheel.dispose();
+  monthWheel.dispose();
+  if (res == null) return;
+  app.setBirthday(res.isEmpty ? null : res);
 }

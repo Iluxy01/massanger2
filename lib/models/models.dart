@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../games/game.dart';
 import '../theme/palette.dart';
+
+export '../games/game.dart' show Game, GameStatus;
 
 /// Статус доставки исходящего сообщения.
 /// Для входящих: delivered — ещё не отправили отчёт о прочтении, read — отправили.
@@ -28,6 +31,13 @@ enum MsgKind {
   /// Стикер: из набора Veil (по коду [Message.sticker]) или свой — картинка
   /// с прозрачным фоном во вложении.
   sticker,
+
+  /// Игра или жребий (личный чат): крестики-нолики, шашки, морской бой,
+  /// «угадай слово», кубик, монетка, «камень-ножницы-бумага».
+  game,
+
+  /// Совместный рисунок: штрихи добавляют все в чате.
+  draw,
 }
 
 List<Color> gradientAt(int i) => avatarGradients[i.abs() % avatarGradients.length];
@@ -40,12 +50,16 @@ class Profile {
     required this.colorIndex,
     required this.fingerprint,
     this.bio = '',
+    this.birthday,
   });
 
   String name;
   String emoji;
   int colorIndex;
   String bio;
+
+  /// День рождения «ММ-ДД» (без года) — по желанию, видят друзья.
+  String? birthday;
 
   /// Публичный ключ (64 hex-символа). Это и есть адрес в Veil.
   final String fingerprint;
@@ -63,6 +77,7 @@ class Profile {
     'color': colorIndex,
     'bio': bio,
     'pub': fingerprint,
+    if (birthday != null) 'bd': birthday,
   };
 
   static Profile fromJson(Map<String, dynamic> j) => Profile(
@@ -71,7 +86,17 @@ class Profile {
     colorIndex: (j['color'] as num).toInt(),
     bio: j['bio'] as String? ?? '',
     fingerprint: j['pub'] as String,
+    birthday: cleanBirthday(j['bd']),
   );
+}
+
+/// «ММ-ДД» — настоящая дата (29 февраля можно), иначе null.
+String? cleanBirthday(Object? o) {
+  if (o is! String || !RegExp(r'^\d\d-\d\d$').hasMatch(o)) return null;
+  final m = int.parse(o.substring(0, 2)), d = int.parse(o.substring(3));
+  if (m < 1 || m > 12 || d < 1) return null;
+  const days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return d <= days[m - 1] ? o : null;
 }
 
 /// Друг из списка контактов. id == его публичный ключ.
@@ -99,8 +124,24 @@ class Contact {
   String bio;
   DateTime? lastSeen;
   bool verified;
+
+  /// Есть история (за сутки) и есть ли непросмотренная.
   bool hasStory;
+  bool storyUnseen = false;
   bool blocked = false;
+
+  /// День рождения друга «ММ-ДД» (он сам указал).
+  String? birthday;
+
+  /// Оформление этого чата (только у себя): фон и цвет.
+  /// [wallpaper]: null — как во всём приложении, `p:<номер>` — готовый фон,
+  /// `f:<путь>` — своё фото (копия в папке приложения). [wallpaperDim] —
+  /// затемнение своего фото, 0–80 %.
+  String? wallpaper;
+  int wallpaperDim = 35;
+
+  /// Цвет чата — номер палитры, null — как в приложении.
+  int? chatAccent;
 
   /// Добавил нас сам, а мы его ещё не подтвердили.
   bool request;
@@ -162,6 +203,10 @@ class Contact {
     if (group != null) 'grp': group!.toJson(),
     if (pinnedMsg != null) 'pm': pinnedMsg,
     if (hidden) 'hid': true,
+    if (birthday != null) 'bd': birthday,
+    if (wallpaper != null) 'wp': wallpaper,
+    if (wallpaper != null) 'wpd': wallpaperDim,
+    if (chatAccent != null) 'ca': chatAccent,
   };
 
   static Contact fromJson(Map<String, dynamic> j) =>
@@ -182,7 +227,11 @@ class Contact {
         ..reach = cleanRelays(j['rl'])
         ..group = GroupInfo.fromJson(j['grp'])
         ..pinnedMsg = j['pm'] as String?
-        ..hidden = j['hid'] == true;
+        ..hidden = j['hid'] == true
+        ..birthday = cleanBirthday(j['bd'])
+        ..wallpaper = j['wp'] is String ? j['wp'] as String : null
+        ..wallpaperDim = ((j['wpd'] as num?)?.toInt() ?? 35).clamp(0, 80)
+        ..chatAccent = j['ca'] is num ? (j['ca'] as num).toInt() : null;
 }
 
 /// Участник группы — как его видят остальные.
@@ -618,10 +667,42 @@ class Message {
     this.sendAt,
     this.todo,
     this.sticker,
+    this.game,
+    this.drawing,
+    this.fx,
+    this.fxSeen = false,
+    this.story,
   });
 
   final String id;
   final bool mine;
+
+  /// Игра или жребий.
+  final Game? game;
+
+  /// Совместный рисунок.
+  final Drawing? drawing;
+
+  /// Эффект на весь экран (салют, сердечки, снег, бум, конфетти).
+  final String? fx;
+
+  /// Эффект уже показан.
+  bool fxSeen;
+
+  /// Ответ на историю: что это была за история (подпись).
+  final String? story;
+
+  static const effects = ['fireworks', 'hearts', 'snow', 'boom', 'confetti'];
+
+  static final _birthday = RegExp(
+    r'(с\s+(днём|днем)\s+(рождения|рожденья|варенья))|((?<![а-яё])с\s+др(?![а-яё]))|(happy\s+birthday)',
+    caseSensitive: false,
+    unicode: true,
+  );
+
+  /// Какой эффект показать: заданный или конфетти на «С днём рождения».
+  String? get effect =>
+      fx ?? (kind == MsgKind.text && _birthday.hasMatch(text) ? 'confetti' : null);
 
   /// Код стикера из набора Veil (у своих стикеров — null, картинка во вложении).
   final String? sticker;
@@ -709,6 +790,8 @@ class Message {
       MsgKind.event => text,
       MsgKind.todo => '☑️ ${todo?.title ?? 'Список'}',
       MsgKind.sticker => '✨ Стикер',
+      MsgKind.game => '${game?.emoji ?? '🎮'} ${game?.title ?? 'Игра'}',
+      MsgKind.draw => '🎨 Рисунок',
     };
   }
 
@@ -738,6 +821,11 @@ class Message {
     if (sendAt != null) 'sa': sendAt!.millisecondsSinceEpoch,
     if (todo != null) 'todo': todo!.toJson(),
     if (sticker != null) 'stk': sticker,
+    if (game != null) 'game': game!.toJson(),
+    if (drawing != null) 'dr': drawing!.toJson(),
+    if (fx != null) 'fx': fx,
+    if (fxSeen) 'fxs': true,
+    if (story != null) 'sr': story,
   };
 
   static MsgKind kindOf(Object? name) =>
@@ -768,5 +856,167 @@ class Message {
     sendAt: j['sa'] is num ? DateTime.fromMillisecondsSinceEpoch((j['sa'] as num).toInt()) : null,
     todo: Todo.fromJson(j['todo']),
     sticker: j['stk'] is String ? j['stk'] as String : null,
+    game: Game.fromJson(j['game']),
+    drawing: Drawing.fromJson(j['dr']),
+    fx: effects.contains(j['fx']) ? j['fx'] as String : null,
+    fxSeen: j['fxs'] == true,
+    story: j['sr'] is String ? j['sr'] as String : null,
   );
+}
+
+/// Штрих совместного рисунка. Точки — целые 0…1000 по ширине и высоте холста.
+class Stroke {
+  Stroke({
+    required this.id,
+    required this.by,
+    required this.color,
+    required this.width,
+    required this.pts,
+  });
+
+  static const maxPoints = 600;
+
+  final String id;
+
+  /// Кто нарисовал (ключ; свой — свой ключ).
+  final String by;
+  final int color;
+
+  /// Толщина в тысячных ширины холста.
+  final int width;
+  final List<int> pts;
+
+  Map<String, dynamic> toJson() => {'i': id, 'b': by, 'c': color, 'w': width, 'p': pts};
+
+  static Stroke? fromJson(Object? o, {String? by}) {
+    if (o is! Map) return null;
+    final i = o['i'], c = o['c'], w = o['w'], p = o['p'];
+    final who = by ?? o['b'];
+    if (i is! String || i.isEmpty || i.length > 16 || who is! String) return null;
+    if (c is! num || w is! num || p is! List) return null;
+    final pts = p
+        .whereType<num>()
+        .take(maxPoints * 2)
+        .map((v) => v.toInt().clamp(0, 1000))
+        .toList();
+    if (pts.length < 2 || pts.length.isOdd) return null;
+    return Stroke(
+      id: i,
+      by: who,
+      color: c.toInt() & 0xFFFFFFFF,
+      width: w.toInt().clamp(2, 80),
+      pts: pts,
+    );
+  }
+}
+
+/// Совместный рисунок: штрихи всех участников по порядку.
+class Drawing {
+  Drawing({List<Stroke>? strokes}) : strokes = strokes ?? [];
+
+  static const maxStrokes = 400;
+
+  final List<Stroke> strokes;
+
+  Map<String, dynamic> toJson() => {
+    's': [for (final s in strokes) s.toJson()],
+  };
+
+  static Drawing? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final raw = o['s'];
+    if (raw is! List) return null;
+    final seen = <String>{};
+    return Drawing(
+      strokes: [
+        for (final x in raw.take(maxStrokes))
+          if (Stroke.fromJson(x) case final st? when seen.add(st.id)) st,
+      ],
+    );
+  }
+}
+
+/// История на сутки: фото, видео или текст на цветном фоне.
+class Story {
+  Story({
+    required this.id,
+    required this.author,
+    required this.kind,
+    required this.time,
+    this.text = '',
+    this.bg = 0,
+    this.att,
+    this.seen = false,
+    Map<String, int>? viewers,
+  }) : viewers = viewers ?? {};
+
+  static const lifetime = Duration(hours: 24);
+
+  final String id;
+
+  /// Чья (ключ; своя — свой ключ).
+  final String author;
+
+  /// p — фото, v — видео, t — текст.
+  final String kind;
+  final DateTime time;
+  final String text;
+
+  /// Фон текстовой истории (номер градиента).
+  final int bg;
+  final Attachment? att;
+
+  /// Я её уже посмотрел (у чужих).
+  bool seen;
+
+  /// Кто посмотрел мою (ключ → когда, мс).
+  final Map<String, int> viewers;
+
+  bool get expired => DateTime.now().difference(time) > lifetime;
+
+  String get preview => switch (kind) {
+    'v' => '🎬 Видео из истории',
+    'p' => '📷 Фото из истории',
+    _ => text.length > 60 ? '${text.substring(0, 60)}…' : text,
+  };
+
+  Map<String, dynamic> toJson() => {
+    'i': id,
+    'a': author,
+    'k': kind,
+    'ts': time.millisecondsSinceEpoch,
+    if (text.isNotEmpty) 'tx': text,
+    if (bg != 0) 'bg': bg,
+    if (att != null) 'att': att!.toJson(),
+    if (seen) 'sn': true,
+    if (viewers.isNotEmpty) 'vw': viewers,
+  };
+
+  static Story? fromJson(Object? o) {
+    if (o is! Map) return null;
+    final i = o['i'], a = o['a'], k = o['k'], ts = o['ts'];
+    if (i is! String || i.isEmpty || i.length > 40 || a is! String || ts is! num) return null;
+    if (k != 'p' && k != 'v' && k != 't') return null;
+    final tx = o['tx'] is String ? o['tx'] as String : '';
+    final att = Attachment.fromJson(o['att']);
+    if (k != 't' && att == null) return null;
+    if (k == 't' && tx.trim().isEmpty) return null;
+    final vw = <String, int>{};
+    if (o['vw'] is Map) {
+      for (final e in (o['vw'] as Map).entries) {
+        if (e.key is String && e.value is num) vw[e.key as String] = (e.value as num).toInt();
+      }
+    }
+    return Story(
+      id: i,
+      author: a,
+      kind: k as String,
+      time: DateTime.fromMillisecondsSinceEpoch(ts.toInt()),
+      text: tx.length > 700 ? tx.substring(0, 700) : tx,
+      bg: o['bg'] is num ? (o['bg'] as num).toInt() : 0,
+      att: att,
+      seen: o['sn'] == true,
+      viewers: vw,
+    );
+  }
 }

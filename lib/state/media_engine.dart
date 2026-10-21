@@ -112,7 +112,11 @@ class MediaEngine {
   /// Залить куски и отправить сообщение. Повторный вызов во время работы —
   /// тот же результат.
   Future<bool> send(String chat, Message m) =>
-      _jobs[m.id] ??= _send(chat, m).whenComplete(() => _jobs.remove(m.id));
+      // Блок, а не стрелка: remove() вернул бы эту же задачу, и whenComplete
+      // ждал бы сам себя — ждущий результата не дождался бы никогда.
+      _jobs[m.id] ??= _send(chat, m).whenComplete(() {
+        _jobs.remove(m.id);
+      });
 
   Future<bool> _send(String chat, Message m) async {
     final att = m.att!;

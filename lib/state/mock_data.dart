@@ -275,3 +275,49 @@ const reactionEmojis = ['❤️', '🔥', '😂', '😮', '😢', '👍'];
 /// Крошечное превью «заката» для демо-фото (PNG 32×24).
 const demoSunsetThumb =
     'iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAm0lEQVR42mP8X5HHQEvA8oeVdahbwEJjC/7S2oI/zLS2gGmoW/CXkdY+oLkFDORYoOb5DZl7azsX7iD6T7IFml4fMe27vo0fhw/+UyeIcJnD8ucflSz4h8uCv1SyAIc5LH+pZAEuc1j+/CHZgiMrNWzCb6CJ4E6mv8nxwYElukSqZHRUCaBtRvv/n4m2Fvz7R2ML/g99C/7S1gIApjA6k6X3A68AAAAASUVORK5CYII=';
+
+/// Демо-истории друзей (текстовые — чтобы работали без сети).
+Map<String, List<Story>> demoStories() {
+  final now = DateTime.now();
+  return {
+    'alice': [
+      Story(
+        id: 'demo-a1',
+        author: 'alice',
+        kind: 't',
+        time: now.subtract(const Duration(hours: 3)),
+        text: 'Нашла кофейню с лучшим рафом в городе ☕️',
+        bg: 1,
+      ),
+      Story(
+        id: 'demo-a2',
+        author: 'alice',
+        kind: 't',
+        time: now.subtract(const Duration(minutes: 40)),
+        text: 'Кто со мной на выставку в субботу? 🎨',
+        bg: 3,
+      ),
+    ],
+    'max': [
+      Story(
+        id: 'demo-m1',
+        author: 'max',
+        kind: 't',
+        time: now.subtract(const Duration(hours: 6)),
+        text: 'Первый снег в горах 🏔️🏂',
+        bg: 5,
+      ),
+    ],
+    'kate': [
+      Story(
+        id: 'demo-k1',
+        author: 'kate',
+        kind: 't',
+        time: now.subtract(const Duration(hours: 9)),
+        text: 'Закат сегодня просто 🔥',
+        bg: 2,
+        seen: true,
+      ),
+    ],
+  };
+}

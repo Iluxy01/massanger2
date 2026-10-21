@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../models/models.dart' show cleanBirthday;
+
 /// Внутренний протокол Veil — JSON внутри зашифрованного конверта.
 ///
 /// t = msg    сообщение          {id, text, reply?, secret?, p?, k?, att?, geo?, poll?}
@@ -21,6 +23,12 @@ import 'dart:convert';
 /// У msg: oa — капсула времени (откроется не раньше, мс).
 /// В группе у любого сигнала есть g (id группы), у сообщения — ещё gi (состав).
 /// t = join   вступить в канал по ссылке {g, i: код, p} — автору канала
+/// t = game   ходы игры / жребия: {id, mv: [все ходы], q?: «пришли свои»}
+/// t = draw   совместный рисунок: {id, op: a|u, s?: штрих, i?: id штриха}
+/// t = story  история на сутки {i, k: p|v|t, ts, tx?, bg?, att?} — каждому другу
+/// t = sv     «посмотрел историю» {i} — автору
+/// t = sdel   автор удалил историю {i}
+/// У msg: fx — эффект на весь экран, sr — ответ на историю (подпись).
 /// t = typ    печатает (эфемерно)
 /// t = ping   я в сети (эфемерно)
 class Payload {
@@ -46,6 +54,11 @@ class Payload {
   static const opened = 'seen1';
   static const todo = 'todo';
   static const join = 'join';
+  static const game = 'game';
+  static const draw = 'draw';
+  static const story = 'story';
+  static const storySeen = 'sv';
+  static const storyDel = 'sdel';
 
   Map<String, dynamic> toMap() => {...data, 'v': 1, 't': type};
 
@@ -75,18 +88,28 @@ class Payload {
 
 /// Публичная визитка, которую видят друзья.
 class VeilCard {
-  VeilCard({required this.name, required this.emoji, required this.color, this.bio = ''});
+  VeilCard({
+    required this.name,
+    required this.emoji,
+    required this.color,
+    this.bio = '',
+    this.birthday,
+  });
 
   final String name;
   final String emoji;
   final int color;
   final String bio;
 
+  /// «ММ-ДД», если указан.
+  final String? birthday;
+
   Map<String, dynamic> toJson() => {
     'n': name,
     'e': emoji,
     'c': color,
     if (bio.isNotEmpty) 'b': bio,
+    if (birthday != null) 'bd': birthday,
   };
 
   static VeilCard? fromJson(Object? o) {
@@ -98,6 +121,7 @@ class VeilCard {
       emoji: e.length > 16 ? '🙂' : e,
       color: c.toInt(),
       bio: o['b'] is String ? (o['b'] as String) : '',
+      birthday: cleanBirthday(o['bd']),
     );
   }
 }

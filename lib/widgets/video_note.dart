@@ -422,7 +422,7 @@ class _NoteBubbleState extends State<NoteBubble> {
   @override
   Widget build(BuildContext context) {
     final app = context.app;
-    final acc = app.accent;
+    final acc = context.accent;
     final m = widget.m;
     final att = m.att!;
     final state = xferOf(app, m);

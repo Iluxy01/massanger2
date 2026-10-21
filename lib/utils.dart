@@ -97,3 +97,24 @@ List<double> waveform(String id, int bars) {
     return (base * (0.45 + 0.55 * envelope)).clamp(0.15, 1.0);
   });
 }
+
+const _monthsGen = [
+  'января',
+  'февраля',
+  'марта',
+  'апреля',
+  'мая',
+  'июня',
+  'июля',
+  'августа',
+  'сентября',
+  'октября',
+  'ноября',
+  'декабря',
+];
+
+/// «ММ-ДД» → «12 марта».
+String fmtBirthday(String md) {
+  final m = int.tryParse(md.substring(0, 2)) ?? 1, d = int.tryParse(md.substring(3)) ?? 1;
+  return '$d ${_monthsGen[(m - 1).clamp(0, 11)]}';
+}

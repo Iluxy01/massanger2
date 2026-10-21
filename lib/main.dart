@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +46,7 @@ Future<void> _boot(AppState state) async {
   final crash = await Link.lastCrash();
   if (crash != null) live.log('ПРОШЛЫЙ ВЫЛЕТ: $crash');
   await live.pullNativeNotes();
+  unawaited(state.checkBirthdays());
   // Запущены службой «на связи» без окна (после перезагрузки, обновления или
   // выгрузки системой): ведём себя как свёрнутое приложение — без анимаций,
   // с уведомлениями. Окно откроют — придёт «resumed», и всё оживёт.
